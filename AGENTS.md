@@ -11,11 +11,15 @@
 
 ## Commit and Publish Workflow
 
+- This workflow is adapted from the user-level `~/.agents/skills/yeet/AGENTS.md` guidance. When that file is available, use it as the detailed source for git publish commands and safety rules.
 - When working in Atoll, commit automatically at natural checkpoints after a coherent fix or feature slice is implemented and verified.
 - Prefer small, step-by-step commits over one large mixed commit when changes can be separated cleanly.
 - Before each commit, inspect `git status --short`, `git diff --stat`, and the staged diff enough to understand what is being published.
 - Stage only files that belong to the current Atoll work. Do not revert or overwrite unrelated user changes.
+- Generate commit messages and PR metadata in the current thread; do not use a separate generation provider or model.
 - Use one-line commit subjects, max 72 characters, in imperative Conventional Commit style when obvious, such as `fix: recognize Pi agent completion events`.
 - Avoid vague commit subjects like `Update files`, `Fix changes`, `Commit changes`, or `Misc changes`.
 - Run the focused relevant tests before committing when feasible. If tests are not run, mention that explicitly.
 - When the user asks to publish, push the current branch to GitHub after the commit succeeds.
+- Do not amend, rebase, force-push, merge, or delete branches unless the user explicitly asks.
+- If working on the default branch, commit and push only; skip pull request creation.
