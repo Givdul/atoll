@@ -372,6 +372,88 @@ final class AgentSessionScannerTests: XCTestCase {
         XCTAssertTrue(sessions[0].sourcePath.hasSuffix("/.pi/agent/sessions/--tmp-example--/pi-complete.jsonl"))
     }
 
+    func testPiGoalStateActiveOverridesPriorStop() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let directory = tempHome.appendingPathComponent(".pi/agent/sessions/--tmp-example-goal-active--", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("pi-goal-active.jsonl")
+        try """
+        {"type":"session","version":3,"id":"pi-goal-active","timestamp":"\(now)","cwd":"/tmp/example"}
+        {"type":"message","id":"u1","parentId":null,"timestamp":"\(now)","message":{"role":"user","content":"Run a goal","timestamp":\(millisecondsSinceEpoch(offset: -3))}}
+        {"type":"message","id":"a1","parentId":"u1","timestamp":"\(now)","message":{"role":"assistant","content":[{"type":"text","text":"Starting."}],"provider":"anthropic","model":"claude-sonnet-4-5","stopReason":"stop","timestamp":\(millisecondsSinceEpoch(offset: -2))}}
+        {"type":"custom","customType":"goal-state","data":{"goal":{"id":"goal-1","text":"Run a goal","status":"active"}},"id":"g1","parentId":"a1","timestamp":"\(now)"}
+        """.write(to: file, atomically: true, encoding: .utf8)
+
+        let sessions = testScanner().scan()
+
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions[0].harness, .pi)
+        XCTAssertEqual(sessions[0].state, .running)
+    }
+
+    func testPiGoalStateCompleteOverridesPriorToolUse() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let directory = tempHome.appendingPathComponent(".pi/agent/sessions/--tmp-example-goal-complete--", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("pi-goal-complete.jsonl")
+        try """
+        {"type":"session","version":3,"id":"pi-goal-complete","timestamp":"\(now)","cwd":"/tmp/example"}
+        {"type":"message","id":"u1","parentId":null,"timestamp":"\(now)","message":{"role":"user","content":"Finish the goal","timestamp":\(millisecondsSinceEpoch(offset: -3))}}
+        {"type":"message","id":"a1","parentId":"u1","timestamp":"\(now)","message":{"role":"assistant","content":[{"type":"toolCall","id":"call-1","name":"bash","arguments":{"command":"swift test"}}],"provider":"anthropic","model":"claude-sonnet-4-5","stopReason":"toolUse","timestamp":\(millisecondsSinceEpoch(offset: -2))}}
+        {"type":"custom","customType":"goal-state","data":{"goal":{"id":"goal-1","text":"Finish the goal","status":"complete"}},"id":"g1","parentId":"a1","timestamp":"\(now)"}
+        """.write(to: file, atomically: true, encoding: .utf8)
+
+        let sessions = testScanner(processes: [
+            RunningProcess(pid: 42, command: "pi", arguments: "pi")
+        ]).scan()
+
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions[0].harness, .pi)
+        XCTAssertEqual(sessions[0].state, .done)
+    }
+
+    func testPiGoalStateNullMarksSessionDone() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let directory = tempHome.appendingPathComponent(".pi/agent/sessions/--tmp-example-goal-null--", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("pi-goal-null.jsonl")
+        try """
+        {"type":"session","version":3,"id":"pi-goal-null","timestamp":"\(now)","cwd":"/tmp/example"}
+        {"type":"message","id":"u1","parentId":null,"timestamp":"\(now)","message":{"role":"user","content":"Finish the goal","timestamp":\(millisecondsSinceEpoch(offset: -3))}}
+        {"type":"message","id":"a1","parentId":"u1","timestamp":"\(now)","message":{"role":"assistant","content":[{"type":"toolCall","id":"call-1","name":"goal_complete","arguments":{"summary":"Verified."}}],"provider":"anthropic","model":"claude-sonnet-4-5","stopReason":"toolUse","timestamp":\(millisecondsSinceEpoch(offset: -2))}}
+        {"type":"custom","customType":"goal-state","data":{"goal":null},"id":"g1","parentId":"a1","timestamp":"\(now)"}
+        """.write(to: file, atomically: true, encoding: .utf8)
+
+        let sessions = testScanner(processes: [
+            RunningProcess(pid: 42, command: "pi", arguments: "pi")
+        ]).scan()
+
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions[0].harness, .pi)
+        XCTAssertEqual(sessions[0].state, .done)
+    }
+
+    func testPiGoalCompleteToolResultMarksSessionDone() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let directory = tempHome.appendingPathComponent(".pi/agent/sessions/--tmp-example-goal-tool--", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("pi-goal-tool.jsonl")
+        try """
+        {"type":"session","version":3,"id":"pi-goal-tool","timestamp":"\(now)","cwd":"/tmp/example"}
+        {"type":"message","id":"u1","parentId":null,"timestamp":"\(now)","message":{"role":"user","content":"Finish the goal","timestamp":\(millisecondsSinceEpoch(offset: -3))}}
+        {"type":"message","id":"a1","parentId":"u1","timestamp":"\(now)","message":{"role":"assistant","content":[{"type":"toolCall","id":"call-1","name":"goal_complete","arguments":{"summary":"Verified."}}],"provider":"anthropic","model":"claude-sonnet-4-5","stopReason":"toolUse","timestamp":\(millisecondsSinceEpoch(offset: -2))}}
+        {"type":"message","id":"t1","parentId":"a1","timestamp":"\(now)","message":{"role":"toolResult","toolCallId":"call-1","toolName":"goal_complete","content":[{"type":"text","text":"Goal complete: Verified."}],"details":{"summary":"Verified."},"isError":false,"timestamp":\(millisecondsSinceEpoch(offset: -1))}}
+        """.write(to: file, atomically: true, encoding: .utf8)
+
+        let sessions = testScanner(processes: [
+            RunningProcess(pid: 42, command: "pi", arguments: "pi")
+        ]).scan()
+
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions[0].harness, .pi)
+        XCTAssertEqual(sessions[0].state, .done)
+    }
+
     func testPiAgentEndHookOverridesPriorToolCall() throws {
         let now = ISO8601DateFormatter().string(from: Date())
         let directory = tempHome.appendingPathComponent(".atoll/sessions", isDirectory: true)

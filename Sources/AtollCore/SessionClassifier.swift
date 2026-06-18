@@ -184,6 +184,10 @@ enum SessionClassifier {
                 continue
             }
 
+            if let customState = piCustomLifecycleState(from: dictionary) {
+                return customState
+            }
+
             let flattened = JSONHelpers.flatten(dictionary).lowercased()
             if isPermissionWaitMarker(flattened) {
                 return .waitingForPermission
@@ -224,6 +228,9 @@ enum SessionClassifier {
 
                 return .running
             case "toolresult", "tool_result", "bashexecution", "bash_execution":
+                if piToolResultIsTerminal(message) {
+                    return .done
+                }
                 return .running
             default:
                 continue
@@ -231,6 +238,38 @@ enum SessionClassifier {
         }
 
         return nil
+    }
+
+    private static func piCustomLifecycleState(from dictionary: [String: Any]) -> SessionState? {
+        guard topLevelString(dictionary["type"])?.lowercased() == "custom",
+              normalizedIdentifier(topLevelString(dictionary["customType"]) ?? "") == "goalstate",
+              let data = dictionary["data"] as? [String: Any],
+              data.keys.contains(where: { $0.caseInsensitiveCompare("goal") == .orderedSame }) else {
+            return nil
+        }
+
+        guard let goal = data.first(where: { $0.key.caseInsensitiveCompare("goal") == .orderedSame })?.value,
+              !(goal is NSNull) else {
+            return .done
+        }
+
+        guard let goalDictionary = goal as? [String: Any],
+              let rawStatus = topLevelString(goalDictionary["status"]) else {
+            return nil
+        }
+
+        switch normalizedIdentifier(rawStatus) {
+        case "active", "running", "working":
+            return .running
+        case "complete", "completed", "done", "success", "succeeded":
+            return .done
+        case "paused":
+            return .waitingForInput
+        case "budget", "budgetreached", "failed", "error", "aborted", "cancelled", "canceled":
+            return .done
+        default:
+            return nil
+        }
     }
 
     private static func piAssistantState(
@@ -443,6 +482,35 @@ enum SessionClassifier {
             "cancelled",
             "canceled"
         ].contains(stopReason)
+    }
+
+    private static func piToolResultIsTerminal(_ message: [String: Any]) -> Bool {
+        if let isError = message["isError"] as? Bool, isError {
+            return false
+        }
+
+        let terminalToolNames: Set<String> = [
+            "complete",
+            "done",
+            "goalcomplete",
+            "goaldone",
+            "completegoal",
+            "taskcomplete",
+            "sessioncomplete",
+            "agentcomplete",
+            "agentdone"
+        ]
+
+        for key in ["toolName", "tool_name", "name"] {
+            guard let rawName = topLevelString(message[key]) else {
+                continue
+            }
+            if terminalToolNames.contains(normalizedIdentifier(rawName)) {
+                return true
+            }
+        }
+
+        return false
     }
 
     private static func topLevelString(_ value: Any?) -> String? {
