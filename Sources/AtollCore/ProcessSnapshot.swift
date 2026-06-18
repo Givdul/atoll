@@ -12,14 +12,28 @@ public struct RunningProcess: Hashable, Sendable {
     }
 
     public func matches(_ harness: AgentHarness) -> Bool {
-        let haystack = "\(command) \(arguments)".lowercased()
+        let processNames = processNameCandidates
         return harness.processHints.contains { hint in
-            let normalized = hint.lowercased()
-            return haystack.contains("/\(normalized)")
-                || haystack.contains(" \(normalized)")
-                || haystack.hasSuffix(normalized)
-                || command.lowercased().contains(normalized)
+            processNames.contains(hint.lowercased())
         }
+    }
+
+    private var processNameCandidates: Set<String> {
+        let trimCharacters = CharacterSet(charactersIn: "\"'`()[]{}<>.,;:")
+        var candidates: Set<String> = []
+        let rawTokens = ([command] + arguments.split(whereSeparator: { $0.isWhitespace }).map(String.init))
+
+        for rawToken in rawTokens {
+            let token = rawToken.trimmingCharacters(in: trimCharacters).lowercased()
+            guard !token.isEmpty else {
+                continue
+            }
+
+            candidates.insert(token)
+            candidates.insert(URL(fileURLWithPath: token).lastPathComponent)
+        }
+
+        return candidates
     }
 }
 

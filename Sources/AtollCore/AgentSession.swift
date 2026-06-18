@@ -49,6 +49,8 @@ public struct AgentSession: Identifiable, Hashable, Codable, Sendable {
     public var harness: AgentHarness
     public var title: String
     public var detail: String
+    public var prompt: String?
+    public var lastToolCall: String?
     public var projectPath: String?
     public var model: String?
     public var state: SessionState
@@ -63,6 +65,8 @@ public struct AgentSession: Identifiable, Hashable, Codable, Sendable {
         harness: AgentHarness,
         title: String,
         detail: String,
+        prompt: String? = nil,
+        lastToolCall: String? = nil,
         projectPath: String? = nil,
         model: String? = nil,
         state: SessionState,
@@ -76,6 +80,8 @@ public struct AgentSession: Identifiable, Hashable, Codable, Sendable {
         self.harness = harness
         self.title = title
         self.detail = detail
+        self.prompt = prompt
+        self.lastToolCall = lastToolCall
         self.projectPath = projectPath
         self.model = model
         self.state = state

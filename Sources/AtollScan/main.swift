@@ -14,7 +14,9 @@ let sessions = AgentSessionScanner().scan().filter { session in
 
 for session in sessions {
     let model = session.model.map { " model=\($0)" } ?? ""
-    print("\(session.harness.displayName)\t\(session.state.displayName)\t\(session.title)\t\(session.detail)\(model)\t\(session.sourcePath)")
+    let title = session.prompt ?? session.title
+    let badge = session.state == .running ? (session.lastToolCall ?? session.state.displayName) : session.state.displayName
+    print("\(session.harness.displayName)\t\(badge)\t\(title)\t\(session.detail)\(model)\t\(session.sourcePath)")
 }
 
 if sessions.isEmpty {

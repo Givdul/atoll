@@ -16,6 +16,8 @@ final class IslandWindowController {
     private let hostSize = NSSize(width: 440, height: 340)
     private var pendingHideToken = UUID()
     private let rowExitDuration: TimeInterval = 0.26
+    private var globalMouseMonitor: Any?
+    private var localMouseMonitor: Any?
 
     init(state: AppState) {
         self.state = state
@@ -29,7 +31,7 @@ final class IslandWindowController {
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = false
-        window.ignoresMouseEvents = false
+        window.ignoresMouseEvents = true
         window.level = .statusBar
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         window.hidesOnDeactivate = false
@@ -42,12 +44,25 @@ final class IslandWindowController {
         window.contentView = hostingView
         self.hostingView = hostingView
 
+        installHoverMonitors()
         syncVisibility()
+    }
+
+    func shutdown() {
+        if let globalMouseMonitor {
+            NSEvent.removeMonitor(globalMouseMonitor)
+            self.globalMouseMonitor = nil
+        }
+        if let localMouseMonitor {
+            NSEvent.removeMonitor(localMouseMonitor)
+            self.localMouseMonitor = nil
+        }
     }
 
     func syncVisibility() {
         guard state.settings.enabled else {
             pendingHideToken = UUID()
+            state.islandHoverState = .inactive
             window.orderOut(nil)
             return
         }
@@ -56,6 +71,7 @@ final class IslandWindowController {
             pendingHideToken = UUID()
             resizeAndPosition()
             window.orderFrontRegardless()
+            updateHoverState(for: NSEvent.mouseLocation)
             return
         }
 
@@ -73,6 +89,7 @@ final class IslandWindowController {
         let y = screen.frame.maxY - height
         window.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
         hostingView?.frame = NSRect(origin: .zero, size: hostSize)
+        updateHoverState(for: NSEvent.mouseLocation)
     }
 
     private func targetScreen() -> NSScreen? {
@@ -97,6 +114,7 @@ final class IslandWindowController {
 
     private func scheduleHideAfterExit() {
         guard window.isVisible else {
+            state.islandHoverState = .inactive
             window.orderOut(nil)
             return
         }
@@ -114,8 +132,103 @@ final class IslandWindowController {
                       !self.state.hasIslandContent else {
                     return
                 }
+                self.state.islandHoverState = .inactive
                 self.window.orderOut(nil)
             }
         }
+    }
+
+    private func installHoverMonitors() {
+        let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+            Task { @MainActor [weak self] in
+                _ = event
+                self?.updateHoverState(for: NSEvent.mouseLocation)
+            }
+        }
+
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            Task { @MainActor [weak self] in
+                self?.updateHoverState(for: NSEvent.mouseLocation)
+            }
+            return event
+        }
+    }
+
+    private func updateHoverState(for mouseLocation: NSPoint) {
+        guard state.settings.enabled,
+              state.hasIslandContent,
+              window.isVisible else {
+            state.islandHoverState = .inactive
+            return
+        }
+
+        let metrics = IslandMetrics()
+        let nextState = hoverState(for: mouseLocation, metrics: metrics)
+        guard nextState != state.islandHoverState else {
+            return
+        }
+
+        state.islandHoverState = nextState
+    }
+
+    private func hoverState(for mouseLocation: NSPoint, metrics: IslandMetrics) -> IslandHoverState {
+        if notchTriggerFrame(metrics: metrics).contains(mouseLocation) {
+            return .expanding
+        }
+
+        if state.islandHoverState.expandsList,
+           expandedHoverFrame(metrics: metrics).contains(mouseLocation) {
+            return .expanding
+        }
+
+        if let attentionRowsFrame = attentionRowsFrame(metrics: metrics),
+           attentionRowsFrame.contains(mouseLocation) {
+            return .attention
+        }
+
+        return .inactive
+    }
+
+    private func notchTriggerFrame(metrics: IslandMetrics) -> NSRect {
+        let x = window.frame.minX + (hostSize.width - metrics.notchWidth) / 2
+        let y = window.frame.maxY - metrics.notchHeight
+        return NSRect(x: x, y: y, width: metrics.notchWidth, height: metrics.notchHeight)
+    }
+
+    private func expandedHoverFrame(metrics: IslandMetrics) -> NSRect {
+        let rowWidth = metrics.rowWidth
+        let regionHeight = expandedContentHeight(metrics: metrics)
+        let x = window.frame.minX + (hostSize.width - rowWidth) / 2
+        let y = window.frame.maxY - regionHeight
+        return NSRect(x: x, y: y, width: rowWidth, height: regionHeight)
+    }
+
+    private func attentionRowsFrame(metrics: IslandMetrics) -> NSRect? {
+        let attentionCount = state.visibleAttentionCount
+        guard attentionCount > 0 else {
+            return nil
+        }
+
+        let rowWidth = metrics.rowWidth
+        let attentionHeight = metrics.listHeight(forRowCount: attentionCount)
+        let x = window.frame.minX + (hostSize.width - rowWidth) / 2
+        let y = window.frame.maxY - metrics.notchHeight - metrics.rowSpacing - attentionHeight
+        return NSRect(x: x, y: y, width: rowWidth, height: attentionHeight)
+    }
+
+    private func expandedContentHeight(metrics: IslandMetrics) -> CGFloat {
+        metrics.notchHeight
+            + visibleSectionHeight(metrics: metrics, rowCount: state.visibleRegularCount)
+            + visibleSectionHeight(metrics: metrics, rowCount: state.visibleAttentionCount)
+    }
+
+    private func visibleSectionHeight(metrics: IslandMetrics, rowCount: Int) -> CGFloat {
+        guard rowCount > 0 else {
+            return 0
+        }
+
+        return metrics.rowSpacing + metrics.listHeight(forRowCount: rowCount)
     }
 }

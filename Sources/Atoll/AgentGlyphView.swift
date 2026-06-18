@@ -1,61 +1,177 @@
 import AtollCore
+import AppKit
 import SwiftUI
 
 struct AgentGlyphView: View {
     let harness: AgentHarness
+    var glyphColor: Color = .white
 
     var body: some View {
-        ZStack {
-            Circle()
-                .fill(baseColor)
-
-            switch harness {
-            case .opencode:
-                OpenCodeGlyph()
-                    .stroke(.white, style: StrokeStyle(lineWidth: 2.1, lineCap: .round, lineJoin: .round))
-                    .padding(5)
-            case .codex:
-                CodexGlyph()
-                    .stroke(.white, style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
-                    .padding(5)
-            case .claude:
-                ClaudeCrabGlyph()
-                    .fill(.white)
-                    .padding(4)
-            case .copilot:
-                CopilotGlyph()
-                    .stroke(.white, style: StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
-                    .padding(5)
-            case .pi:
-                Text("pi")
-                    .font(.system(size: 11, weight: .black, design: .rounded))
-                    .foregroundStyle(.white)
-            case .atoll:
-                AtollGlyph()
-                    .stroke(.white, style: StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
-                    .padding(5)
+        Group {
+            if let icon = AgentIconLibrary.image(for: harness) {
+                Image(nsImage: icon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .padding(iconPadding)
+                    .accessibilityHidden(true)
+            } else {
+                fallbackGlyph
             }
-        }
-        .overlay {
-            Circle()
-                .stroke(.white.opacity(0.16), lineWidth: 1)
         }
     }
 
-    private var baseColor: Color {
+    private var iconPadding: CGFloat {
+        switch harness {
+        case .deepseek, .droid, .hermes, .qoder:
+            1.8
+        case .opencode, .amp, .pi:
+            1.2
+        default:
+            1.5
+        }
+    }
+
+    @ViewBuilder
+    private var fallbackGlyph: some View {
         switch harness {
         case .opencode:
-            Color(red: 0.10, green: 0.68, blue: 0.50)
+            OpenCodeGlyph()
+                .stroke(glyphColor, style: StrokeStyle(lineWidth: 2.1, lineCap: .round, lineJoin: .round))
+                .padding(5)
         case .codex:
-            Color(red: 0.35, green: 0.49, blue: 0.95)
+            CodexGlyph()
+                .stroke(glyphColor, style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+                .padding(5)
         case .claude:
-            Color(red: 0.88, green: 0.38, blue: 0.20)
+            ClaudeCrabGlyph()
+                .fill(glyphColor)
+                .padding(4)
+        case .gemini, .cursor, .droid, .qoder, .qwen, .kimi, .deepseek, .codebuddy, .kiro, .hermes, .amp:
+            Text(harness.shortName)
+                .font(.system(size: 8.5, weight: .black, design: .rounded))
+                .foregroundStyle(glyphColor)
         case .copilot:
-            Color(red: 0.23, green: 0.72, blue: 0.36)
+            CopilotGlyph()
+                .stroke(glyphColor, style: StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
+                .padding(5)
         case .pi:
-            Color(red: 0.62, green: 0.46, blue: 0.91)
+            PiGlyph()
+                .stroke(glyphColor, style: StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
+                .padding(3.8)
         case .atoll:
-            Color(red: 0.12, green: 0.58, blue: 0.78)
+            AtollGlyph()
+                .stroke(glyphColor, style: StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
+                .padding(5)
+        }
+    }
+
+}
+
+private enum AgentIconLibrary {
+    private static let bundleName = "Atoll_Atoll.bundle"
+
+    static func image(for harness: AgentHarness) -> NSImage? {
+        guard let fileName = iconFileName(for: harness),
+              let image = directIconImage(for: fileName) ?? bundleIconImage(fileName: fileName) else {
+            return nil
+        }
+
+        image.isTemplate = false
+        return image
+    }
+
+    private static func directIconImage(for fileName: String) -> NSImage? {
+        if let moduleResource = Bundle.module.url(forResource: fileName, withExtension: "svg", subdirectory: "AgentIcons"),
+           let image = NSImage(contentsOf: moduleResource) {
+            return image
+        }
+
+        if let directResource = Bundle.main.url(forResource: fileName, withExtension: "svg", subdirectory: "AgentIcons"),
+           let image = NSImage(contentsOf: directResource) {
+            return image
+        }
+
+        guard let executableDirectory = Bundle.main.executableURL?.deletingLastPathComponent() else {
+            return nil
+        }
+
+        let directPaths = [
+            executableDirectory.appendingPathComponent("Resources/AgentIcons/\(fileName).svg"),
+            executableDirectory.deletingLastPathComponent().appendingPathComponent("Resources/AgentIcons/\(fileName).svg"),
+            Bundle.main.resourceURL?.appendingPathComponent("AgentIcons/\(fileName).svg"),
+            Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/AgentIcons/\(fileName).svg")
+        ]
+
+        return directPaths
+            .compactMap { $0 }
+            .compactMap { NSImage(contentsOf: $0) }
+            .first
+    }
+
+    private static func bundleIconImage(fileName: String) -> NSImage? {
+        guard let url = resourceBundles
+            .lazy
+            .compactMap({ $0.url(forResource: fileName, withExtension: "svg") })
+            .first else {
+            return nil
+        }
+        return NSImage(contentsOf: url)
+    }
+
+    private static func iconFileName(for harness: AgentHarness) -> String? {
+        switch harness {
+        case .opencode:
+            "opencode"
+        case .codex:
+            "codex"
+        case .claude:
+            "claude"
+        case .gemini:
+            "gemini"
+        case .cursor:
+            "cursor"
+        case .droid:
+            "droid"
+        case .qoder:
+            "qoder"
+        case .qwen:
+            "qwen"
+        case .kimi:
+            "kimi"
+        case .deepseek:
+            "deepseek"
+        case .copilot:
+            "copilot"
+        case .codebuddy:
+            "codebuddy"
+        case .kiro:
+            "kiro"
+        case .hermes:
+            "hermes"
+        case .amp:
+            "amp"
+        case .pi:
+            "pi"
+        case .atoll:
+            nil
+        }
+    }
+
+    private static var resourceBundles: [Bundle] {
+        let executableDirectory = Bundle.main.executableURL?.deletingLastPathComponent()
+        let candidates = [
+            Bundle.main.resourceURL?.appendingPathComponent(bundleName),
+            Bundle.main.bundleURL.appendingPathComponent(bundleName),
+            executableDirectory?.appendingPathComponent(bundleName),
+            executableDirectory?
+                .deletingLastPathComponent()
+                .appendingPathComponent("Resources")
+                .appendingPathComponent(bundleName)
+        ]
+
+        return candidates.compactMap { url in
+            guard let url else { return nil }
+            return Bundle(url: url)
         }
     }
 }
@@ -117,6 +233,41 @@ private struct CopilotGlyph: Shape {
         path.addLine(to: CGPoint(x: right.minX, y: rect.midY))
         path.move(to: CGPoint(x: rect.minX + rect.width * 0.20, y: rect.minY + rect.height * 0.26))
         path.addQuadCurve(to: CGPoint(x: rect.maxX - rect.width * 0.20, y: rect.minY + rect.height * 0.26), control: CGPoint(x: rect.midX, y: rect.minY))
+        return path
+    }
+}
+
+private struct PiGlyph: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let width = rect.width * 0.45
+        let radius = rect.width * 0.06
+        let leftX = rect.midX - width
+        let rightX = rect.midX + width - rect.width * 0.12
+        let topY = rect.minY + rect.height * 0.08
+
+        path.addRoundedRect(
+            in: CGRect(
+                x: leftX,
+                y: topY,
+                width: rect.width * 0.12,
+                height: rect.height * 0.84
+            ),
+            cornerSize: CGSize(width: radius, height: radius)
+        )
+
+        path.addRoundedRect(
+            in: CGRect(
+                x: rightX,
+                y: topY,
+                width: rect.width * 0.12,
+                height: rect.height * 0.84
+            ),
+            cornerSize: CGSize(width: radius, height: radius)
+        )
+
+        path.move(to: CGPoint(x: leftX + rect.width * 0.06, y: rect.midY + rect.height * 0.03))
+        path.addLine(to: CGPoint(x: rightX + rect.width * 0.06, y: rect.midY + rect.height * 0.03))
         return path
     }
 }

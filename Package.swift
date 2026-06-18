@@ -20,7 +20,10 @@ let package = Package(
         .executableTarget(
             name: "Atoll",
             dependencies: ["AtollCore"],
-            path: "Sources/Atoll"
+            path: "Sources/Atoll",
+            resources: [
+                .process("Resources")
+            ]
         ),
         .executableTarget(
             name: "AtollScan",

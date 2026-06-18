@@ -5,7 +5,7 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDelegate {
     private let state = AppState(settingsStore: SettingsStore())
-    private let scanner = AgentSessionScanner()
+    private let scanner = AgentSessionScanner(scanMode: .hookEventsOnly, atollFrameNotBefore: Date())
     private var refreshTimer: Timer?
     private var statusController: StatusMenuController?
     private var islandController: IslandWindowController?
@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
 
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
+        islandController?.shutdown()
     }
 
     func refreshNow() {

@@ -38,26 +38,6 @@ final class StatusMenuController {
         title.isEnabled = false
         menu.addItem(title)
 
-        if state.menuSessions.isEmpty {
-            let empty = NSMenuItem(title: "No sessions found", action: nil, keyEquivalent: "")
-            empty.isEnabled = false
-            menu.addItem(empty)
-        } else {
-            for session in state.menuSessions.prefix(10) {
-                let item = NSMenuItem(
-                    title: "\(session.harness.displayName): \(session.title) - \(session.state.displayName)",
-                    action: nil,
-                    keyEquivalent: ""
-                )
-                item.image = AtollIcon.menuImage(for: session.harness, state: session.state)
-                item.toolTip = session.sourcePath
-                item.isEnabled = false
-                menu.addItem(item)
-            }
-        }
-
-        menu.addItem(.separator())
-
         let enabled = NSMenuItem(
             title: "Show Island",
             action: #selector(toggleEnabled(_:)),
@@ -96,11 +76,19 @@ final class StatusMenuController {
         let attention = state.activeAttentionCount
         if attention > 0 {
             button.title = "\(attention)"
-            button.image = AtollIcon.statusBarImage(attention: true)
+            button.image = AtollIcon.statusBarImage(attentionColor: attentionColor)
         } else {
             button.title = ""
             button.image = AtollIcon.statusBarImage()
         }
+    }
+
+    private var attentionColor: NSColor {
+        if state.waitingSessions.contains(where: { $0.state == .waitingForPermission }) {
+            return AtollIcon.stateColor(for: .waitingForPermission)
+        }
+
+        return AtollIcon.stateColor(for: .waitingForInput)
     }
 
     @objc private func toggleEnabled(_ sender: NSMenuItem) {

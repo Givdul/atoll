@@ -20,15 +20,15 @@ struct IslandMetrics {
         let baseNotchHeight = Self.screenTopReservedHeight()
         let factor = min(1.08, max(0.88, baseNotchHeight / 32))
         scale = factor
-        rowWidth = 360 * factor
+        rowWidth = 392 * factor
         rowHeight = max(32, min(36, baseNotchHeight * 0.92))
-        horizontalPadding = 8 * factor
+        horizontalPadding = 6.5 * factor
         iconSize = rowHeight - 8 * factor
         titleFontSize = min(12 * factor, rowHeight * 0.38)
         detailFontSize = min(11 * factor, rowHeight * 0.34)
         cornerRadius = rowHeight * 0.50
         topGap = 0
-        rowSpacing = 4 * factor
+        rowSpacing = 3 * factor
         notchWidth = 188 * factor
         notchHeight = max(32, min(38, baseNotchHeight + 2 * factor))
     }
@@ -43,6 +43,55 @@ struct IslandMetrics {
         let measured = safeTop > 0 ? safeTop : visibleTopInset
         return max(28, min(44, measured > 0 ? measured : 30))
     }
+
+    func hoverFootprintHeight(forRowCount rowCount: Int) -> CGFloat {
+        let count = CGFloat(rowCount)
+        guard count > 0 else {
+            return notchHeight
+        }
+
+        let rowSpacingCount = max(0, count - 1)
+        return notchHeight
+            + rowSpacing
+            + count * rowHeight
+            + rowSpacingCount * rowSpacing
+    }
+
+    func listHeight(forRowCount rowCount: Int) -> CGFloat {
+        let count = CGFloat(rowCount)
+        guard count > 0 else {
+            return 0
+        }
+
+        let rowSpacingCount = max(0, count - 1)
+        return count * rowHeight + rowSpacingCount * rowSpacing
+    }
+
+    var openTriggerHeight: CGFloat {
+        notchHeight + rowSpacing + rowHeight * 0.5
+    }
+}
+
+private enum SessionStateColor {
+    static let working = Color(red: 1.00, green: 0.52, blue: 0.10)
+    static let question = Color(red: 0.22, green: 0.78, blue: 1.00)
+    static let permission = Color(red: 1.00, green: 0.20, blue: 0.29)
+    static let done = Color(red: 0.22, green: 0.95, blue: 0.42)
+
+    static func accent(for state: SessionState) -> Color {
+        switch state {
+        case .running:
+            working
+        case .waitingForInput:
+            question
+        case .waitingForPermission:
+            permission
+        case .done:
+            done
+        case .unknown:
+            .white.opacity(0.52)
+        }
+    }
 }
 
 struct IslandView: View {
@@ -50,17 +99,37 @@ struct IslandView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var glassNamespace
 
-    @State private var isIslandHover = false
+    @State private var isListMounted = false
 
     var body: some View {
         let metrics = IslandMetrics()
         let visibleSessions = state.visibleSessions
+        let hasFloatingDoneRows = visibleSessions.contains { $0.state == .done }
 
         ZStack(alignment: .top) {
             islandStack(metrics: metrics, sessions: visibleSessions)
         }
         .frame(width: 440, height: 340, alignment: .top)
         .clipped()
+        .onAppear {
+            if state.islandHoverState.expandsList || hasFloatingDoneRows {
+                isListMounted = true
+            }
+        }
+        .onChange(of: hasFloatingDoneRows) { _, hasFloatingDoneRows in
+            if hasFloatingDoneRows {
+                showList()
+            } else if !state.islandHoverState.expandsList {
+                scheduleListUnmount()
+            }
+        }
+        .onChange(of: state.islandHoverState) { _, hoverState in
+            if hoverState.expandsList {
+                showList()
+            } else {
+                scheduleListUnmount()
+            }
+        }
     }
 
     @ViewBuilder
@@ -68,76 +137,104 @@ struct IslandView: View {
         metrics: IslandMetrics,
         sessions: [AgentSession]
     ) -> some View {
-        if #available(macOS 26.0, *) {
-            GlassEffectContainer(spacing: metrics.rowSpacing * 1.5) {
-                islandContent(metrics: metrics, sessions: sessions)
-            }
-        } else {
-            islandContent(metrics: metrics, sessions: sessions)
-        }
+        islandContent(metrics: metrics, sessions: sessions)
     }
 
     private func islandContent(
         metrics: IslandMetrics,
         sessions: [AgentSession]
     ) -> some View {
-        VStack(spacing: metrics.rowSpacing) {
+        let pinnedSessions = pinnedAttentionSessions(from: sessions)
+        let hoverSessions = sessions.filter { !isAttentionSession($0) }
+        let isExpanded = state.islandHoverState.expandsList
+        let floatingDoneSessions = hoverSessions.filter { $0.state == .done }
+        let rowSessions = isExpanded ? hoverSessions : floatingDoneSessions
+        let showsFloatingDoneRows = !isExpanded && !floatingDoneSessions.isEmpty
+        let attentionOpacity = state.islandHoverState.dimsAttentionRows ? 0.30 : 1.0
+
+        return VStack(spacing: metrics.rowSpacing) {
             NotchActivityBorder(
-                isActive: sessions.contains { $0.state == .running },
-                needsAttention: sessions.contains { $0.state == .waitingForInput || $0.state == .waitingForPermission },
+                activityState: notchActivityState(for: sessions),
                 metrics: metrics,
                 glassNamespace: glassNamespace
             )
-            .onHover { hovering in
-                guard hovering else {
-                    return
-                }
-
-                withOptionalAnimation {
-                    isIslandHover = true
-                }
-            }
             .zIndex(10)
 
-            if isIslandHover {
+            if isListMounted, !rowSessions.isEmpty {
                 VStack(spacing: metrics.rowSpacing) {
-                    ForEach(sessions) { session in
+                    ForEach(rowSessions) { session in
                         SessionBubbleRow(
                             session: session,
                             metrics: metrics,
-                            animatedIcon: session.state == .running
-                                || session.state == .waitingForInput
-                                || session.state == .waitingForPermission,
+                            animatedIcon: session.state == .running,
                             glassID: "row-\(session.id)",
                             glassNamespace: glassNamespace
                         )
-                        .transition(rowTransition(metrics: metrics))
+                        .transition(doneRowTransition)
                     }
                 }
-                .transition(rowTransition(metrics: metrics))
-            }
-        }
-        .padding(.top, metrics.topGap)
-        .contentShape(Rectangle())
-        .onHover { hovering in
-            guard !hovering, isIslandHover else {
-                return
+                .frame(height: rowListHeight(metrics: metrics, rowCount: rowSessions.count, isVisible: isExpanded || showsFloatingDoneRows), alignment: .top)
+                .opacity(isExpanded || showsFloatingDoneRows ? 1 : 0)
+                .clipped()
             }
 
-            withOptionalAnimation {
-                isIslandHover = false
+            if !pinnedSessions.isEmpty {
+                VStack(spacing: metrics.rowSpacing) {
+                    ForEach(pinnedSessions) { session in
+                        SessionBubbleRow(
+                            session: session,
+                            metrics: metrics,
+                            animatedIcon: false,
+                            glassID: "attention-row-\(session.id)",
+                            glassNamespace: glassNamespace
+                        )
+                    }
+                }
+                .opacity(attentionOpacity)
+                .animation(attentionFadeAnimation(dimmed: state.islandHoverState.dimsAttentionRows), value: state.islandHoverState.dimsAttentionRows)
             }
         }
-        .animation(rowAnimation, value: isIslandHover)
+        .allowsHitTesting(false)
+        .padding(.top, metrics.topGap)
+        .animation(listRevealAnimation, value: state.islandHoverState)
         .animation(rowAnimation, value: sessions.map(\.id))
     }
 
+    private func rowListHeight(metrics: IslandMetrics, rowCount: Int, isVisible: Bool) -> CGFloat {
+        isVisible ? metrics.listHeight(forRowCount: rowCount) : 0
+    }
+
+    private func pinnedAttentionSessions(from sessions: [AgentSession]) -> [AgentSession] {
+        sessions.filter(isAttentionSession)
+    }
+
+    private func isAttentionSession(_ session: AgentSession) -> Bool {
+        session.state == .waitingForInput || session.state == .waitingForPermission
+    }
+
+    private func notchActivityState(for sessions: [AgentSession]) -> SessionState? {
+        if sessions.contains(where: { $0.state == .waitingForPermission }) {
+            return .waitingForPermission
+        }
+        if sessions.contains(where: { $0.state == .waitingForInput }) {
+            return .waitingForInput
+        }
+        if sessions.contains(where: { $0.state == .running }) {
+            return .running
+        }
+
+        return nil
+    }
+
     private struct NotchActivityBorder: View {
-        let isActive: Bool
-        let needsAttention: Bool
+        let activityState: SessionState?
         let metrics: IslandMetrics
         let glassNamespace: Namespace.ID
         @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+        private var waitingBorderWidth: CGFloat {
+            max(4.8 * metrics.scale, metrics.notchHeight * 0.24)
+        }
 
         var body: some View {
             if #available(macOS 26.0, *) {
@@ -151,18 +248,32 @@ struct IslandView: View {
         private var border: some View {
             ZStack {
                 notchShape
-                    .fill(.black.opacity(0.96))
+                    .fill(.black)
+                    .overlay {
+                        notchShape
+                            .stroke(.white.opacity(0.08), lineWidth: 0.8 * metrics.scale)
+                    }
 
-                notchShape
-                    .stroke(.black.opacity(0.94), lineWidth: 2.2 * metrics.scale)
-
-                notchShape
-                    .stroke(.white.opacity(0.16), lineWidth: 0.8 * metrics.scale)
-                    .blendMode(.screen)
-
-                if isActive || needsAttention {
-                    ActivityDotTrail(metrics: metrics, color: activityColor, reduceMotion: reduceMotion)
-                        .clipShape(notchShape)
+                if let activityState {
+                    switch activityState {
+                    case .running:
+                        ActivityDotTrail(
+                            metrics: metrics,
+                            color: SessionStateColor.accent(for: activityState),
+                            reduceMotion: reduceMotion,
+                            topClearance: topColorClearance
+                            )
+                            .mask(notchColoredRegion)
+                    case .waitingForInput, .waitingForPermission:
+                        notchColoredEdgeShape
+                            .stroke(
+                                SessionStateColor.accent(for: activityState).opacity(0.74),
+                                style: StrokeStyle(lineWidth: waitingBorderWidth, lineCap: .butt, lineJoin: .round)
+                            )
+                            .mask(notchColoredRegion)
+                    case .done, .unknown:
+                        EmptyView()
+                    }
                 }
             }
             .frame(width: metrics.notchWidth, height: metrics.notchHeight)
@@ -173,11 +284,16 @@ struct IslandView: View {
             MacNotchShape(cornerRadius: metrics.notchHeight * 0.46)
         }
 
-        private var activityColor: Color {
-            if needsAttention {
-                return .orange
-            }
-            return Color(red: 0.34, green: 0.62, blue: 1.0)
+        private var notchColoredEdgeShape: MacNotchColoredEdgeShape {
+            MacNotchColoredEdgeShape(cornerRadius: metrics.notchHeight * 0.46, topClearance: topColorClearance)
+        }
+
+        private var notchColoredRegion: MacNotchColoredRegion {
+            MacNotchColoredRegion(cornerRadius: metrics.notchHeight * 0.46, topClearance: topColorClearance)
+        }
+
+        private var topColorClearance: CGFloat {
+            max(2, 2 * metrics.scale)
         }
     }
 
@@ -185,31 +301,31 @@ struct IslandView: View {
         let metrics: IslandMetrics
         let color: Color
         let reduceMotion: Bool
+        let topClearance: CGFloat
 
         var body: some View {
             TimelineView(.animation) { timeline in
                 let motion = reduceMotion ? (position: 0.5, direction: 1.0) : pingPong(timeline.date.timeIntervalSinceReferenceDate * 0.42)
+                let dotSize = 10 * metrics.scale
+                let edgeClearance = topClearance + dotSize / 2
 
                 ZStack {
                     ForEach(1..<42, id: \.self) { index in
                         let fraction = CGFloat(index) / 41
                         let trailPosition = reflected(motion.position - motion.direction * fraction * 0.18)
-                        let point = pointOnNotchEdge(progress: trailPosition)
+                        let point = pointOnNotchEdge(progress: trailPosition, topClearance: edgeClearance)
                         let opacity = pow(1 - fraction, 1.85) * 0.48
 
-                        Capsule()
+                        RoundedRectangle(cornerRadius: dotSize * 0.25, style: .continuous)
                             .fill(color.opacity(opacity))
-                            .frame(
-                                width: 7.4 * metrics.scale,
-                                height: 4.2 * metrics.scale
-                            )
+                            .frame(width: dotSize, height: dotSize)
                             .offset(x: point.x, y: point.y)
                     }
 
-                    let point = pointOnNotchEdge(progress: motion.position)
-                    RoundedRectangle(cornerRadius: 2.5 * metrics.scale, style: .continuous)
+                    let point = pointOnNotchEdge(progress: motion.position, topClearance: edgeClearance)
+                    RoundedRectangle(cornerRadius: dotSize * 0.25, style: .continuous)
                         .fill(color)
-                        .frame(width: 10 * metrics.scale, height: 10 * metrics.scale)
+                        .frame(width: dotSize, height: dotSize)
                         .shadow(color: color.opacity(0.75), radius: 6 * metrics.scale)
                         .offset(x: point.x, y: point.y)
                 }
@@ -235,11 +351,12 @@ struct IslandView: View {
             return phase <= 1 ? phase : 2 - phase
         }
 
-        private func pointOnNotchEdge(progress: CGFloat) -> CGPoint {
+        private func pointOnNotchEdge(progress: CGFloat, topClearance: CGFloat) -> CGPoint {
             let width = metrics.notchWidth
             let height = metrics.notchHeight
             let radius = min(height * 0.48, width / 2, height)
-            let verticalLength = max(0, height - radius)
+            let edgeTopY = min(height - radius, max(0, topClearance))
+            let verticalLength = max(0, height - radius - edgeTopY)
             let arcLength = (.pi / 2) * radius
             let bottomLength = max(1, width - radius * 2)
             let totalLength = verticalLength * 2 + arcLength * 2 + bottomLength
@@ -249,7 +366,7 @@ struct IslandView: View {
             if distance < verticalLength {
                 local = CGPoint(
                     x: 0,
-                    y: distance
+                    y: edgeTopY + distance
                 )
             } else if distance < verticalLength + arcLength {
                 let arcDistance = distance - verticalLength
@@ -296,23 +413,62 @@ struct IslandView: View {
         return .timingCurve(0.22, 1, 0.36, 1, duration: 0.22)
     }
 
-    private func rowTransition(metrics: IslandMetrics) -> AnyTransition {
-        guard !reduceMotion else {
-            return .identity
+    private var doneRowTransition: AnyTransition {
+        if reduceMotion {
+            return .opacity
         }
 
-        let verticalTravel = max(28, metrics.rowHeight * 0.9)
         return .asymmetric(
-            insertion: .offset(y: -verticalTravel).combined(with: .opacity),
-            removal: .offset(y: -verticalTravel).combined(with: .opacity)
+            insertion: .move(edge: .top).combined(with: .opacity),
+            removal: .offset(y: -18).combined(with: .opacity)
         )
     }
 
+    private var listRevealAnimation: Animation? {
+        guard !reduceMotion else {
+            return nil
+        }
+
+        return .timingCurve(0.2, 0.8, 0.2, 1, duration: 0.22)
+    }
+
+    private func attentionFadeAnimation(dimmed: Bool) -> Animation? {
+        guard !reduceMotion else {
+            return nil
+        }
+
+        let base = Animation.easeInOut(duration: 0.18)
+        return dimmed ? base.delay(0.2) : base
+    }
+
     private func withOptionalAnimation(_ changes: @escaping () -> Void) {
-        if let rowAnimation {
-            withAnimation(rowAnimation, changes)
+        if let listRevealAnimation {
+            withAnimation(listRevealAnimation, changes)
         } else {
             changes()
+        }
+    }
+
+    private func showList() {
+        guard !isListMounted else {
+            return
+        }
+
+        isListMounted = true
+    }
+
+    private func scheduleListUnmount() {
+        guard !reduceMotion else {
+            isListMounted = false
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
+            guard !state.islandHoverState.expandsList else {
+                return
+            }
+
+            isListMounted = false
         }
     }
 }
@@ -342,217 +498,558 @@ private struct MacNotchShape: Shape {
     }
 }
 
+private struct MacNotchColoredEdgeShape: Shape {
+    let cornerRadius: CGFloat
+    let topClearance: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let radius = min(cornerRadius, rect.width / 2, rect.height)
+        let topY = min(rect.maxY - radius, rect.minY + max(0, topClearance))
+        var path = Path()
+
+        path.move(to: CGPoint(x: rect.maxX, y: topY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - radius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX - radius, y: rect.maxY),
+            control: CGPoint(x: rect.maxX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: rect.maxY - radius),
+            control: CGPoint(x: rect.minX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX, y: topY))
+
+        return path
+    }
+}
+
+private struct MacNotchColoredRegion: Shape {
+    let cornerRadius: CGFloat
+    let topClearance: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let radius = min(cornerRadius, rect.width / 2, rect.height)
+        let topY = min(rect.maxY - radius, rect.minY + max(0, topClearance))
+        var path = Path()
+
+        path.move(to: CGPoint(x: rect.minX, y: topY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: topY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - radius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX - radius, y: rect.maxY),
+            control: CGPoint(x: rect.maxX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: rect.maxY - radius),
+            control: CGPoint(x: rect.minX, y: rect.maxY)
+        )
+        path.closeSubpath()
+
+        return path
+    }
+}
+
 private struct SessionBubbleRow: View {
     let session: AgentSession
     let metrics: IslandMetrics
     let animatedIcon: Bool
     let glassID: String
     let glassNamespace: Namespace.ID
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         if #available(macOS 26.0, *) {
             rowContent
-                .padding(.horizontal, metrics.horizontalPadding)
-                .frame(width: metrics.rowWidth, height: metrics.rowHeight)
-                .contentShape(rowShape)
-                .glassEffect(.regular.tint(statusGlassTint).interactive(), in: rowShape)
-                .glassEffectID(glassID, in: glassNamespace)
-                .shadow(color: .black.opacity(0.10), radius: 7 * metrics.scale, x: 0, y: 4 * metrics.scale)
-        } else {
-            rowContent
-                .padding(.horizontal, metrics.horizontalPadding)
+                .padding(.leading, metrics.horizontalPadding)
                 .frame(width: metrics.rowWidth, height: metrics.rowHeight)
                 .background {
-                    rowShape
-                        .fill(.ultraThinMaterial)
-                        .overlay {
-                            rowShape
-                                .fill(Color.black.opacity(0.26))
-                        }
-                        .overlay {
-                            rowShape
-                                .fill(rowTint)
-                        }
+                    liquidGlassRowDecoration
                 }
-                .glassStroke(rowShape, tint: strokeTint, lineWidth: 1)
-                .shadow(color: .black.opacity(0.18), radius: 8 * metrics.scale, x: 0, y: 4 * metrics.scale)
+                .contentShape(rowShape)
+                .glassEffect(.regular.tint(appearance.glassTint), in: rowShape)
+                .glassEffectID(glassID, in: glassNamespace)
+                .overlay {
+                    RowActivityBorder(
+                        state: session.state,
+                        color: appearance.accent,
+                        metrics: metrics,
+                        animated: animatedIcon,
+                        reduceMotion: reduceMotion
+                    )
+                }
+        } else {
+            rowContent
+                .padding(.leading, metrics.horizontalPadding)
+                .frame(width: metrics.rowWidth, height: metrics.rowHeight)
+                .background {
+                    fallbackRowDecoration
+                }
+                .contentShape(rowShape)
+                .overlay {
+                    RowActivityBorder(
+                        state: session.state,
+                        color: appearance.accent,
+                        metrics: metrics,
+                        animated: animatedIcon,
+                        reduceMotion: reduceMotion
+                    )
+                }
         }
     }
 
     private var rowContent: some View {
-        HStack(spacing: 8 * metrics.scale) {
-            HarnessOrbView(harness: session.harness, metrics: metrics, animated: animatedIcon)
+        ZStack(alignment: .trailing) {
+            HStack(spacing: 9 * metrics.scale) {
+                iconWell
 
-            Text(session.title)
-                .font(.system(size: metrics.titleFontSize, weight: .semibold, design: .rounded))
-                .foregroundStyle(titleForeground)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                Text(displayTitle)
+                    .font(.system(size: metrics.titleFontSize, weight: appearance.titleWeight, design: .rounded))
+                    .foregroundStyle(titleForeground)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 1 * metrics.scale)
+                    .padding(.trailing, statusSegmentWidth + 12 * metrics.scale)
+            }
 
-            Text(statusText)
-                .font(.system(size: metrics.detailFontSize, weight: .medium, design: .rounded))
-                .foregroundStyle(detailForeground)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
+            HStack(spacing: 5 * metrics.scale) {
+                statusIconView
+
+                elapsedTimerView
+                    .foregroundStyle(statusAccent.opacity(0.94))
+            }
+            .frame(width: statusSegmentWidth, height: metrics.rowHeight)
         }
     }
 
-    private var rowShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous)
+    private var iconWell: some View {
+        HarnessOrbView(
+            harness: session.harness,
+            metrics: metrics,
+            appearance: appearance
+        )
+        .frame(width: metrics.rowHeight - 4 * metrics.scale, height: metrics.rowHeight - 4 * metrics.scale)
     }
 
-    private var titleForeground: Color {
-        if #available(macOS 26.0, *) {
-            .primary
-        } else {
-            .white.opacity(0.94)
+    private var elapsedTimerView: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { timeline in
+            Text(formattedElapsed(at: timeline.date))
+                .font(.system(size: max(10, metrics.detailFontSize - 0.45 * metrics.scale), weight: .heavy, design: .monospaced))
+                .frame(width: 28 * metrics.scale, height: metrics.rowHeight, alignment: .center)
         }
     }
 
-    private var detailForeground: Color {
-        if #available(macOS 26.0, *) {
-            .secondary
-        } else {
-            .white.opacity(0.84)
-        }
+    private var statusIconView: some View {
+        Image(systemName: statusSymbolName)
+            .font(.system(size: metrics.detailFontSize + 0.65 * metrics.scale, weight: .black, design: .rounded))
+            .foregroundStyle(statusAccent)
+            .frame(width: 14 * metrics.scale, height: metrics.rowHeight, alignment: .center)
     }
 
-    private var statusGlassTint: Color {
-        switch session.state {
-        case .waitingForPermission:
-            .orange.opacity(0.12)
-        case .waitingForInput:
-            Color(red: 0.25, green: 0.64, blue: 1.0).opacity(0.11)
-        case .done:
-            .green.opacity(0.08)
-        case .running:
-            Color(red: 0.38, green: 0.75, blue: 1.0).opacity(0.09)
-        case .unknown:
-            .white.opacity(0.04)
-        }
+    private var liquidGlassRowDecoration: some View {
+        rowShape
+            .fill(appearance.surfaceWash)
+            .overlay {
+                rowShape
+                    .fill(rowTintSweep)
+                    .blendMode(.screen)
+            }
+            .overlay {
+                if session.state != .running {
+                    rowShape
+                        .stroke(
+                            LinearGradient(
+                                colors: [
+                                    appearance.borderAccent.opacity(0.98),
+                                    .white.opacity(0.12),
+                                    appearance.borderAccent.opacity(0.72)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1.2 * metrics.scale
+                        )
+                        .blendMode(.screen)
+                }
+            }
+            .overlay(alignment: .top) {
+                RoundedRectangle(cornerRadius: 4 * metrics.scale, style: .continuous)
+                    .fill(.white.opacity(0.18))
+                    .frame(width: metrics.rowWidth * 0.56, height: max(1, 1.3 * metrics.scale))
+                    .blur(radius: 1.8 * metrics.scale)
+                    .offset(y: 1.3 * metrics.scale)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                RoundedRectangle(cornerRadius: metrics.rowHeight * 0.22, style: .continuous)
+                    .fill(.white.opacity(0.045))
+                    .frame(width: metrics.rowWidth * 0.34, height: metrics.rowHeight * 0.32)
+                    .blur(radius: 11 * metrics.scale)
+                    .offset(x: -20 * metrics.scale, y: 6 * metrics.scale)
+            }
+            .overlay(alignment: .leading) {
+                RoundedRectangle(cornerRadius: metrics.rowHeight * 0.18, style: .continuous)
+                    .fill(.white.opacity(0.025))
+                    .frame(width: metrics.rowWidth * 0.24, height: metrics.rowHeight * 0.72)
+                    .blur(radius: 10 * metrics.scale)
+                    .offset(x: 18 * metrics.scale)
+            }
+            .overlay {
+                if session.state != .running {
+                    rowShape
+                        .stroke(.black.opacity(0.42), lineWidth: 0.8 * metrics.scale)
+                }
+            }
     }
 
-    private var rowTint: LinearGradient {
+    private var fallbackRowDecoration: some View {
+        rowShape
+            .fill(appearance.surfaceWash)
+            .overlay {
+                rowShape
+                    .fill(rowTintSweep.opacity(0.66))
+            }
+            .overlay {
+                if session.state != .running {
+                    rowShape
+                        .stroke(appearance.borderAccent.opacity(0.78), lineWidth: 1.1 * metrics.scale)
+                }
+            }
+            .overlay {
+                if session.state != .running {
+                    rowShape
+                        .stroke(.black.opacity(0.42), lineWidth: 0.8 * metrics.scale)
+                }
+            }
+    }
+
+    private var rowTintSweep: LinearGradient {
         LinearGradient(
             colors: [
-                statusColor.opacity(0.16),
-                .white.opacity(0.10),
-                .black.opacity(0.12)
+                .white.opacity(0.015),
+                appearance.borderAccent.opacity(0.05),
+                .white.opacity(0.01)
             ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
+            startPoint: .leading,
+            endPoint: .trailing
         )
     }
 
-    private var strokeTint: Color {
+    private var rowShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: metrics.rowHeight * 0.28, style: .continuous)
+    }
+
+    private var statusSegmentWidth: CGFloat {
+        82 * metrics.scale
+    }
+
+    private var titleForeground: Color {
+        .white.opacity(appearance.titleOpacity)
+    }
+
+    private func formattedElapsed(at now: Date) -> String {
+        let start = session.startedAt ?? session.updatedAt
+        let end: Date
+
         switch session.state {
-        case .waitingForPermission:
-            .orange.opacity(0.70)
-        case .waitingForInput:
-            Color(red: 0.25, green: 0.64, blue: 1.0).opacity(0.70)
         case .done:
-            .green.opacity(0.55)
+            end = session.updatedAt
+        case .running, .waitingForInput, .waitingForPermission, .unknown:
+            end = now
+        }
+
+        let elapsed = max(0, Int(end.timeIntervalSince(start)))
+        if elapsed < 100 {
+            return String(format: "%02ds", elapsed)
+        }
+
+        let minutes = min(99, elapsed / 60)
+        if minutes < 100 && elapsed < 6000 {
+            return String(format: "%02dm", minutes)
+        }
+
+        let hours = min(99, elapsed / 3600)
+        return String(format: "%02dh", hours)
+    }
+
+    private var statusAccent: Color {
+        switch session.state {
         case .running:
-            .white.opacity(0.38)
+            return Color(red: 1.00, green: 0.56, blue: 0.09)
+        case .waitingForInput:
+            return Color(red: 0.18, green: 0.80, blue: 1.00)
+        case .waitingForPermission:
+            return Color(red: 1.00, green: 0.22, blue: 0.34)
+        case .done:
+            return Color(red: 0.24, green: 0.94, blue: 0.44)
         case .unknown:
-            .white.opacity(0.28)
+            return .white.opacity(0.07)
         }
     }
 
-    private var statusColor: Color {
-        switch session.state {
-        case .waitingForPermission:
-            .orange
-        case .waitingForInput:
-            Color(red: 0.25, green: 0.64, blue: 1.0)
-        case .done:
-            .green
-        case .running:
-            Color(red: 0.38, green: 0.75, blue: 1.0)
-        case .unknown:
-            .white
-        }
+    private var appearance: SessionRowAppearance {
+        SessionRowAppearance(state: session.state)
     }
 
-    private var statusText: String {
+    private var displayTitle: String {
+        session.prompt ?? session.title
+    }
+
+    private var statusSymbolName: String {
         switch session.state {
         case .running:
-            "Working"
+            "terminal"
         case .done:
-            "Done"
+            "checkmark"
         case .waitingForInput:
-            "Needs input"
+            "questionmark"
         case .waitingForPermission:
-            "Needs permission"
+            "hand.raised.fill"
         case .unknown:
-            "Unknown"
+            "ellipsis"
         }
     }
 }
 private struct HarnessOrbView: View {
     let harness: AgentHarness
     let metrics: IslandMetrics
-    let animated: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let appearance: SessionRowAppearance
 
     var body: some View {
-        ZStack {
-            AgentGlyphView(harness: harness)
-                .frame(width: metrics.iconSize, height: metrics.iconSize)
-
-            TimelineView(.animation) { timeline in
-                let angle = animated && !reduceMotion
-                    ? timeline.date.timeIntervalSinceReferenceDate * 120
-                    : 0
-
-                Circle()
-                    .stroke(
-                        AngularGradient(
-                            colors: [
-                                harnessColor.opacity(0.15),
-                                harnessColor,
-                                .white.opacity(0.88),
-                                harnessColor.opacity(0.15)
-                            ],
-                            center: .center
-                        ),
-                        lineWidth: 2 * metrics.scale
-                    )
-                    .rotationEffect(.degrees(angle))
-            }
-        }
+        AgentGlyphView(
+            harness: harness,
+            glyphColor: appearance.iconGlyph
+        )
         .frame(width: metrics.iconSize, height: metrics.iconSize)
+        .scaleEffect(appearance.iconScale)
+    }
+}
+
+private struct RowActivityBorder: View {
+    let state: SessionState
+    let color: Color
+    let metrics: IslandMetrics
+    let animated: Bool
+    let reduceMotion: Bool
+
+    private var rowShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: metrics.rowHeight * 0.28, style: .continuous)
     }
 
-    private var harnessColor: Color {
-        switch harness {
-        case .opencode:
-            Color(red: 0.10, green: 0.68, blue: 0.50)
-        case .codex:
-            Color(red: 0.35, green: 0.49, blue: 0.95)
-        case .claude:
-            Color(red: 0.88, green: 0.38, blue: 0.20)
-        case .copilot:
-            Color(red: 0.23, green: 0.72, blue: 0.36)
-        case .pi:
-            Color(red: 0.62, green: 0.46, blue: 0.91)
-        case .atoll:
-            Color(red: 0.12, green: 0.58, blue: 0.78)
+    private var activityInset: CGFloat {
+        1.6 * metrics.scale
+    }
+
+    private var waitingBorderWidth: CGFloat {
+        0.9 * metrics.scale
+    }
+
+    var body: some View {
+        switch state {
+        case .running:
+            ZStack {
+                rowShape
+                    .stroke(color.opacity(0.22), lineWidth: waitingBorderWidth)
+                    .frame(width: metrics.rowWidth, height: metrics.rowHeight)
+
+                TimelineView(.animation) { timeline in
+                    let head = reduceMotion ? CGFloat(0.5) : looped(timeline.date.timeIntervalSinceReferenceDate * 0.27)
+                    let dotSize = 5.0 * metrics.scale
+                    let trailCount = 96
+                    let trailSpan: CGFloat = 0.15
+
+                    ZStack {
+                        ForEach(1...trailCount, id: \.self) { index in
+                            let fraction = CGFloat(index) / CGFloat(trailCount)
+                            let progress = looped(head - fraction * trailSpan)
+                            let point = pointOnRowEdge(progress: progress, inset: activityInset)
+                            let tailOpacity = pow(1 - fraction, 1.8) * 0.48
+
+                            RoundedRectangle(cornerRadius: dotSize * 0.25, style: .continuous)
+                                .fill(color.opacity(tailOpacity))
+                                .frame(width: dotSize, height: dotSize)
+                                .offset(x: point.x, y: point.y)
+                        }
+
+                        let point = pointOnRowEdge(progress: head, inset: activityInset)
+                        RoundedRectangle(cornerRadius: dotSize * 0.25, style: .continuous)
+                            .fill(color)
+                            .frame(width: dotSize, height: dotSize)
+                            .shadow(color: color.opacity(0.78), radius: 4 * metrics.scale)
+                            .offset(x: point.x, y: point.y)
+                    }
+                    .frame(width: metrics.rowWidth, height: metrics.rowHeight)
+                    .mask {
+                        rowShape
+                            .inset(by: activityInset)
+                            .stroke(.white, lineWidth: waitingBorderWidth)
+                            .frame(width: metrics.rowWidth, height: metrics.rowHeight)
+                    }
+                }
+            }
+        case .waitingForInput, .waitingForPermission:
+            rowShape
+                .stroke(color.opacity(0.28), lineWidth: waitingBorderWidth)
+                .frame(width: metrics.rowWidth, height: metrics.rowHeight)
+        case .done:
+            rowShape
+                .stroke(color.opacity(0.20), lineWidth: waitingBorderWidth)
+                .frame(width: metrics.rowWidth, height: metrics.rowHeight)
+        case .unknown:
+            rowShape
+                .stroke(color.opacity(0.14), lineWidth: waitingBorderWidth)
+                .frame(width: metrics.rowWidth, height: metrics.rowHeight)
+        }
+    }
+
+    private func pointOnRowEdge(progress: CGFloat, inset: CGFloat) -> CGPoint {
+        let width = max(1, metrics.rowWidth - inset * 2)
+        let height = max(1, metrics.rowHeight - inset * 2)
+        let radius = min(max(0, metrics.rowHeight * 0.28 - inset), width / 2, height / 2)
+        let straightWidth = max(0, width - radius * 2)
+        let straightHeight = max(0, height - radius * 2)
+        let arcLength = CGFloat.pi / 2 * radius
+        let totalLength = straightWidth * 2 + straightHeight * 2 + arcLength * 4
+        var distance = reflected(progress) * totalLength
+
+        let rect = CGRect(x: -width / 2, y: -height / 2, width: width, height: height)
+
+        if distance < straightWidth {
+            return CGPoint(x: rect.minX + radius + distance, y: rect.minY)
+        }
+        distance -= straightWidth
+
+        if distance < arcLength {
+            let angle = -CGFloat.pi / 2 + distance / arcLength * CGFloat.pi / 2
+            return CGPoint(x: rect.maxX - radius + cos(angle) * radius, y: rect.minY + radius + sin(angle) * radius)
+        }
+        distance -= arcLength
+
+        if distance < straightHeight {
+            return CGPoint(x: rect.maxX, y: rect.minY + radius + distance)
+        }
+        distance -= straightHeight
+
+        if distance < arcLength {
+            let angle = distance / arcLength * CGFloat.pi / 2
+            return CGPoint(x: rect.maxX - radius + cos(angle) * radius, y: rect.maxY - radius + sin(angle) * radius)
+        }
+        distance -= arcLength
+
+        if distance < straightWidth {
+            return CGPoint(x: rect.maxX - radius - distance, y: rect.maxY)
+        }
+        distance -= straightWidth
+
+        if distance < arcLength {
+            let angle = CGFloat.pi / 2 + distance / arcLength * CGFloat.pi / 2
+            return CGPoint(x: rect.minX + radius + cos(angle) * radius, y: rect.maxY - radius + sin(angle) * radius)
+        }
+        distance -= arcLength
+
+        if distance < straightHeight {
+            return CGPoint(x: rect.minX, y: rect.maxY - radius - distance)
+        }
+        distance -= straightHeight
+
+        let angle = CGFloat.pi + distance / arcLength * CGFloat.pi / 2
+        return CGPoint(x: rect.minX + radius + cos(angle) * radius, y: rect.minY + radius + sin(angle) * radius)
+    }
+
+    private func looped(_ value: TimeInterval) -> CGFloat {
+        var phase = CGFloat(value.truncatingRemainder(dividingBy: 1))
+        if phase < 0 {
+            phase += 1
+        }
+        return phase
+    }
+
+    private func reflected(_ value: CGFloat) -> CGFloat {
+        var phase = value.truncatingRemainder(dividingBy: 1)
+        if phase < 0 {
+            phase += 1
+        }
+        return phase
+    }
+
+    private var statusSegmentWidth: CGFloat {
+        switch state {
+        case .waitingForInput:
+            122 * metrics.scale
+        case .waitingForPermission:
+            132 * metrics.scale
+        case .running, .done:
+            84 * metrics.scale
+        case .unknown:
+            92 * metrics.scale
         }
     }
 }
 
-private extension View {
-    func glassStroke<S: Shape>(_ shape: S, tint: Color, lineWidth: CGFloat) -> some View {
-        overlay {
-            shape
-                .stroke(.white.opacity(0.42), lineWidth: lineWidth)
-                .blendMode(.screen)
-        }
-        .overlay {
-            shape
-                .stroke(tint, lineWidth: max(1, lineWidth))
+private struct SessionRowAppearance {
+    let surfaceWash: Color
+    let accent: Color
+    let borderAccent: Color
+    let iconGlyph: Color
+    let titleOpacity: Double
+    let iconScale: CGFloat
+    let titleWeight: Font.Weight
+    let glassTint: Color
+    let accentGlowOpacity: Double
+
+    init(state: SessionState) {
+        switch state {
+        case .running:
+            surfaceWash = .black
+            accent = SessionStateColor.working
+            borderAccent = SessionStateColor.working
+            iconGlyph = .white
+            titleOpacity = 0.95
+            iconScale = 1
+            titleWeight = .semibold
+            glassTint = .black.opacity(0.96)
+            accentGlowOpacity = 0.16
+        case .done:
+            surfaceWash = .black
+            accent = SessionStateColor.done
+            borderAccent = SessionStateColor.done
+            iconGlyph = accent
+            titleOpacity = 0.78
+            iconScale = 0.94
+            titleWeight = .medium
+            glassTint = .black.opacity(0.96)
+            accentGlowOpacity = 0.08
+        case .waitingForInput:
+            surfaceWash = .black
+            accent = SessionStateColor.question
+            borderAccent = SessionStateColor.question
+            iconGlyph = accent
+            titleOpacity = 1
+            iconScale = 1.02
+            titleWeight = .bold
+            glassTint = .black.opacity(0.96)
+            accentGlowOpacity = 0.10
+        case .waitingForPermission:
+            surfaceWash = .black
+            accent = SessionStateColor.permission
+            borderAccent = SessionStateColor.permission
+            iconGlyph = accent
+            titleOpacity = 1
+            iconScale = 1.02
+            titleWeight = .bold
+            glassTint = .black.opacity(0.96)
+            accentGlowOpacity = 0.10
+        case .unknown:
+            surfaceWash = .black
+            accent = .white.opacity(0.52)
+            borderAccent = .white.opacity(0.52)
+            iconGlyph = .white.opacity(0.72)
+            titleOpacity = 0.82
+            iconScale = 0.96
+            titleWeight = .medium
+            glassTint = .black.opacity(0.96)
+            accentGlowOpacity = 0.10
         }
     }
 }

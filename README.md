@@ -7,7 +7,19 @@ Supported scanners:
 - OpenCode
 - OpenAI Codex CLI / Codex app local sessions
 - Claude Code
+- Google Gemini CLI
+- Cursor Agent
+- Factory Droid
+- Qoder
+- Qwen Code
+- Kimi Code
+- DeepSeek CLI
 - GitHub Copilot CLI
+- CodeBuddy
+- Kiro
+- Hermes
+- Amp
+- Pi Agent
 
 Atoll reads local session stores and uses process/lock-file heuristics to distinguish recent running sessions, completed sessions, sessions waiting for user input, and sessions waiting for permission approval.
 

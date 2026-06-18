@@ -1,9 +1,16 @@
 import Darwin
 import Foundation
 
+public enum AgentSessionScanMode: Sendable {
+    case allSources
+    case hookEventsOnly
+}
+
 public final class AgentSessionScanner: Sendable {
     private let homeDirectory: URL
     private let enableCLIProbes: Bool
+    private let scanMode: AgentSessionScanMode
+    private let atollFrameNotBefore: Date?
     private let processProvider: @Sendable () -> [RunningProcess]
     private let maxSessionsPerHarness = 24
     private let openCodeTailEventsPerSession = 64
@@ -12,15 +19,21 @@ public final class AgentSessionScanner: Sendable {
         var state: SessionState
         var updatedAt: Date
         var confidence: SessionConfidence
+        var prompt: String?
+        var lastToolCall: String?
     }
 
     public init(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         enableCLIProbes: Bool = true,
+        scanMode: AgentSessionScanMode = .allSources,
+        atollFrameNotBefore: Date? = nil,
         processProvider: @escaping @Sendable () -> [RunningProcess] = { ProcessSnapshot.capture() }
     ) {
         self.homeDirectory = homeDirectory
         self.enableCLIProbes = enableCLIProbes
+        self.scanMode = scanMode
+        self.atollFrameNotBefore = atollFrameNotBefore
         self.processProvider = processProvider
     }
 
@@ -28,11 +41,20 @@ public final class AgentSessionScanner: Sendable {
         let processes = processProvider()
         var sessions: [AgentSession] = []
 
-        sessions += scanOpenCode(processes: processes)
-        sessions += scanCodex(processes: processes)
-        sessions += scanClaude(processes: processes)
-        sessions += scanCopilot(processes: processes)
-        sessions += scanPi(processes: processes)
+        switch scanMode {
+        case .allSources:
+            sessions += scanOpenCode(processes: processes)
+            sessions += scanCodex(processes: processes)
+            sessions += scanClaude(processes: processes)
+            sessions += scanCopilot(processes: processes)
+            sessions += scanPi(processes: processes)
+        case .hookEventsOnly:
+            sessions += scanOpenCodeHookEvents(processes: processes)
+            sessions += scanCodexHookEvents(processes: processes)
+            sessions += scanClaudeHookEvents(processes: processes)
+            sessions += scanCopilotHookEvents(processes: processes)
+            sessions += scanPiHookEvents(processes: processes)
+        }
         sessions += scanAtollFrames(processes: processes)
 
         return deduplicate(sessions)
@@ -44,6 +66,17 @@ public final class AgentSessionScanner: Sendable {
             }
             .prefix(80)
             .map { $0 }
+    }
+
+    private func isAfterHookCutoff(_ date: Date) -> Bool {
+        guard let atollFrameNotBefore else {
+            return true
+        }
+        return date >= atollFrameNotBefore
+    }
+
+    private func isAfterHookCutoff(_ session: AgentSession) -> Bool {
+        isAfterHookCutoff(session.updatedAt)
     }
 
     private func scanOpenCode(processes: [RunningProcess]) -> [AgentSession] {
@@ -70,6 +103,11 @@ public final class AgentSessionScanner: Sendable {
         }
 
         return Array(sessions.prefix(maxSessionsPerHarness))
+    }
+
+    private func scanOpenCodeHookEvents(processes: [RunningProcess]) -> [AgentSession] {
+        scanOpenCodeDatabase(processes: processes)
+            .filter(isAfterHookCutoff)
     }
 
     private func scanOpenCodeDatabase(processes: [RunningProcess]) -> [AgentSession] {
@@ -115,12 +153,15 @@ public final class AgentSessionScanner: Sendable {
             )
             let eventSignal = eventSignals[id]
             let updatedAt = max(databaseUpdatedAt, eventSignal?.updatedAt ?? .distantPast)
+            let activity = SessionActivitySummary.from(objects: [dictionary])
 
             return AgentSession(
                 id: "opencode-\(id)",
                 harness: .opencode,
                 title: title,
                 detail: projectDetail(projectPath) ?? "OpenCode",
+                prompt: eventSignal?.prompt ?? activity.prompt,
+                lastToolCall: eventSignal?.lastToolCall ?? activity.lastToolCall,
                 projectPath: projectPath,
                 model: model,
                 state: eventSignal?.state ?? fallback.0,
@@ -183,22 +224,38 @@ public final class AgentSessionScanner: Sendable {
                 JSONHelpers.string(in: $1, keys: ["seq"]).flatMap(Int.init) ?? 0
         }
 
+        var lifecycleSignal: OpenCodeEventSignal?
+        var latestPrompt: String?
+        var latestToolCall: String?
+
         for row in sortedRows {
             let eventType = JSONHelpers.string(in: row, keys: ["type"])?.lowercased() ?? ""
             let dataText = JSONHelpers.string(in: row, keys: ["data"]) ?? ""
             let dataObject = JSONHelpers.object(from: dataText)
             let eventAt = openCodeEventDate(row: row, dataObject: dataObject)
 
-            if let waitingState = openCodeWaitingState(eventType: eventType, dataText: dataText),
+            let activity = SessionActivitySummary.from(objects: [dataObject ?? row])
+            if latestPrompt == nil {
+                latestPrompt = activity.prompt
+            }
+            if latestToolCall == nil {
+                latestToolCall = activity.lastToolCall
+            }
+
+            if lifecycleSignal == nil,
+               let waitingState = openCodeWaitingState(eventType: eventType, dataText: dataText),
                let eventAt {
-                return OpenCodeEventSignal(
+                lifecycleSignal = OpenCodeEventSignal(
                     state: waitingState,
                     updatedAt: eventAt,
-                    confidence: .live
+                    confidence: .live,
+                    prompt: nil,
+                    lastToolCall: nil
                 )
             }
 
-            guard eventType == "message.updated.1",
+            guard lifecycleSignal == nil,
+                  eventType == "message.updated.1",
                   let dataDictionary = dataObject as? [String: Any],
                   let message = dataDictionary["info"] as? [String: Any],
                   JSONHelpers.string(in: message, keys: ["role"])?.lowercased() == "assistant" else {
@@ -207,23 +264,30 @@ public final class AgentSessionScanner: Sendable {
 
             let messageCompletedAt = JSONHelpers.date(in: message["time"], keys: ["completed"])
             if let messageCompletedAt {
-                return OpenCodeEventSignal(
+                lifecycleSignal = OpenCodeEventSignal(
                     state: .done,
                     updatedAt: messageCompletedAt,
-                    confidence: isFresh(messageCompletedAt, maxAge: 8) ? .live : .historical
+                    confidence: isFresh(messageCompletedAt, maxAge: 8) ? .live : .historical,
+                    prompt: nil,
+                    lastToolCall: nil
                 )
+                continue
             }
 
             if let messageStartedAt = JSONHelpers.date(in: message["time"], keys: ["created"]) ?? eventAt {
-                return OpenCodeEventSignal(
+                lifecycleSignal = OpenCodeEventSignal(
                     state: .running,
                     updatedAt: messageStartedAt,
-                    confidence: .live
+                    confidence: .live,
+                    prompt: nil,
+                    lastToolCall: nil
                 )
             }
         }
 
-        return nil
+        lifecycleSignal?.prompt = latestPrompt
+        lifecycleSignal?.lastToolCall = latestToolCall
+        return lifecycleSignal
     }
 
     private func openCodeWaitingState(eventType: String, dataText: String) -> SessionState? {
@@ -328,6 +392,19 @@ public final class AgentSessionScanner: Sendable {
             .prefix(maxSessionsPerHarness))
     }
 
+    private func scanCodexHookEvents(processes: [RunningProcess]) -> [AgentSession] {
+        let root = homeDirectory.appendingPathComponent(".codex/sessions")
+        return FileUtilities.recentFiles(
+            under: root,
+            extensions: ["jsonl"],
+            maxFiles: maxSessionsPerHarness
+        )
+        .map { file in
+            sessionFromFile(harness: .codex, file: file, processes: processes, fallbackTitle: "Codex session")
+        }
+        .filter(isAfterHookCutoff)
+    }
+
     private func scanCodexDatabase(processes: [RunningProcess]) -> [AgentSession] {
         let database = homeDirectory.appendingPathComponent(".codex/state_5.sqlite")
         guard FileUtilities.isRegularFile(database),
@@ -344,7 +421,7 @@ public final class AgentSessionScanner: Sendable {
             return []
         }
 
-        return rows.compactMap { object in
+        return rows.compactMap { object -> AgentSession? in
             guard let dictionary = object as? [String: Any] else {
                 return nil
             }
@@ -410,12 +487,15 @@ public final class AgentSessionScanner: Sendable {
             modifiedAt: updatedAt,
             processes: processes
         )
+        let activity = SessionActivitySummary.from(objects: [dictionary])
 
         return AgentSession(
             id: "codex-\(id)",
             harness: .codex,
             title: title,
             detail: projectDetail(projectPath) ?? "Codex",
+            prompt: activity.prompt,
+            lastToolCall: activity.lastToolCall,
             projectPath: projectPath,
             model: JSONHelpers.string(in: dictionary, keys: ["model"]),
             state: state,
@@ -439,6 +519,19 @@ public final class AgentSessionScanner: Sendable {
         }
 
         return Array(sessions.prefix(maxSessionsPerHarness))
+    }
+
+    private func scanClaudeHookEvents(processes: [RunningProcess]) -> [AgentSession] {
+        let root = homeDirectory.appendingPathComponent(".claude/projects")
+        return FileUtilities.recentFiles(
+            under: root,
+            extensions: ["jsonl"],
+            maxFiles: maxSessionsPerHarness
+        )
+        .map { file in
+            sessionFromFile(harness: .claude, file: file, processes: processes, fallbackTitle: "Claude Code session")
+        }
+        .filter(isAfterHookCutoff)
     }
 
     private func scanClaudeAgentsCLI(processes: [RunningProcess]) -> [AgentSession] {
@@ -487,12 +580,15 @@ public final class AgentSessionScanner: Sendable {
             let waitingFor = JSONHelpers.string(in: dictionary, keys: ["waitingFor", "waiting_for", "reason"])
             let state = claudeState(rawState: rawState, waitingFor: waitingFor)
             let processID = processes.first { $0.matches(.claude) }?.pid
+            let activity = SessionActivitySummary.from(objects: [dictionary])
 
             return AgentSession(
                 id: "claude-\(id)",
                 harness: .claude,
                 title: title,
                 detail: projectDetail(projectPath) ?? (waitingFor ?? "Claude Code"),
+                prompt: activity.prompt,
+                lastToolCall: activity.lastToolCall,
                 projectPath: projectPath,
                 model: JSONHelpers.string(in: dictionary, keys: ["model", "modelId"]),
                 state: state,
@@ -510,6 +606,10 @@ public final class AgentSessionScanner: Sendable {
             homeDirectory.appendingPathComponent(".copilot/history-session-state")
         ]
 
+        return Array(scanCopilotDirectories(under: roots, processes: processes).prefix(maxSessionsPerHarness))
+    }
+
+    private func scanCopilotDirectories(under roots: [URL], processes: [RunningProcess]) -> [AgentSession] {
         var sessions: [AgentSession] = []
         for root in roots where FileUtilities.existingDirectory(root) {
             let sessionDirectories = FileUtilities.directoryChildren(root)
@@ -530,6 +630,14 @@ public final class AgentSessionScanner: Sendable {
         return Array(sessions.prefix(maxSessionsPerHarness))
     }
 
+    private func scanCopilotHookEvents(processes: [RunningProcess]) -> [AgentSession] {
+        scanCopilotDirectories(
+            under: [homeDirectory.appendingPathComponent(".copilot/session-state")],
+            processes: processes
+        )
+        .filter(isAfterHookCutoff)
+    }
+
     private func scanAtollFrames(processes: [RunningProcess]) -> [AgentSession] {
         let root = homeDirectory.appendingPathComponent(".atoll/sessions")
         return FileUtilities.recentFiles(
@@ -538,26 +646,36 @@ public final class AgentSessionScanner: Sendable {
             maxFiles: maxSessionsPerHarness
         )
         .compactMap { file in
-            let lines = FileUtilities.tailLines(from: file.url, maxLines: 10)
-            let object = lines.compactMap(JSONHelpers.object).last
-                ?? (try? Data(contentsOf: file.url)).flatMap(JSONHelpers.object)
-            guard let object else {
+            let lines = FileUtilities.tailLines(from: file.url, maxLines: 40)
+            let tailObjects = lines.compactMap(JSONHelpers.object)
+            let fullObject = (try? Data(contentsOf: file.url)).flatMap(JSONHelpers.object)
+            let objects = tailObjects.isEmpty ? fullObject.map { [$0] } ?? [] : tailObjects
+            guard let object = objects.last else {
                 return nil
             }
 
-            let harnessRaw = JSONHelpers.string(in: object, keys: ["harness", "agent"]) ?? "atoll"
-            let harness = AgentHarness(rawValue: harnessRaw.lowercased()) ?? .atoll
-            let id = JSONHelpers.string(in: object, keys: ["id", "sessionId", "session_id"]) ?? file.url.deletingPathExtension().lastPathComponent
+            let harnessRaw = JSONHelpers.string(in: objects, keys: ["harness", "agent", "agentName", "agent_name"]) ?? "atoll"
+            let harness = AgentHarness.parse(harnessRaw) ?? .atoll
+            let id = JSONHelpers.string(in: objects, keys: ["id", "sessionId", "session_id", "conversation_id", "thread_id"])
+                ?? file.url.deletingPathExtension().lastPathComponent
             let title = TranscriptSummary.cleanTitle(
-                JSONHelpers.string(in: object, keys: ["title", "summary", "prompt"])
+                JSONHelpers.string(in: objects, keys: ["title", "summary", "prompt", "message"])
             ) ?? "\(harness.displayName) session"
-            let updatedAt = JSONHelpers.date(in: object, keys: ["updatedAt", "updated_at", "timestamp"]) ?? file.modifiedAt
+            let updatedAt = JSONHelpers.date(in: object, keys: ["updatedAt", "updated_at", "timestamp", "time"])
+                ?? JSONHelpers.date(in: objects, keys: ["updatedAt", "updated_at", "timestamp", "time"])
+                ?? file.modifiedAt
+            if !isAfterHookCutoff(updatedAt) {
+                return nil
+            }
             let state = JSONHelpers.string(in: object, keys: ["state", "status"]).flatMap { SessionState(rawValue: $0) }
+                ?? JSONHelpers.string(in: objects, keys: ["state", "status"]).flatMap { SessionState(rawValue: $0) }
             let projectPath = JSONHelpers.string(in: object, keys: ["cwd", "projectPath", "project_path"])
+                ?? JSONHelpers.string(in: objects, keys: ["cwd", "projectPath", "project_path", "workspace", "directory"])
+            let activity = SessionActivitySummary.from(objects: objects)
             let (inferredState, confidence, pid) = SessionClassifier.classify(
                 harness: harness,
-                tailObjects: [object],
-                tailText: JSONHelpers.flatten(object),
+                tailObjects: objects,
+                tailText: objects.map { JSONHelpers.flatten($0) }.joined(separator: " "),
                 modifiedAt: updatedAt,
                 processes: processes
             )
@@ -567,8 +685,10 @@ public final class AgentSessionScanner: Sendable {
                 harness: harness,
                 title: title,
                 detail: projectDetail(projectPath) ?? harness.displayName,
+                prompt: activity.prompt,
+                lastToolCall: activity.lastToolCall,
                 projectPath: projectPath,
-                model: JSONHelpers.string(in: object, keys: ["model", "modelId"]),
+                model: JSONHelpers.string(in: objects, keys: ["model", "modelId", "model_id"]),
                 state: state ?? inferredState,
                 updatedAt: updatedAt,
                 sourcePath: file.url.path,
@@ -580,21 +700,287 @@ public final class AgentSessionScanner: Sendable {
 
     private func scanPi(processes: [RunningProcess]) -> [AgentSession] {
         let root = homeDirectory.appendingPathComponent(".pi/agent/sessions")
+        let toolHints = piToolHints()
+        let fileSessions = FileUtilities.recentFiles(
+            under: root,
+            extensions: ["jsonl"],
+            maxFiles: maxSessionsPerHarness
+        )
+        .map { file in
+            sessionFromFile(
+                harness: .pi,
+                file: file,
+                processes: processes,
+                fallbackTitle: "Pi session",
+                piQuestionToolNames: toolHints.questionTools,
+                piPermissionToolNames: toolHints.permissionTools
+            )
+        }
+
+        guard !fileSessions.isEmpty else {
+            return processBackedSession(harness: .pi, processes: processes)
+        }
+
+        if hasPiNoSessionProcess(processes) {
+            return fileSessions + processBackedSession(harness: .pi, processes: processes)
+        }
+
+        return fileSessions
+    }
+
+    private func scanPiHookEvents(processes: [RunningProcess]) -> [AgentSession] {
+        let root = homeDirectory.appendingPathComponent(".pi/agent/sessions")
+        let toolHints = piToolHints()
         return FileUtilities.recentFiles(
             under: root,
             extensions: ["jsonl"],
             maxFiles: maxSessionsPerHarness
         )
         .map { file in
-            sessionFromFile(harness: .pi, file: file, processes: processes, fallbackTitle: "Pi session")
+            sessionFromFile(
+                harness: .pi,
+                file: file,
+                processes: processes,
+                fallbackTitle: "Pi session",
+                piQuestionToolNames: toolHints.questionTools,
+                piPermissionToolNames: toolHints.permissionTools
+            )
         }
+        .filter(isAfterHookCutoff)
+    }
+
+    private func hasPiNoSessionProcess(_ processes: [RunningProcess]) -> Bool {
+        processes.contains { process in
+            process.matches(.pi)
+                && process.arguments
+                    .lowercased()
+                    .split(whereSeparator: { $0.isWhitespace })
+                    .contains { $0 == "--no-session" }
+        }
+    }
+
+    private func piToolHints() -> (questionTools: Set<String>, permissionTools: Set<String>) {
+        var questionTools: Set<String> = ["ask_user_question", "ask_question", "ask_user"]
+        var permissionTools: Set<String> = ["guardrails:action:prompted"]
+
+        let settingsURL = homeDirectory.appendingPathComponent(".pi/agent/settings.json")
+        guard let data = try? Data(contentsOf: settingsURL),
+              let settings = JSONHelpers.object(from: data) as? [String: Any] else {
+            return (questionTools, permissionTools)
+        }
+
+        let packageValues: [Any]
+        if let arrayValue = settings["packages"] as? [Any] {
+            packageValues = arrayValue
+        } else if let mapValue = settings["packages"] as? [String: Any] {
+            packageValues = Array(mapValue.values)
+        } else {
+            return (questionTools, permissionTools)
+        }
+
+        for packageValue in packageValues {
+            let packageIDs = piPackageIdentifiers(from: packageValue)
+            for packageID in packageIDs {
+                guard let packageURL = piPackageURL(from: packageID) else {
+                    continue
+                }
+                let hints = hints(from: packageURL)
+                questionTools.formUnion(hints.questionTools)
+                permissionTools.formUnion(hints.permissionTools)
+            }
+        }
+
+        return (questionTools, permissionTools)
+    }
+
+    private func piPackageIdentifiers(from value: Any) -> [String] {
+        let rawCandidates: [String] = {
+            if let string = value as? String {
+                return [string]
+            } else if let values = value as? [Any] {
+                return values.flatMap { piPackageIdentifiers(from: $0) }
+            } else if let dictionary = value as? [String: Any] {
+                return [
+                    dictionary["id"] as? String,
+                    dictionary["packageId"] as? String,
+                    dictionary["packageID"] as? String,
+                    dictionary["name"] as? String,
+                    dictionary["package"] as? String,
+                    dictionary["source"] as? String,
+                    dictionary["path"] as? String,
+                    dictionary["npm"] as? String,
+                    dictionary["value"] as? String
+                ].compactMap { $0 }
+            } else {
+                return []
+            }
+        }()
+
+        return rawCandidates.compactMap { candidate in
+            let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+    }
+
+    private func piPackageURL(from packageID: String) -> URL? {
+        let normalizedPackageID = packageID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedPackageID.isEmpty else {
+            return nil
+        }
+
+        if normalizedPackageID.hasPrefix("npm:") {
+            let packagePath = canonicalNpmPackagePath(for: String(normalizedPackageID.dropFirst(4)))
+            return homeDirectory
+                .appendingPathComponent(".pi/agent/npm/node_modules")
+                .appendingPathComponent(packagePath)
+        }
+
+        if normalizedPackageID.hasPrefix("file://"), let url = URL(string: normalizedPackageID), url.isFileURL {
+            return url
+        }
+
+        if normalizedPackageID.hasPrefix("/"), FileUtilities.existingDirectory(URL(fileURLWithPath: normalizedPackageID)) {
+            return URL(fileURLWithPath: normalizedPackageID)
+        }
+
+        return nil
+    }
+
+    private func canonicalNpmPackagePath(for packagePath: String) -> String {
+        if !packagePath.hasPrefix("@") {
+            if let atIndex = packagePath.lastIndex(of: "@") {
+                return String(packagePath[..<atIndex])
+            }
+            return packagePath
+        }
+
+        let components = packagePath.split(separator: "@", omittingEmptySubsequences: false)
+        if components.count > 2 {
+            return components.dropLast().joined(separator: "@")
+        }
+
+        return packagePath
+    }
+
+    private func hints(from packageURL: URL) -> (questionTools: Set<String>, permissionTools: Set<String>) {
+        let packageJSON = packageURL.appendingPathComponent("package.json")
+        guard let packageData = try? Data(contentsOf: packageJSON),
+              let packageObject = JSONHelpers.object(from: packageData) as? [String: Any],
+              let pi = packageObject["pi"] as? [String: Any] else {
+            return ([], [])
+        }
+
+        let extensionValues: [String] = {
+            if let extensionArray = pi["extensions"] as? [Any] {
+                return extensionArray.compactMap { $0 as? String }
+            }
+            if let extensionString = pi["extensions"] as? String {
+                return [extensionString]
+            }
+            if let extensionObject = pi["extensions"] as? [String: Any] {
+                return extensionObject.values.compactMap { $0 as? String }
+            }
+            return []
+        }()
+
+        var questionTools = Set<String>()
+        var permissionTools = Set<String>()
+
+        for extensionValue in extensionValues {
+            let extensionURL = URL(fileURLWithPath: extensionValue, relativeTo: packageURL).standardized
+            let discovered = discoverToolHints(in: extensionURL)
+            questionTools.formUnion(discovered.questionTools)
+            permissionTools.formUnion(discovered.permissionTools)
+        }
+
+        return (questionTools, permissionTools)
+    }
+
+    private func discoverToolHints(in extensionURL: URL) -> (questionTools: Set<String>, permissionTools: Set<String>) {
+        guard let text = try? String(contentsOf: extensionURL) else {
+            return ([], [])
+        }
+
+        let registerPattern = try! NSRegularExpression(
+            pattern: #"registerTool\s*\([^)]*?\bname\s*:\s*['\"]([^'\"]+)['\"]"#,
+            options: [.caseInsensitive, .dotMatchesLineSeparators]
+        )
+        let fallbackPattern = try! NSRegularExpression(
+            pattern: #"\bname\s*:\s*['\"]([^'\"]+)['\"]"#,
+            options: [.caseInsensitive, .dotMatchesLineSeparators]
+        )
+
+        var questionTools = Set<String>()
+        var permissionTools = Set<String>()
+
+        let registerMatches = registerPattern.matches(in: text, options: [], range: NSRange(text.startIndex..., in: text))
+        if !registerMatches.isEmpty {
+            for match in registerMatches where match.numberOfRanges >= 2 {
+                if let range = Range(match.range(at: 1), in: text) {
+                    classifyToolName(String(text[range]), intoQuestionTools: &questionTools, intoPermissionTools: &permissionTools)
+                }
+            }
+        } else {
+            let fallbackMatches = fallbackPattern.matches(in: text, options: [], range: NSRange(text.startIndex..., in: text))
+            for match in fallbackMatches where match.numberOfRanges >= 2 {
+                if let range = Range(match.range(at: 1), in: text) {
+                    classifyToolName(String(text[range]), intoQuestionTools: &questionTools, intoPermissionTools: &permissionTools)
+                }
+            }
+        }
+
+        if text.contains("guardrails:action:prompted")
+            || text.contains("GUARDRAILS_ACTION_PROMPTED_EVENT")
+            || text.contains("GUARDRAILS_ACTION_PROMPTED") {
+            permissionTools.insert("guardrails:action:prompted")
+        }
+
+        return (questionTools, permissionTools)
+    }
+
+    private func classifyToolName(
+        _ rawName: String,
+        intoQuestionTools questionTools: inout Set<String>,
+        intoPermissionTools permissionTools: inout Set<String>
+    ) {
+        let lowered = rawName.lowercased()
+        if lowered.contains("question") || lowered.contains("ask") || lowered.contains("input") {
+            questionTools.insert(rawName)
+        }
+        if lowered.contains("permission") || lowered.contains("approval") || lowered.contains("guardrail") {
+            permissionTools.insert(rawName)
+        }
+    }
+
+    private func processBackedSession(harness: AgentHarness, processes: [RunningProcess]) -> [AgentSession] {
+        let matchingProcesses = processes.filter { $0.matches(harness) }
+        guard let process = matchingProcesses.first else {
+            return []
+        }
+
+        let processCount = matchingProcesses.count
+        return [
+            AgentSession(
+                id: "\(harness.rawValue)-process",
+                harness: harness,
+                title: "\(harness.displayName) session",
+                detail: processCount == 1 ? "Process \(process.pid)" : "\(processCount) processes",
+                state: .running,
+                updatedAt: Date(),
+                sourcePath: "process://\(harness.rawValue)",
+                processID: process.pid,
+                confidence: .live
+            )
+        ]
     }
 
     private func sessionFromFile(
         harness: AgentHarness,
         file: RecentFile,
         processes: [RunningProcess],
-        fallbackTitle: String
+        fallbackTitle: String,
+        piQuestionToolNames: Set<String> = [],
+        piPermissionToolNames: Set<String> = []
     ) -> AgentSession {
         if file.url.pathExtension.lowercased() == "json",
            let data = try? Data(contentsOf: file.url),
@@ -605,7 +991,9 @@ public final class AgentSessionScanner: Sendable {
                 object: object,
                 file: file,
                 processes: processes,
-                fallbackTitle: fallbackTitle
+                fallbackTitle: fallbackTitle,
+                piQuestionToolNames: piQuestionToolNames,
+                piPermissionToolNames: piPermissionToolNames
             )
         }
 
@@ -613,7 +1001,9 @@ public final class AgentSessionScanner: Sendable {
             harness: harness,
             file: file,
             processes: processes,
-            fallbackTitle: fallbackTitle
+            fallbackTitle: fallbackTitle,
+            piQuestionToolNames: piQuestionToolNames,
+            piPermissionToolNames: piPermissionToolNames
         )
     }
 
@@ -622,7 +1012,9 @@ public final class AgentSessionScanner: Sendable {
         object: Any,
         file: RecentFile,
         processes: [RunningProcess],
-        fallbackTitle: String
+        fallbackTitle: String,
+        piQuestionToolNames: Set<String>,
+        piPermissionToolNames: Set<String>
     ) -> AgentSession {
         let id = JSONHelpers.string(
             in: object,
@@ -645,14 +1037,19 @@ public final class AgentSessionScanner: Sendable {
             tailObjects: [object],
             tailText: text,
             modifiedAt: updatedAt,
-            processes: processes
+            processes: processes,
+            piQuestionToolNames: piQuestionToolNames,
+            piPermissionToolNames: piPermissionToolNames
         )
+        let activity = SessionActivitySummary.from(objects: [object])
 
         return AgentSession(
             id: "\(harness.rawValue)-\(id)",
             harness: harness,
             title: title,
             detail: projectDetail(projectPath) ?? harness.displayName,
+            prompt: activity.prompt,
+            lastToolCall: activity.lastToolCall,
             projectPath: projectPath,
             model: JSONHelpers.string(in: object, keys: ["model", "modelId", "model_id"]),
             state: state,
@@ -667,7 +1064,9 @@ public final class AgentSessionScanner: Sendable {
         harness: AgentHarness,
         file: RecentFile,
         processes: [RunningProcess],
-        fallbackTitle: String
+        fallbackTitle: String,
+        piQuestionToolNames: Set<String> = [],
+        piPermissionToolNames: Set<String> = []
     ) -> AgentSession {
         let summary = TranscriptSummary.fromJSONLines(url: file.url, fallbackModifiedAt: file.modifiedAt)
         let id = summary.sessionID ?? file.url.deletingPathExtension().lastPathComponent
@@ -678,7 +1077,9 @@ public final class AgentSessionScanner: Sendable {
             tailObjects: summary.tailObjects,
             tailText: summary.tailText,
             modifiedAt: summary.updatedAt ?? file.modifiedAt,
-            processes: processes
+            processes: processes,
+            piQuestionToolNames: piQuestionToolNames,
+            piPermissionToolNames: piPermissionToolNames
         )
 
         return AgentSession(
@@ -686,6 +1087,8 @@ public final class AgentSessionScanner: Sendable {
             harness: harness,
             title: title,
             detail: projectDetail(projectPath) ?? harness.displayName,
+            prompt: summary.prompt,
+            lastToolCall: summary.lastToolCall,
             projectPath: projectPath,
             model: summary.model,
             state: state,
@@ -711,6 +1114,8 @@ public final class AgentSessionScanner: Sendable {
             : TranscriptSummary(
                 sessionID: sessionID,
                 title: nil,
+                prompt: nil,
+                lastToolCall: nil,
                 projectPath: nil,
                 model: nil,
                 startedAt: nil,
@@ -719,12 +1124,14 @@ public final class AgentSessionScanner: Sendable {
                 tailText: ""
         )
         let workspace = workspaceMetadata(in: directory)
+        let lockPID = copilotLockPID(in: directory, processes: processes)
         let (state, confidence, pid) = SessionClassifier.classify(
             harness: .copilot,
             tailObjects: summary.tailObjects,
             tailText: summary.tailText + " " + workspace.rawText,
             modifiedAt: summary.updatedAt ?? file.modifiedAt,
-            processes: processes
+            processes: processes,
+            lockPID: lockPID
         )
         let title = summary.title ?? workspace.title ?? "Copilot session"
         let projectPath = summary.projectPath ?? workspace.projectPath
@@ -734,6 +1141,8 @@ public final class AgentSessionScanner: Sendable {
             harness: .copilot,
             title: title,
             detail: projectDetail(projectPath) ?? "GitHub Copilot",
+            prompt: summary.prompt,
+            lastToolCall: summary.lastToolCall,
             projectPath: projectPath,
             model: summary.model,
             state: state,
