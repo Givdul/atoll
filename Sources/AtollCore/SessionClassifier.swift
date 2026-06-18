@@ -188,26 +188,28 @@ enum SessionClassifier {
                 return customState
             }
 
-            let flattened = JSONHelpers.flatten(dictionary).lowercased()
-            if isPermissionWaitMarker(flattened) {
-                return .waitingForPermission
-            }
-            if isInputWaitMarker(flattened) {
-                return .waitingForInput
+            if isInputSubmittedMarker(piLifecycleMarkerText(from: dictionary)) {
+                return .running
             }
 
-            guard topLevelString(dictionary["type"])?.lowercased() == "message",
-                  let message = dictionary["message"] as? [String: Any],
+            guard topLevelString(dictionary["type"])?.lowercased() == "message" else {
+                let flattened = JSONHelpers.flatten(dictionary).lowercased()
+                if isPermissionWaitMarker(flattened) {
+                    return .waitingForPermission
+                }
+                if isInputWaitMarker(flattened) {
+                    return .waitingForInput
+                }
+                continue
+            }
+
+            guard let message = dictionary["message"] as? [String: Any],
                   let role = topLevelString(message["role"])?.lowercased() else {
                 continue
             }
 
             switch role {
             case "user":
-                let messageText = JSONHelpers.flatten(message).lowercased()
-                if isInputWaitMarker(messageText) {
-                    return .waitingForInput
-                }
                 return .running
             case "assistant":
                 if let explicitPiState = piAssistantState(
@@ -238,6 +240,17 @@ enum SessionClassifier {
         }
 
         return nil
+    }
+
+    private static func piLifecycleMarkerText(from dictionary: [String: Any]) -> String {
+        [
+            "type", "customType", "custom_type", "event", "eventType", "event_type",
+            "hook", "hookEventName", "hook_event_name", "kind", "name", "action",
+            "category", "state", "status"
+        ]
+        .compactMap { directString(in: dictionary, keys: [$0]) }
+        .joined(separator: " ")
+        .lowercased()
     }
 
     private static func piCustomLifecycleState(from dictionary: [String: Any]) -> SessionState? {
@@ -587,6 +600,20 @@ enum SessionClassifier {
             "askuser",
             "question"
         ].contains { text.contains($0) }
+    }
+
+    private static func isInputSubmittedMarker(_ text: String) -> Bool {
+        let normalized = normalizedIdentifier(text)
+        return [
+            "inputsubmitted",
+            "answersubmitted",
+            "responsesubmitted",
+            "questionanswered",
+            "askuserresponse",
+            "askuseranswer",
+            "inputresponse",
+            "questionresponse"
+        ].contains { normalized.contains($0) }
     }
 
     private static func isRunningMarker(_ text: String) -> Bool {

@@ -499,6 +499,58 @@ final class AgentSessionScannerTests: XCTestCase {
         XCTAssertEqual(sessions[0].state, .waitingForInput)
     }
 
+    func testPiUserAnswerOverridesPriorQuestion() throws {
+        let package = "npm:@pi/ask-user@1.2.3"
+        try writePiPackage(
+            packagePath: package,
+            extensionPaths: ["dist/ask.js": "pi.registerTool({ name: 'ask_user_question', title: 'Ask user' })"]
+        )
+        try writePiSettings(packages: [["id": package]])
+
+        let now = ISO8601DateFormatter().string(from: Date())
+        let directory = tempHome.appendingPathComponent(".pi/agent/sessions/--tmp-example-answer--", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("pi-answer.jsonl")
+        try """
+        {"type":"session","version":3,"id":"pi-answer","timestamp":"\(now)","cwd":"/tmp/example"}
+        {"type":"message","id":"u1","parentId":null,"timestamp":"\(now)","message":{"role":"user","content":"Need help choosing a path","timestamp":\(millisecondsSinceEpoch(offset: -3))}}
+        {"type":"message","id":"a1","parentId":"u1","timestamp":"\(now)","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc1","name":"ask_user_question","arguments":{"question":"Which branch?"}}],"provider":"anthropic","model":"claude-sonnet-4-5","stopReason":"toolUse","timestamp":\(millisecondsSinceEpoch(offset: -2))}}
+        {"type":"message","id":"u2","parentId":"a1","timestamp":"\(now)","message":{"role":"user","content":"Use main for that question.","timestamp":\(millisecondsSinceEpoch(offset: -1))}}
+        """.write(to: file, atomically: true, encoding: .utf8)
+
+        let sessions = testScanner().scan()
+
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions[0].harness, .pi)
+        XCTAssertEqual(sessions[0].state, .running)
+    }
+
+    func testPiInputSubmittedEventOverridesPriorQuestion() throws {
+        let package = "npm:@pi/ask-user@1.2.3"
+        try writePiPackage(
+            packagePath: package,
+            extensionPaths: ["dist/ask.js": "pi.registerTool({ name: 'ask_user_question', title: 'Ask user' })"]
+        )
+        try writePiSettings(packages: [["id": package]])
+
+        let now = ISO8601DateFormatter().string(from: Date())
+        let directory = tempHome.appendingPathComponent(".pi/agent/sessions/--tmp-example-submit--", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("pi-submit.jsonl")
+        try """
+        {"type":"session","version":3,"id":"pi-submit","timestamp":"\(now)","cwd":"/tmp/example"}
+        {"type":"message","id":"u1","parentId":null,"timestamp":"\(now)","message":{"role":"user","content":"Need help choosing a path","timestamp":\(millisecondsSinceEpoch(offset: -3))}}
+        {"type":"message","id":"a1","parentId":"u1","timestamp":"\(now)","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc1","name":"ask_user_question","arguments":{"question":"Which branch?"}}],"provider":"anthropic","model":"claude-sonnet-4-5","stopReason":"toolUse","timestamp":\(millisecondsSinceEpoch(offset: -2))}}
+        {"type":"custom","customType":"input-submitted","data":{"answer":"main"},"id":"s1","parentId":"a1","timestamp":"\(now)"}
+        """.write(to: file, atomically: true, encoding: .utf8)
+
+        let sessions = testScanner().scan()
+
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions[0].harness, .pi)
+        XCTAssertEqual(sessions[0].state, .running)
+    }
+
     func testPiWaitingForPermissionFromGuardrailsPlugin() throws {
         let package = "npm:@pi/guardrails@3.0.0"
         try writePiPackage(
