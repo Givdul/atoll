@@ -97,11 +97,11 @@ enum SessionClassifier {
                 return .waitingForInput
             }
 
-            let topType = topLevelString(dictionary["type"])
+            let topType = JSONHelpers.topLevelString(dictionary["type"])
             let payload = dictionary["payload"] as? [String: Any]
-            let payloadType = topLevelString(payload?["type"])
-            let payloadName = topLevelString(payload?["name"])
-            let functionName = topLevelString(dictionary["name"])
+            let payloadType = JSONHelpers.topLevelString(payload?["type"])
+            let payloadName = JSONHelpers.topLevelString(payload?["name"])
+            let functionName = JSONHelpers.topLevelString(dictionary["name"])
             let combined = [topType, payloadType, payloadName, functionName]
                 .compactMap { $0?.lowercased() }
                 .joined(separator: " ")
@@ -153,10 +153,10 @@ enum SessionClassifier {
     private static func codexLifecycleMarkerTexts(from dictionary: [String: Any]) -> [String] {
         var texts = [codexDirectMarkerText(in: dictionary)]
 
-        if let payload = directDictionary(in: dictionary, keys: ["payload"]) {
+        if let payload = JSONHelpers.directDictionary(in: dictionary, keys: ["payload"]) {
             texts.append(codexDirectMarkerText(in: payload))
 
-            if let function = directDictionary(in: payload, keys: ["function"]) {
+            if let function = JSONHelpers.directDictionary(in: payload, keys: ["function"]) {
                 texts.append(codexDirectMarkerText(in: function))
             }
         }
@@ -170,7 +170,7 @@ enum SessionClassifier {
             "kind", "name", "action", "category", "state", "status", "waitingFor", "waiting_for",
             "tool", "toolName", "tool_name", "functionName", "function_name"
         ]
-        .compactMap { directString(in: dictionary, keys: [$0]) }
+        .compactMap { JSONHelpers.directString(in: dictionary, keys: [$0]) }
         .joined(separator: " ")
     }
 
@@ -192,7 +192,7 @@ enum SessionClassifier {
                 return .running
             }
 
-            guard topLevelString(dictionary["type"])?.lowercased() == "message" else {
+            guard JSONHelpers.topLevelString(dictionary["type"])?.lowercased() == "message" else {
                 let flattened = JSONHelpers.flatten(dictionary).lowercased()
                 if isPermissionWaitMarker(flattened) {
                     return .waitingForPermission
@@ -204,7 +204,7 @@ enum SessionClassifier {
             }
 
             guard let message = dictionary["message"] as? [String: Any],
-                  let role = topLevelString(message["role"])?.lowercased() else {
+                  let role = JSONHelpers.topLevelString(message["role"])?.lowercased() else {
                 continue
             }
 
@@ -248,14 +248,14 @@ enum SessionClassifier {
             "hook", "hookEventName", "hook_event_name", "kind", "name", "action",
             "category", "state", "status"
         ]
-        .compactMap { directString(in: dictionary, keys: [$0]) }
+        .compactMap { JSONHelpers.directString(in: dictionary, keys: [$0]) }
         .joined(separator: " ")
         .lowercased()
     }
 
     private static func piCustomLifecycleState(from dictionary: [String: Any]) -> SessionState? {
-        guard topLevelString(dictionary["type"])?.lowercased() == "custom",
-              normalizedIdentifier(topLevelString(dictionary["customType"]) ?? "") == "goalstate",
+        guard JSONHelpers.topLevelString(dictionary["type"])?.lowercased() == "custom",
+              JSONHelpers.normalizedIdentifier(JSONHelpers.topLevelString(dictionary["customType"]) ?? "") == "goalstate",
               let data = dictionary["data"] as? [String: Any],
               data.keys.contains(where: { $0.caseInsensitiveCompare("goal") == .orderedSame }) else {
             return nil
@@ -267,11 +267,11 @@ enum SessionClassifier {
         }
 
         guard let goalDictionary = goal as? [String: Any],
-              let rawStatus = topLevelString(goalDictionary["status"]) else {
+              let rawStatus = JSONHelpers.topLevelString(goalDictionary["status"]) else {
             return nil
         }
 
-        switch normalizedIdentifier(rawStatus) {
+        switch JSONHelpers.normalizedIdentifier(rawStatus) {
         case "active", "running", "working":
             return .running
         case "complete", "completed", "done", "success", "succeeded":
@@ -354,17 +354,17 @@ enum SessionClassifier {
     }
 
     private static func isToolNameMatch(_ value: String, markers: [String], pluginHints: Set<String>) -> Bool {
-        let normalized = normalizedIdentifier(value)
+        let normalized = JSONHelpers.normalizedIdentifier(value)
         guard !normalized.isEmpty else {
             return false
         }
 
-        if pluginHints.contains(where: { normalized == normalizedIdentifier($0) }) {
+        if pluginHints.contains(where: { normalized == JSONHelpers.normalizedIdentifier($0) }) {
             return true
         }
 
         for marker in markers {
-            let normalizedMarker = normalizedIdentifier(marker)
+            let normalizedMarker = JSONHelpers.normalizedIdentifier(marker)
             if normalized == normalizedMarker {
                 return true
             }
@@ -386,7 +386,7 @@ enum SessionClassifier {
         names.formUnion(piToolCallNames(from: message["tool_calls"], parseNested: true))
 
         if let function = message["function"] as? [String: Any],
-           let functionName = topLevelString(function["name"]) {
+           let functionName = JSONHelpers.topLevelString(function["name"]) {
             names.insert(functionName)
         }
 
@@ -394,7 +394,7 @@ enum SessionClassifier {
             names.formUnion(piToolCallNames(from: content, parseNested: true))
         }
 
-        if names.isEmpty, let name = topLevelString(message["name"]) {
+        if names.isEmpty, let name = JSONHelpers.topLevelString(message["name"]) {
             names.insert(name)
         }
 
@@ -408,36 +408,36 @@ enum SessionClassifier {
 
         switch value {
         case let dictionary as [String: Any]:
-            let type = normalizedIdentifier(topLevelString(dictionary["type"])?.lowercased() ?? "")
+            let type = JSONHelpers.normalizedIdentifier(JSONHelpers.topLevelString(dictionary["type"])?.lowercased() ?? "")
             let looksLikeToolContainer = type.contains("tool") || type.contains("function")
             var names = Set<String>()
 
-            if let toolName = topLevelString(dictionary["name"]) {
+            if let toolName = JSONHelpers.topLevelString(dictionary["name"]) {
                 names.insert(toolName)
             }
             if looksLikeToolContainer {
-                if let toolName = topLevelString(dictionary["tool"]) {
+                if let toolName = JSONHelpers.topLevelString(dictionary["tool"]) {
                     names.insert(toolName)
                 }
-                if let toolName = topLevelString(dictionary["toolName"]) {
+                if let toolName = JSONHelpers.topLevelString(dictionary["toolName"]) {
                     names.insert(toolName)
                 }
-                if let toolName = topLevelString(dictionary["tool_name"]) {
+                if let toolName = JSONHelpers.topLevelString(dictionary["tool_name"]) {
                     names.insert(toolName)
                 }
-                if let toolName = topLevelString(dictionary["toolCall"]) {
+                if let toolName = JSONHelpers.topLevelString(dictionary["toolCall"]) {
                     names.insert(toolName)
                 }
-                if let toolName = topLevelString(dictionary["tool_call"]) {
+                if let toolName = JSONHelpers.topLevelString(dictionary["tool_call"]) {
                     names.insert(toolName)
                 }
-                if let functionName = topLevelString(dictionary["functionName"]) {
+                if let functionName = JSONHelpers.topLevelString(dictionary["functionName"]) {
                     names.insert(functionName)
                 }
-                if let functionName = topLevelString(dictionary["function_name"]) {
+                if let functionName = JSONHelpers.topLevelString(dictionary["function_name"]) {
                     names.insert(functionName)
                 }
-                if let toolName = topLevelString(dictionary["tool_call_name"]) {
+                if let toolName = JSONHelpers.topLevelString(dictionary["tool_call_name"]) {
                     names.insert(toolName)
                 }
             }
@@ -461,8 +461,8 @@ enum SessionClassifier {
     }
 
     private static func piAssistantIsUsingTool(_ message: [String: Any]) -> Bool {
-        let stopReason = topLevelString(message["stopReason"])?.lowercased()
-            ?? topLevelString(message["stop_reason"])?.lowercased()
+        let stopReason = JSONHelpers.topLevelString(message["stopReason"])?.lowercased()
+            ?? JSONHelpers.topLevelString(message["stop_reason"])?.lowercased()
         if stopReason == "tooluse" || stopReason == "tool_use" || stopReason == "tool-use" {
             return true
         }
@@ -475,14 +475,14 @@ enum SessionClassifier {
             guard let dictionary = block as? [String: Any] else {
                 return false
             }
-            let type = topLevelString(dictionary["type"])?.lowercased()
+            let type = JSONHelpers.topLevelString(dictionary["type"])?.lowercased()
             return type == "toolcall" || type == "tool_call" || type == "tool-call"
         }
     }
 
     private static func piAssistantIsFinished(_ message: [String: Any]) -> Bool {
-        guard let stopReason = topLevelString(message["stopReason"])?.lowercased()
-            ?? topLevelString(message["stop_reason"])?.lowercased() else {
+        guard let stopReason = JSONHelpers.topLevelString(message["stopReason"])?.lowercased()
+            ?? JSONHelpers.topLevelString(message["stop_reason"])?.lowercased() else {
             return false
         }
 
@@ -515,46 +515,15 @@ enum SessionClassifier {
         ]
 
         for key in ["toolName", "tool_name", "name"] {
-            guard let rawName = topLevelString(message[key]) else {
+            guard let rawName = JSONHelpers.topLevelString(message[key]) else {
                 continue
             }
-            if terminalToolNames.contains(normalizedIdentifier(rawName)) {
+            if terminalToolNames.contains(JSONHelpers.normalizedIdentifier(rawName)) {
                 return true
             }
         }
 
         return false
-    }
-
-    private static func topLevelString(_ value: Any?) -> String? {
-        if let string = value as? String {
-            return string
-        }
-        if let number = value as? NSNumber {
-            return number.stringValue
-        }
-        return nil
-    }
-
-    private static func directString(in dictionary: [String: Any], keys: [String]) -> String? {
-        for key in keys {
-            guard let value = dictionary.first(where: { $0.key.caseInsensitiveCompare(key) == .orderedSame })?.value else {
-                continue
-            }
-            return topLevelString(value)
-        }
-
-        return nil
-    }
-
-    private static func directDictionary(in dictionary: [String: Any], keys: [String]) -> [String: Any]? {
-        for key in keys {
-            if let value = dictionary.first(where: { $0.key.caseInsensitiveCompare(key) == .orderedSame })?.value as? [String: Any] {
-                return value
-            }
-        }
-
-        return nil
     }
 
     private static func isPermissionWaitMarker(_ text: String) -> Bool {
@@ -603,7 +572,7 @@ enum SessionClassifier {
     }
 
     private static func isInputSubmittedMarker(_ text: String) -> Bool {
-        let normalized = normalizedIdentifier(text)
+        let normalized = JSONHelpers.normalizedIdentifier(text)
         return [
             "inputsubmitted",
             "answersubmitted",
@@ -686,7 +655,4 @@ enum SessionClassifier {
         ].contains { text.contains($0) }
     }
 
-    private static func normalizedIdentifier(_ raw: String) -> String {
-        raw.lowercased().filter { $0.isLetter || $0.isNumber }
-    }
 }

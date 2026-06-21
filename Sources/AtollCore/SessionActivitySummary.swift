@@ -24,7 +24,7 @@ struct SessionActivitySummary {
     }
 
     private static func prompt(in object: Any) -> String? {
-        for dictionary in dictionaries(in: object, newestFirst: true) {
+        for dictionary in JSONHelpers.dictionaries(in: object, newestFirst: true) {
             if let prompt = explicitPrompt(in: dictionary) {
                 return prompt
             }
@@ -37,7 +37,7 @@ struct SessionActivitySummary {
     }
 
     private static func lastToolCall(in object: Any) -> String? {
-        for dictionary in dictionaries(in: object, newestFirst: true) {
+        for dictionary in JSONHelpers.dictionaries(in: object, newestFirst: true) {
             if let tool = toolName(in: dictionary) {
                 return tool
             }
@@ -52,13 +52,13 @@ struct SessionActivitySummary {
         }
 
         for key in ["prompt", "userPrompt", "user_prompt", "task", "instruction", "instructions", "query"] {
-            if let value = directValue(in: dictionary, keys: [key]),
+            if let value = JSONHelpers.directValue(in: dictionary, keys: [key]),
                let text = cleanText(value) {
                 return text
             }
         }
 
-        if let message = directValue(in: dictionary, keys: ["message"]) {
+        if let message = JSONHelpers.directValue(in: dictionary, keys: ["message"]) {
             if let messageDictionary = message as? [String: Any],
                isUserMessage(messageDictionary),
                let text = messageText(in: messageDictionary) {
@@ -69,7 +69,7 @@ struct SessionActivitySummary {
             }
         }
 
-        if let payload = directValue(in: dictionary, keys: ["payload", "data"]) as? [String: Any],
+        if let payload = JSONHelpers.directValue(in: dictionary, keys: ["payload", "data"]) as? [String: Any],
            isUserMessage(payload),
            let text = messageText(in: payload) {
             return text
@@ -80,7 +80,7 @@ struct SessionActivitySummary {
 
     private static func messageText(in dictionary: [String: Any]) -> String? {
         for key in ["content", "text", "message", "prompt", "question", "query", "task", "instruction"] {
-            if let value = directValue(in: dictionary, keys: [key]),
+            if let value = JSONHelpers.directValue(in: dictionary, keys: [key]),
                let text = cleanText(value) {
                 return text
             }
@@ -90,13 +90,13 @@ struct SessionActivitySummary {
     }
 
     private static func isUserMessage(_ dictionary: [String: Any]) -> Bool {
-        let role = directString(in: dictionary, keys: ["role", "author", "speaker"])?.lowercased() ?? ""
+        let role = JSONHelpers.directString(in: dictionary, keys: ["role", "author", "speaker"])?.lowercased() ?? ""
         if role.contains("user") || role.contains("human") {
             return true
         }
 
         let marker = markerText(in: dictionary)
-        let normalized = normalizedIdentifier(marker)
+        let normalized = JSONHelpers.normalizedIdentifier(marker)
         guard !normalized.contains("tool") else {
             return false
         }
@@ -118,20 +118,20 @@ struct SessionActivitySummary {
         }
 
         for key in ["tool", "toolName", "tool_name", "toolCallName", "tool_call_name", "functionName", "function_name", "name"] {
-            if let raw = directString(in: dictionary, keys: [key]),
+            if let raw = JSONHelpers.directString(in: dictionary, keys: [key]),
                !isLifecycleName(raw),
                let normalized = displayToolName(raw) {
                 return normalized
             }
         }
 
-        if let function = directValue(in: dictionary, keys: ["function"]) as? [String: Any],
-           let raw = directString(in: function, keys: ["name"]),
+        if let function = JSONHelpers.directValue(in: dictionary, keys: ["function"]) as? [String: Any],
+           let raw = JSONHelpers.directString(in: function, keys: ["name"]),
            let normalized = displayToolName(raw) {
             return normalized
         }
 
-        if directValue(in: dictionary, keys: ["command", "cmd", "shell"]) != nil {
+        if JSONHelpers.directValue(in: dictionary, keys: ["command", "cmd", "shell"]) != nil {
             return "Shell"
         }
 
@@ -139,7 +139,7 @@ struct SessionActivitySummary {
     }
 
     private static func isToolContainer(_ dictionary: [String: Any]) -> Bool {
-        let marker = normalizedIdentifier(markerText(in: dictionary))
+        let marker = JSONHelpers.normalizedIdentifier(markerText(in: dictionary))
         if marker.contains("tool")
             || marker.contains("function")
             || marker.contains("mcp")
@@ -150,11 +150,11 @@ struct SessionActivitySummary {
             return true
         }
 
-        return directValue(in: dictionary, keys: ["tool", "toolName", "tool_name", "toolCall", "tool_call", "function"]) != nil
+        return JSONHelpers.directValue(in: dictionary, keys: ["tool", "toolName", "tool_name", "toolCall", "tool_call", "function"]) != nil
     }
 
     private static func mappedToolName(_ raw: String) -> String? {
-        let normalized = normalizedIdentifier(raw)
+        let normalized = JSONHelpers.normalizedIdentifier(raw)
         if normalized.isEmpty {
             return nil
         }
@@ -245,7 +245,7 @@ struct SessionActivitySummary {
     }
 
     private static func isLifecycleName(_ raw: String) -> Bool {
-        let normalized = normalizedIdentifier(raw)
+        let normalized = JSONHelpers.normalizedIdentifier(raw)
         return normalized.contains("started")
             || normalized.contains("completed")
             || normalized.contains("finished")
@@ -258,36 +258,8 @@ struct SessionActivitySummary {
             "type", "event", "eventType", "event_type", "hook", "hookEventName", "hook_event_name",
             "kind", "name", "action", "category"
         ]
-        .compactMap { directString(in: dictionary, keys: [$0]) }
+        .compactMap { JSONHelpers.directString(in: dictionary, keys: [$0]) }
         .joined(separator: " ")
-    }
-
-    private static func dictionaries(in object: Any?, newestFirst: Bool, maxDepth: Int = 8) -> [[String: Any]] {
-        guard let object, maxDepth >= 0 else {
-            return []
-        }
-
-        if let dictionary = object as? [String: Any] {
-            var values = Array(dictionary.values)
-            if newestFirst {
-                values.reverse()
-            }
-            return [dictionary] + values.flatMap {
-                dictionaries(in: $0, newestFirst: newestFirst, maxDepth: maxDepth - 1)
-            }
-        }
-
-        if let array = object as? [Any] {
-            var values = array
-            if newestFirst {
-                values.reverse()
-            }
-            return values.flatMap {
-                dictionaries(in: $0, newestFirst: newestFirst, maxDepth: maxDepth - 1)
-            }
-        }
-
-        return []
     }
 
     private static func cleanText(_ value: Any?) -> String? {
@@ -301,7 +273,7 @@ struct SessionActivitySummary {
 
         if let dictionary = value as? [String: Any] {
             for key in ["text", "content", "message", "prompt", "question", "value"] {
-                if let nested = directValue(in: dictionary, keys: [key]),
+                if let nested = JSONHelpers.directValue(in: dictionary, keys: [key]),
                    let text = cleanText(nested) {
                     return text
                 }
@@ -340,34 +312,4 @@ struct SessionActivitySummary {
         ].contains(normalized)
     }
 
-    private static func directValue(in dictionary: [String: Any], keys: [String]) -> Any? {
-        for key in keys {
-            if let value = dictionary.first(where: { $0.key.caseInsensitiveCompare(key) == .orderedSame })?.value {
-                return value
-            }
-        }
-
-        return nil
-    }
-
-    private static func directString(in dictionary: [String: Any], keys: [String]) -> String? {
-        guard let value = directValue(in: dictionary, keys: keys) else {
-            return nil
-        }
-
-        if let string = value as? String {
-            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
-        }
-
-        if let number = value as? NSNumber {
-            return number.stringValue
-        }
-
-        return nil
-    }
-
-    private static func normalizedIdentifier(_ raw: String) -> String {
-        raw.lowercased().filter { $0.isLetter || $0.isNumber }
-    }
 }

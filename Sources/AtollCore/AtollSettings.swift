@@ -2,25 +2,21 @@ import Foundation
 
 public struct AtollSettings: Codable, Sendable {
     public var enabled: Bool
-    public var includeCompleted: Bool
     public var screenMode: String
     public var testMode: Bool
 
     private enum CodingKeys: String, CodingKey {
         case enabled
-        case includeCompleted
         case screenMode
         case testMode
     }
 
     public init(
         enabled: Bool = true,
-        includeCompleted: Bool = true,
         screenMode: String = "primary",
         testMode: Bool = false
     ) {
         self.enabled = enabled
-        self.includeCompleted = includeCompleted
         self.screenMode = screenMode
         self.testMode = testMode
     }
@@ -28,7 +24,6 @@ public struct AtollSettings: Codable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
-        self.includeCompleted = try container.decodeIfPresent(Bool.self, forKey: .includeCompleted) ?? true
         self.screenMode = try container.decodeIfPresent(String.self, forKey: .screenMode) ?? "primary"
         self.testMode = try container.decodeIfPresent(Bool.self, forKey: .testMode) ?? false
     }

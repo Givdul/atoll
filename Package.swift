@@ -9,8 +9,7 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "Atoll", targets: ["Atoll"]),
-        .library(name: "AtollCore", targets: ["AtollCore"])
+        .executable(name: "Atoll", targets: ["Atoll"])
     ],
     targets: [
         .target(
@@ -24,11 +23,6 @@ let package = Package(
             resources: [
                 .process("Resources")
             ]
-        ),
-        .executableTarget(
-            name: "AtollScan",
-            dependencies: ["AtollCore"],
-            path: "Sources/AtollScan"
         ),
         .testTarget(
             name: "AtollCoreTests",

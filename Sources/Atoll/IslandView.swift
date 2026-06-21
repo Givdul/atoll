@@ -441,14 +441,6 @@ struct IslandView: View {
         return dimmed ? base.delay(0.2) : base
     }
 
-    private func withOptionalAnimation(_ changes: @escaping () -> Void) {
-        if let listRevealAnimation {
-            withAnimation(listRevealAnimation, changes)
-        } else {
-            changes()
-        }
-    }
-
     private func showList() {
         guard !isListMounted else {
             return
@@ -973,18 +965,6 @@ private struct RowActivityBorder: View {
         return phase
     }
 
-    private var statusSegmentWidth: CGFloat {
-        switch state {
-        case .waitingForInput:
-            122 * metrics.scale
-        case .waitingForPermission:
-            132 * metrics.scale
-        case .running, .done:
-            84 * metrics.scale
-        case .unknown:
-            92 * metrics.scale
-        }
-    }
 }
 
 private struct SessionRowAppearance {
@@ -996,7 +976,6 @@ private struct SessionRowAppearance {
     let iconScale: CGFloat
     let titleWeight: Font.Weight
     let glassTint: Color
-    let accentGlowOpacity: Double
 
     init(state: SessionState) {
         switch state {
@@ -1009,7 +988,6 @@ private struct SessionRowAppearance {
             iconScale = 1
             titleWeight = .semibold
             glassTint = .black.opacity(0.96)
-            accentGlowOpacity = 0.16
         case .done:
             surfaceWash = .black
             accent = SessionStateColor.done
@@ -1019,7 +997,6 @@ private struct SessionRowAppearance {
             iconScale = 0.94
             titleWeight = .medium
             glassTint = .black.opacity(0.96)
-            accentGlowOpacity = 0.08
         case .waitingForInput:
             surfaceWash = .black
             accent = SessionStateColor.question
@@ -1029,7 +1006,6 @@ private struct SessionRowAppearance {
             iconScale = 1.02
             titleWeight = .bold
             glassTint = .black.opacity(0.96)
-            accentGlowOpacity = 0.10
         case .waitingForPermission:
             surfaceWash = .black
             accent = SessionStateColor.permission
@@ -1039,7 +1015,6 @@ private struct SessionRowAppearance {
             iconScale = 1.02
             titleWeight = .bold
             glassTint = .black.opacity(0.96)
-            accentGlowOpacity = 0.10
         case .unknown:
             surfaceWash = .black
             accent = .white.opacity(0.52)
@@ -1049,7 +1024,6 @@ private struct SessionRowAppearance {
             iconScale = 0.96
             titleWeight = .medium
             glassTint = .black.opacity(0.96)
-            accentGlowOpacity = 0.10
         }
     }
 }

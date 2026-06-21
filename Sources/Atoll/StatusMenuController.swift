@@ -6,7 +6,6 @@ import SwiftUI
 protocol StatusMenuControllerDelegate: AnyObject {
     func refreshNow()
     func setEnabled(_ enabled: Bool)
-    func setIncludeCompleted(_ includeCompleted: Bool)
     func setTestMode(_ testMode: Bool)
     func quit()
 }
@@ -93,10 +92,6 @@ final class StatusMenuController {
 
     @objc private func toggleEnabled(_ sender: NSMenuItem) {
         delegate?.setEnabled(!state.settings.enabled)
-    }
-
-    @objc private func toggleCompleted(_ sender: NSMenuItem) {
-        delegate?.setIncludeCompleted(!state.settings.includeCompleted)
     }
 
     @objc private func toggleTestMode(_ sender: NSMenuItem) {

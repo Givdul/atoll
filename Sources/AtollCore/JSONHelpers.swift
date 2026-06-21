@@ -12,10 +12,6 @@ enum JSONHelpers {
         return object(from: data)
     }
 
-    static func dictionary(from string: String) -> [String: Any]? {
-        object(from: string) as? [String: Any]
-    }
-
     static func string(in object: Any?, keys: [String]) -> String? {
         guard let object else {
             return nil
@@ -123,5 +119,80 @@ enum JSONHelpers {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+
+    static func dictionaries(in object: Any?, newestFirst: Bool, maxDepth: Int = 8) -> [[String: Any]] {
+        guard let object, maxDepth >= 0 else {
+            return []
+        }
+
+        if let dictionary = object as? [String: Any] {
+            var values = Array(dictionary.values)
+            if newestFirst {
+                values.reverse()
+            }
+            return [dictionary] + values.flatMap {
+                dictionaries(in: $0, newestFirst: newestFirst, maxDepth: maxDepth - 1)
+            }
+        }
+
+        if let array = object as? [Any] {
+            var values = array
+            if newestFirst {
+                values.reverse()
+            }
+            return values.flatMap {
+                dictionaries(in: $0, newestFirst: newestFirst, maxDepth: maxDepth - 1)
+            }
+        }
+
+        return []
+    }
+
+    static func directValue(in dictionary: [String: Any], keys: [String]) -> Any? {
+        for key in keys {
+            if let value = dictionary.first(where: { $0.key.caseInsensitiveCompare(key) == .orderedSame })?.value {
+                return value
+            }
+        }
+
+        return nil
+    }
+
+    static func directString(in dictionary: [String: Any], keys: [String]) -> String? {
+        guard let value = directValue(in: dictionary, keys: keys) else {
+            return nil
+        }
+
+        if let string = topLevelString(value)?.trimmingCharacters(in: .whitespacesAndNewlines), !string.isEmpty {
+            return string
+        }
+        return nil
+    }
+
+    static func directDate(in dictionary: [String: Any], keys: [String]) -> Date? {
+        guard let value = directValue(in: dictionary, keys: keys) else {
+            return nil
+        }
+
+        return DateParsing.date(from: value)
+    }
+
+    static func directDictionary(in dictionary: [String: Any], keys: [String]) -> [String: Any]? {
+        directValue(in: dictionary, keys: keys) as? [String: Any]
+    }
+
+    static func topLevelString(_ value: Any?) -> String? {
+        if let string = value as? String {
+            return string
+        }
+        if let number = value as? NSNumber {
+            return number.stringValue
+        }
+        return nil
+    }
+
+    static func normalizedIdentifier(_ raw: String) -> String {
+        raw.lowercased().filter { $0.isLetter || $0.isNumber }
     }
 }

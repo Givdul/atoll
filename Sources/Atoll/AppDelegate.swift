@@ -57,14 +57,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
         statusController?.refreshMenu()
     }
 
-    func setIncludeCompleted(_ includeCompleted: Bool) {
-        var settings = state.settings
-        settings.includeCompleted = includeCompleted
-        state.update(settings: settings)
-        islandController?.syncVisibility()
-        statusController?.refreshMenu()
-    }
-
     func setTestMode(_ testMode: Bool) {
         var settings = state.settings
         settings.testMode = testMode

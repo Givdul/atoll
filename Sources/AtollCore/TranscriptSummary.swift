@@ -157,14 +157,14 @@ struct TranscriptSummary {
     }
 
     private static func activityStartDate(in object: Any) -> Date? {
-        for dictionary in dictionaries(in: object, newestFirst: true) {
+        for dictionary in JSONHelpers.dictionaries(in: object, newestFirst: true) {
             if isUserActivity(dictionary) {
-                if let message = directValue(in: dictionary, keys: ["message"]) as? [String: Any],
-                   let date = directDate(in: message, keys: ["timestamp", "time", "createdAt", "created_at", "startTime", "started_at"]) {
+                if let message = JSONHelpers.directValue(in: dictionary, keys: ["message"]) as? [String: Any],
+                   let date = JSONHelpers.directDate(in: message, keys: ["timestamp", "time", "createdAt", "created_at", "startTime", "started_at"]) {
                     return date
                 }
 
-                if let date = directDate(
+                if let date = JSONHelpers.directDate(
                     in: dictionary,
                     keys: ["timestamp", "time", "createdAt", "created_at", "startTime", "started_at"]
                 ) {
@@ -173,18 +173,18 @@ struct TranscriptSummary {
             }
 
             if isWorkStartMarker(dictionary) {
-                if let state = directValue(in: dictionary, keys: ["state"]) as? [String: Any],
-                   let time = directValue(in: state, keys: ["time"]) as? [String: Any],
-                   let date = directDate(in: time, keys: ["start", "started", "created", "timestamp", "time"]) {
+                if let state = JSONHelpers.directValue(in: dictionary, keys: ["state"]) as? [String: Any],
+                   let time = JSONHelpers.directValue(in: state, keys: ["time"]) as? [String: Any],
+                   let date = JSONHelpers.directDate(in: time, keys: ["start", "started", "created", "timestamp", "time"]) {
                     return date
                 }
 
-                if let time = directValue(in: dictionary, keys: ["time"]) as? [String: Any],
-                   let date = directDate(in: time, keys: ["start", "started", "created", "timestamp", "time"]) {
+                if let time = JSONHelpers.directValue(in: dictionary, keys: ["time"]) as? [String: Any],
+                   let date = JSONHelpers.directDate(in: time, keys: ["start", "started", "created", "timestamp", "time"]) {
                     return date
                 }
 
-                if let date = directDate(
+                if let date = JSONHelpers.directDate(
                     in: dictionary,
                     keys: ["start", "started", "created", "timestamp", "time", "createdAt", "created_at", "startTime", "started_at"]
                 ) {
@@ -197,15 +197,15 @@ struct TranscriptSummary {
     }
 
     private static func isUserActivity(_ dictionary: [String: Any]) -> Bool {
-        if let message = directValue(in: dictionary, keys: ["message"]) as? [String: Any],
+        if let message = JSONHelpers.directValue(in: dictionary, keys: ["message"]) as? [String: Any],
            isUserMessage(message),
-           let text = directString(in: message, keys: ["content", "text", "message", "prompt"]),
+           let text = JSONHelpers.directString(in: message, keys: ["content", "text", "message", "prompt"]),
            cleanDisplayTitle(text) != nil {
             return true
         }
 
         if isUserMessage(dictionary),
-           let text = directString(in: dictionary, keys: ["content", "text", "message", "prompt", "question", "query"]),
+           let text = JSONHelpers.directString(in: dictionary, keys: ["content", "text", "message", "prompt", "question", "query"]),
            cleanDisplayTitle(text) != nil {
             return true
         }
@@ -214,7 +214,7 @@ struct TranscriptSummary {
     }
 
     private static func isWorkStartMarker(_ dictionary: [String: Any]) -> Bool {
-        let marker = normalizedIdentifier(markerText(in: dictionary))
+        let marker = JSONHelpers.normalizedIdentifier(markerText(in: dictionary))
         if marker.contains("turnstarted")
             || marker.contains("agentturnstarted")
             || marker.contains("taskstarted")
@@ -227,23 +227,23 @@ struct TranscriptSummary {
             return true
         }
 
-        let nestedState = directValue(in: dictionary, keys: ["state"]) as? [String: Any]
-        let state = directString(in: dictionary, keys: ["status"])?.lowercased()
-            ?? nestedState.flatMap { directString(in: $0, keys: ["status"])?.lowercased() }
+        let nestedState = JSONHelpers.directValue(in: dictionary, keys: ["state"]) as? [String: Any]
+        let state = JSONHelpers.directString(in: dictionary, keys: ["status"])?.lowercased()
+            ?? nestedState.flatMap { JSONHelpers.directString(in: $0, keys: ["status"])?.lowercased() }
         if state == "running" || state == "busy" || state == "working" {
             return true
         }
 
-        return directValue(in: dictionary, keys: ["tool", "toolName", "tool_name", "toolCall", "tool_call", "function"]) != nil
+        return JSONHelpers.directValue(in: dictionary, keys: ["tool", "toolName", "tool_name", "toolCall", "tool_call", "function"]) != nil
     }
 
     private static func isUserMessage(_ dictionary: [String: Any]) -> Bool {
-        let role = directString(in: dictionary, keys: ["role", "author", "speaker"])?.lowercased() ?? ""
+        let role = JSONHelpers.directString(in: dictionary, keys: ["role", "author", "speaker"])?.lowercased() ?? ""
         if role.contains("user") || role.contains("human") {
             return true
         }
 
-        let marker = normalizedIdentifier(markerText(in: dictionary))
+        let marker = JSONHelpers.normalizedIdentifier(markerText(in: dictionary))
         guard !marker.contains("tool") else {
             return false
         }
@@ -259,74 +259,8 @@ struct TranscriptSummary {
             "type", "event", "eventType", "event_type", "hook", "hookEventName", "hook_event_name",
             "kind", "name", "action", "category"
         ]
-        .compactMap { directString(in: dictionary, keys: [$0]) }
+        .compactMap { JSONHelpers.directString(in: dictionary, keys: [$0]) }
         .joined(separator: " ")
     }
 
-    private static func dictionaries(in object: Any?, newestFirst: Bool, maxDepth: Int = 8) -> [[String: Any]] {
-        guard let object, maxDepth >= 0 else {
-            return []
-        }
-
-        if let dictionary = object as? [String: Any] {
-            var values = Array(dictionary.values)
-            if newestFirst {
-                values.reverse()
-            }
-            return [dictionary] + values.flatMap {
-                dictionaries(in: $0, newestFirst: newestFirst, maxDepth: maxDepth - 1)
-            }
-        }
-
-        if let array = object as? [Any] {
-            var values = array
-            if newestFirst {
-                values.reverse()
-            }
-            return values.flatMap {
-                dictionaries(in: $0, newestFirst: newestFirst, maxDepth: maxDepth - 1)
-            }
-        }
-
-        return []
-    }
-
-    private static func directValue(in dictionary: [String: Any], keys: [String]) -> Any? {
-        for key in keys {
-            if let value = dictionary.first(where: { $0.key.caseInsensitiveCompare(key) == .orderedSame })?.value {
-                return value
-            }
-        }
-
-        return nil
-    }
-
-    private static func directString(in dictionary: [String: Any], keys: [String]) -> String? {
-        guard let value = directValue(in: dictionary, keys: keys) else {
-            return nil
-        }
-
-        if let string = value as? String {
-            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
-        }
-
-        if let number = value as? NSNumber {
-            return number.stringValue
-        }
-
-        return nil
-    }
-
-    private static func directDate(in dictionary: [String: Any], keys: [String]) -> Date? {
-        guard let value = directValue(in: dictionary, keys: keys) else {
-            return nil
-        }
-
-        return DateParsing.date(from: value)
-    }
-
-    private static func normalizedIdentifier(_ raw: String) -> String {
-        raw.lowercased().filter { $0.isLetter || $0.isNumber }
-    }
 }

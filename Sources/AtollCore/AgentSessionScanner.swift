@@ -1208,18 +1208,6 @@ public final class AgentSessionScanner: Sendable {
         return nil
     }
 
-    private func copilotPlanState(in directory: URL) -> (waitingForReview: Bool, text: String) {
-        let plan = directory.appendingPathComponent("plan.md")
-        guard FileUtilities.isRegularFile(plan),
-              let data = try? Data(contentsOf: plan),
-              let text = String(data: Data(data.prefix(64_000)), encoding: .utf8) else {
-            return (false, "")
-        }
-
-        let isRecent = Date().timeIntervalSince(FileUtilities.fileModificationDate(plan)) < SessionClassifier.activeWindow
-        return (isRecent, text)
-    }
-
     private func sqliteRows(database: URL, query: String) -> [Any]? {
         guard let sqlite = CommandRunner.firstExecutable(named: "sqlite3") else {
             return nil
