@@ -6,6 +6,8 @@
 	<string>en</string>
 	<key>CFBundleExecutable</key>
 	<string>Atoll</string>
+	<key>CFBundleIconFile</key>
+	<string>Atoll</string>
 	<key>CFBundleIdentifier</key>
 	<string>dev.atoll.Atoll</string>
 	<key>CFBundleInfoDictionaryVersion</key>

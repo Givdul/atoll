@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        NSApp.applicationIconImage = AtollIcon.appIconImage()
 
         statusController = StatusMenuController(state: state, delegate: self)
         islandController = IslandWindowController(state: state)
