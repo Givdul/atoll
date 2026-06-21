@@ -14,7 +14,7 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
 cp "$ROOT/Bundle/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 cp "$EXECUTABLE" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 chmod +x "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
-swift "$ROOT/Scripts/generate-app-icon.swift" "$APP_BUNDLE/Contents/Resources/Atoll.icns"
+cp "$ROOT/Bundle/Atoll.icns" "$APP_BUNDLE/Contents/Resources/Atoll.icns"
 
 if [[ ! -d "$RESOURCE_BUNDLE" ]]; then
   echo "Missing resource bundle: $RESOURCE_BUNDLE" >&2
