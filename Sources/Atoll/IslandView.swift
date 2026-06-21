@@ -310,8 +310,8 @@ struct IslandView: View {
                 let edgeClearance = topClearance + dotSize / 2
 
                 ZStack {
-                    ForEach(1..<42, id: \.self) { index in
-                        let fraction = CGFloat(index) / 41
+                    ForEach(1..<24, id: \.self) { index in
+                        let fraction = CGFloat(index) / 23
                         let trailPosition = reflected(motion.position - motion.direction * fraction * 0.18)
                         let point = pointOnNotchEdge(progress: trailPosition, topClearance: edgeClearance)
                         let opacity = pow(1 - fraction, 1.85) * 0.48
@@ -848,7 +848,7 @@ private struct RowActivityBorder: View {
                 TimelineView(.animation) { timeline in
                     let head = reduceMotion ? CGFloat(0.5) : looped(timeline.date.timeIntervalSinceReferenceDate * 0.27)
                     let dotSize = 5.0 * metrics.scale
-                    let trailCount = 96
+                    let trailCount = 36
                     let trailSpan: CGFloat = 0.15
 
                     ZStack {

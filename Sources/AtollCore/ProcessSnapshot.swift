@@ -4,21 +4,22 @@ public struct RunningProcess: Hashable, Sendable {
     public var pid: Int32
     public var command: String
     public var arguments: String
+    private let nameCandidates: Set<String>
 
     public init(pid: Int32, command: String, arguments: String) {
         self.pid = pid
         self.command = command
         self.arguments = arguments
+        self.nameCandidates = Self.nameCandidates(command: command, arguments: arguments)
     }
 
     public func matches(_ harness: AgentHarness) -> Bool {
-        let processNames = processNameCandidates
         return harness.processHints.contains { hint in
-            processNames.contains(hint.lowercased())
+            nameCandidates.contains(hint.lowercased())
         }
     }
 
-    private var processNameCandidates: Set<String> {
+    private static func nameCandidates(command: String, arguments: String) -> Set<String> {
         let trimCharacters = CharacterSet(charactersIn: "\"'`()[]{}<>.,;:")
         var candidates: Set<String> = []
         let rawTokens = ([command] + arguments.split(whereSeparator: { $0.isWhitespace }).map(String.init))

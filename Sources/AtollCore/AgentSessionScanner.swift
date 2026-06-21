@@ -337,16 +337,6 @@ public final class AgentSessionScanner: Sendable {
         return JSONHelpers.date(in: row, keys: ["time", "time_updated", "updated_at", "created_at"])
     }
 
-    private func newest(_ lhs: Date?, _ rhs: Date?) -> Date? {
-        guard let lhs else {
-            return rhs
-        }
-        guard let rhs else {
-            return lhs
-        }
-        return max(lhs, rhs)
-    }
-
     private func isFresh(_ date: Date, maxAge: TimeInterval) -> Bool {
         Date().timeIntervalSince(date) <= maxAge
     }

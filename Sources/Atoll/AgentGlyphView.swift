@@ -67,16 +67,23 @@ struct AgentGlyphView: View {
 
 }
 
+@MainActor
 private enum AgentIconLibrary {
     private static let bundleName = "Atoll_Atoll.bundle"
+    private static var cachedImages: [AgentHarness: NSImage] = [:]
 
     static func image(for harness: AgentHarness) -> NSImage? {
+        if let cached = cachedImages[harness] {
+            return cached
+        }
+
         guard let fileName = iconFileName(for: harness),
               let image = directIconImage(for: fileName) ?? bundleIconImage(fileName: fileName) else {
             return nil
         }
 
         image.isTemplate = false
+        cachedImages[harness] = image
         return image
     }
 

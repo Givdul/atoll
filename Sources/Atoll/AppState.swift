@@ -87,10 +87,6 @@ final class AppState: ObservableObject {
         !runningSessions.isEmpty || !waitingSessions.isEmpty || !recentDoneSessions.isEmpty
     }
 
-    var islandRowCount: Int {
-        max(1, visibleSessions.count)
-    }
-
     var visibleAttentionCount: Int {
         visibleSessions.filter(Self.needsAttention).count
     }
