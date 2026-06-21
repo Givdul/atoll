@@ -8,15 +8,23 @@ EXECUTABLE="$ROOT/.build/release/$APP_NAME"
 RESOURCE_BUNDLE="$ROOT/.build/release/${APP_NAME}_${APP_NAME}.bundle"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 NOTARY_KEYCHAIN_PROFILE="${NOTARY_KEYCHAIN_PROFILE:-}"
+SPARKLE_FRAMEWORK="$ROOT/.build/release/Sparkle.framework"
 
 swift build -c release --package-path "$ROOT"
 
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
+mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources" "$APP_BUNDLE/Contents/Frameworks"
 cp "$ROOT/Bundle/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD_NUMBER:-$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)}" "$APP_BUNDLE/Contents/Info.plist"
+if [[ -n "${SPARKLE_FEED_URL:-}" && -n "${SPARKLE_PUBLIC_ED_KEY:-}" ]]; then
+  /usr/libexec/PlistBuddy -c "Add :SUFeedURL string $SPARKLE_FEED_URL" "$APP_BUNDLE/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $SPARKLE_PUBLIC_ED_KEY" "$APP_BUNDLE/Contents/Info.plist"
+fi
 cp "$EXECUTABLE" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 chmod +x "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+if ! otool -l "$APP_BUNDLE/Contents/MacOS/$APP_NAME" | grep -q "@executable_path/../Frameworks"; then
+  install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+fi
 cp "$ROOT/Bundle/Atoll.icns" "$APP_BUNDLE/Contents/Resources/Atoll.icns"
 
 if [[ ! -d "$RESOURCE_BUNDLE" ]]; then
@@ -24,6 +32,11 @@ if [[ ! -d "$RESOURCE_BUNDLE" ]]; then
   exit 1
 fi
 ditto "$RESOURCE_BUNDLE" "$APP_BUNDLE/Contents/Resources/$(basename "$RESOURCE_BUNDLE")"
+if [[ ! -d "$SPARKLE_FRAMEWORK" ]]; then
+  echo "Missing Sparkle framework: $SPARKLE_FRAMEWORK" >&2
+  exit 1
+fi
+ditto "$SPARKLE_FRAMEWORK" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
 
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
   codesign --force --deep --sign - "$APP_BUNDLE" >/dev/null

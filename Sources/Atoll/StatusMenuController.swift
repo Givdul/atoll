@@ -7,6 +7,8 @@ protocol StatusMenuControllerDelegate: AnyObject {
     func refreshNow()
     func setEnabled(_ enabled: Bool)
     func setTestMode(_ testMode: Bool)
+    var canCheckForUpdates: Bool { get }
+    func checkForUpdates()
     func quit()
 }
 
@@ -59,6 +61,11 @@ final class StatusMenuController {
         refresh.target = self
         menu.addItem(refresh)
 
+        let updates = NSMenuItem(title: "Check for Updates...", action: #selector(checkForUpdates(_:)), keyEquivalent: "")
+        updates.target = self
+        updates.isEnabled = delegate?.canCheckForUpdates == true
+        menu.addItem(updates)
+
         let quit = NSMenuItem(title: "Quit Atoll", action: #selector(quit(_:)), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
@@ -100,6 +107,10 @@ final class StatusMenuController {
 
     @objc private func refreshNow(_ sender: NSMenuItem) {
         delegate?.refreshNow()
+    }
+
+    @objc private func checkForUpdates(_ sender: NSMenuItem) {
+        delegate?.checkForUpdates()
     }
 
     @objc private func quit(_ sender: NSMenuItem) {

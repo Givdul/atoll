@@ -1,11 +1,17 @@
 import AppKit
 import AtollCore
+import Sparkle
 import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDelegate {
     private let state = AppState(settingsStore: SettingsStore())
     private let scanner = AgentSessionScanner(scanMode: .hookEventsOnly, atollFrameNotBefore: Date())
+    private let updaterController = SPUStandardUpdaterController(
+        startingUpdater: false,
+        updaterDelegate: nil,
+        userDriverDelegate: nil
+    )
     private var refreshTimer: Timer?
     private var statusController: StatusMenuController?
     private var islandController: IslandWindowController?
@@ -17,6 +23,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
 
         statusController = StatusMenuController(state: state, delegate: self)
         islandController = IslandWindowController(state: state)
+        if canCheckForUpdates {
+            updaterController.startUpdater()
+        }
 
         refreshNow()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
@@ -63,6 +72,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
         state.update(settings: settings)
         islandController?.syncVisibility()
         statusController?.refreshMenu()
+    }
+
+    var canCheckForUpdates: Bool {
+        guard let feedURL = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String,
+              let publicKey = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String else {
+            return false
+        }
+
+        return !feedURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !publicKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func checkForUpdates() {
+        updaterController.checkForUpdates(nil)
     }
 
     func quit() {
