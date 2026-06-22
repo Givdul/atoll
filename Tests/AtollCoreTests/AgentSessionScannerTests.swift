@@ -372,6 +372,26 @@ final class AgentSessionScannerTests: XCTestCase {
         XCTAssertTrue(sessions[0].sourcePath.hasSuffix("/.pi/agent/sessions/--tmp-example--/pi-complete.jsonl"))
     }
 
+    func testPiFinishedAssistantTextQuestionDoesNotTriggerInputWait() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let directory = tempHome.appendingPathComponent(".pi/agent/sessions/--tmp-example-done-question--", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("pi-done-question.jsonl")
+        try """
+        {"type":"session","version":3,"id":"pi-done-question","timestamp":"\(now)","cwd":"/tmp/example"}
+        {"type":"message","id":"u1","parentId":null,"timestamp":"\(now)","message":{"role":"user","content":"Summarize the review","timestamp":\(millisecondsSinceEpoch(offset: -2))}}
+        {"type":"message","id":"a1","parentId":"u1","timestamp":"\(now)","message":{"role":"assistant","content":[{"type":"text","text":"Snowflake-sync question resolved; all threads are done."}],"provider":"anthropic","model":"claude-sonnet-4-5","stopReason":"stop","timestamp":\(millisecondsSinceEpoch(offset: -1))}}
+        """.write(to: file, atomically: true, encoding: .utf8)
+
+        let sessions = testScanner(processes: [
+            RunningProcess(pid: 42, command: "pi", arguments: "pi")
+        ]).scan()
+
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions[0].harness, .pi)
+        XCTAssertEqual(sessions[0].state, .done)
+    }
+
     func testPiGoalStateActiveOverridesPriorStop() throws {
         let now = ISO8601DateFormatter().string(from: Date())
         let directory = tempHome.appendingPathComponent(".pi/agent/sessions/--tmp-example-goal-active--", isDirectory: true)

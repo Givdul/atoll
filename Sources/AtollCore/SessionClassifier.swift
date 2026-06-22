@@ -290,6 +290,10 @@ enum SessionClassifier {
         questionToolNames: Set<String>,
         permissionToolNames: Set<String>
     ) -> SessionState? {
+        if piAssistantIsFinished(message) {
+            return .done
+        }
+
         let flattened = JSONHelpers.flatten(message).lowercased()
 
         if isPermissionWaitMarker(flattened) || isPermissionToolCall(
