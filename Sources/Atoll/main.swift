@@ -3,6 +3,16 @@ import AtollCore
 import Foundation
 
 let arguments = Array(CommandLine.arguments.dropFirst())
+if arguments == ["--install-lifecycle-hooks"] {
+    do {
+        try LifecycleHookInstaller().install()
+        exit(EXIT_SUCCESS)
+    } catch {
+        fputs("\(error.localizedDescription)\n", stderr)
+        exit(EXIT_FAILURE)
+    }
+}
+
 if arguments.count == 3,
    arguments[0] == "--lifecycle-event",
    let harness = AgentHarness.parse(arguments[1]),
