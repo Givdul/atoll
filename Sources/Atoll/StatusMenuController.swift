@@ -5,7 +5,7 @@ import SwiftUI
 @MainActor
 protocol StatusMenuControllerDelegate: AnyObject {
     func refreshNow()
-    func installLifecycleHooks()
+    func showLifecycleSetup()
     func setEnabled(_ enabled: Bool)
     func setTestMode(_ testMode: Bool)
     var canCheckForUpdates: Bool { get }
@@ -62,7 +62,7 @@ final class StatusMenuController {
         refresh.target = self
         menu.addItem(refresh)
 
-        let installHooks = NSMenuItem(title: "Install Lifecycle Hooks…", action: #selector(installLifecycleHooks(_:)), keyEquivalent: "")
+        let installHooks = NSMenuItem(title: "Live Status Setup…", action: #selector(showLifecycleSetup(_:)), keyEquivalent: "")
         installHooks.target = self
         menu.addItem(installHooks)
 
@@ -114,8 +114,8 @@ final class StatusMenuController {
         delegate?.refreshNow()
     }
 
-    @objc private func installLifecycleHooks(_ sender: NSMenuItem) {
-        delegate?.installLifecycleHooks()
+    @objc private func showLifecycleSetup(_ sender: NSMenuItem) {
+        delegate?.showLifecycleSetup()
     }
 
     @objc private func checkForUpdates(_ sender: NSMenuItem) {

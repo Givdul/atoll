@@ -14,14 +14,16 @@ It is event-driven: native agent hooks send lifecycle events to a user-only loca
 
 ## Native hook integrations
 
-Choose **Install Lifecycle Hooks…** from Atoll’s menu to install user-level hooks for:
+On first launch, Atoll offers to enable live status for the supported agents it detects locally. You can also return to **Live Status Setup…** from the menu at any time to inspect, repair, or install hooks. Atoll makes no configuration changes until you select **Enable Live Status**; setup preserves existing settings and reports invalid existing configuration per agent.
+
+The setup installs user-level hooks for:
 
 - Claude Code: `UserPromptSubmit`, `Stop`, and `SessionEnd`
 - Codex: `UserPromptSubmit` and `Stop`
 - Gemini CLI: `BeforeAgent`, `AfterAgent`, and `SessionEnd`
 - GitHub Copilot CLI: `userPromptSubmitted`, `agentStop`, `sessionEnd`, and `errorOccurred`
 
-The installer preserves existing settings and hooks. It writes the bridge script to `~/.atoll/bin/atoll-hook` and never changes configuration until you explicitly select the menu action.
+The installer preserves existing settings and hooks. It writes the bridge script to `~/.atoll/bin/atoll-hook`, then sends a harmless local verification event so setup can confirm that Atoll receives it.
 
 Other harnesses can send the same normalized protocol through the Atoll executable:
 

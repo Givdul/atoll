@@ -2,6 +2,13 @@ import Foundation
 
 /// Installs the small native-hook bridge. Call this only from an explicit user action.
 public struct LifecycleHookInstaller {
+    public enum Readiness: Equatable {
+        case notConfigured
+        case configured
+        case invalidConfiguration(String)
+    }
+
+    public static let supportedAgents: [AgentHarness] = [.codex, .claude, .gemini, .copilot]
     public enum Error: Swift.Error, LocalizedError {
         case invalidJSON(URL)
         case invalidHookConfiguration(URL)
@@ -29,14 +36,81 @@ public struct LifecycleHookInstaller {
     }
 
     public func install() throws {
+        try install(agents: Self.supportedAgents)
+    }
+
+    public func install(agents: [AgentHarness]) throws {
         try writeBridge()
-        try mergeCodexHooks()
-        try mergeClaudeHooks()
-        try mergeGeminiHooks()
-        try mergeCopilotHooks()
+        for agent in agents {
+            switch agent {
+            case .codex: try mergeCodexHooks()
+            case .claude: try mergeClaudeHooks()
+            case .gemini: try mergeGeminiHooks()
+            case .copilot: try mergeCopilotHooks()
+            default: break
+            }
+        }
+    }
+
+    public func detectedAgents() -> [AgentHarness] {
+        Self.supportedAgents.filter { configurationDirectory(for: $0).map { fileManager.fileExists(atPath: $0.path) } == true || commandIsAvailable($0.rawValue) }
+    }
+
+    public func readiness(for agent: AgentHarness) -> Readiness {
+        guard Self.supportedAgents.contains(agent) else { return .notConfigured }
+        do {
+            let url = configurationURL(for: agent)
+            let root = try jsonObject(at: url)
+            try validateHookConfiguration(root, at: url)
+            return hasAllCommands(in: root, for: agent) ? .configured : .notConfigured
+        } catch {
+            return .invalidConfiguration(error.localizedDescription)
+        }
     }
 
     private var bridgeURL: URL { homeDirectory.appendingPathComponent(".atoll/bin/atoll-hook") }
+
+    private func configurationURL(for agent: AgentHarness) -> URL {
+        switch agent {
+        case .claude: homeDirectory.appendingPathComponent(".claude/settings.json")
+        case .codex: homeDirectory.appendingPathComponent(".codex/hooks.json")
+        case .gemini: homeDirectory.appendingPathComponent(".gemini/settings.json")
+        case .copilot: homeDirectory.appendingPathComponent(".copilot/hooks/atoll.json")
+        default: homeDirectory
+        }
+    }
+
+    private func configurationDirectory(for agent: AgentHarness) -> URL? {
+        configurationURL(for: agent).deletingLastPathComponent()
+    }
+
+    private func commandIsAvailable(_ command: String) -> Bool {
+        let paths = ProcessInfo.processInfo.environment["PATH"]?.split(separator: ":") ?? []
+        return paths.contains { fileManager.isExecutableFile(atPath: URL(fileURLWithPath: String($0)).appendingPathComponent(command).path) }
+    }
+
+    private func hasAllCommands(in root: [String: Any], for agent: AgentHarness) -> Bool {
+        let commands: [(String, String)]
+        switch agent {
+        case .claude: commands = [("UserPromptSubmit", "started"), ("Stop", "finished"), ("SessionEnd", "finished")]
+        case .codex: commands = [("UserPromptSubmit", "started"), ("Stop", "finished")]
+        case .gemini: commands = [("BeforeAgent", "started"), ("AfterAgent", "finished"), ("SessionEnd", "finished")]
+        case .copilot: commands = [("userPromptSubmitted", "started"), ("agentStop", "finished"), ("sessionEnd", "finished"), ("errorOccurred", "failed")]
+        default: return false
+        }
+        guard let hooks = root["hooks"] as? [String: Any] else { return false }
+        return commands.allSatisfy { event, kind in
+            guard let entries = hooks[event] else { return false }
+            return containsCommand(entries, command: hookCommand(harness: agent.rawValue, kind: kind))
+        }
+    }
+
+    private func validateHookConfiguration(_ root: [String: Any], at url: URL) throws {
+        guard let hooks = root["hooks"] else { return }
+        guard let map = hooks as? [String: Any], map.values.allSatisfy({ $0 is [Any] }) else {
+            throw Error.invalidHookConfiguration(url)
+        }
+    }
 
     private func writeBridge() throws {
         try fileManager.createDirectory(at: bridgeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -82,10 +156,10 @@ public struct LifecycleHookInstaller {
         let hooks = root["hooks"] ?? [String: Any]()
         guard var hookMap = hooks as? [String: Any] else { throw Error.invalidHookConfiguration(url) }
 
-        addCopilotCommand(to: &hookMap, event: "userPromptSubmitted", command: hookCommand(harness: "copilot", kind: "started"))
-        addCopilotCommand(to: &hookMap, event: "agentStop", command: hookCommand(harness: "copilot", kind: "finished"))
-        addCopilotCommand(to: &hookMap, event: "sessionEnd", command: hookCommand(harness: "copilot", kind: "finished"))
-        addCopilotCommand(to: &hookMap, event: "errorOccurred", command: hookCommand(harness: "copilot", kind: "failed"))
+        try addCopilotCommand(to: &hookMap, event: "userPromptSubmitted", command: hookCommand(harness: "copilot", kind: "started"), url: url)
+        try addCopilotCommand(to: &hookMap, event: "agentStop", command: hookCommand(harness: "copilot", kind: "finished"), url: url)
+        try addCopilotCommand(to: &hookMap, event: "sessionEnd", command: hookCommand(harness: "copilot", kind: "finished"), url: url)
+        try addCopilotCommand(to: &hookMap, event: "errorOccurred", command: hookCommand(harness: "copilot", kind: "failed"), url: url)
         root["version"] = root["version"] ?? 1
         root["hooks"] = hookMap
         try write(root, to: url)
@@ -126,8 +200,9 @@ public struct LifecycleHookInstaller {
         hooks[event] = entries
     }
 
-    private func addCopilotCommand(to hooks: inout [String: Any], event: String, command: String) {
-        var entries = (hooks[event] as? [Any]) ?? []
+    private func addCopilotCommand(to hooks: inout [String: Any], event: String, command: String, url: URL) throws {
+        let value = hooks[event] ?? []
+        guard var entries = value as? [Any] else { throw Error.invalidHookConfiguration(url) }
         guard !containsCommand(entries, command: command) else { return }
         entries.append(["type": "command", "bash": command])
         hooks[event] = entries

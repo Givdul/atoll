@@ -60,6 +60,33 @@ final class LifecycleHookInstallerTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: settings), "not json")
     }
 
+    func testDetectsOnlyInstalledAgentsAndReportsReadiness() throws {
+        try FileManager.default.createDirectory(at: home.appendingPathComponent(".codex"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: home.appendingPathComponent(".claude"), withIntermediateDirectories: true)
+        let installer = LifecycleHookInstaller(homeDirectory: home, executablePath: executable)
+
+        XCTAssertTrue(installer.detectedAgents().contains(.codex))
+        XCTAssertTrue(installer.detectedAgents().contains(.claude))
+        XCTAssertEqual(installer.readiness(for: .codex), .notConfigured)
+
+        try installer.install(agents: [.codex])
+        XCTAssertEqual(installer.readiness(for: .codex), .configured)
+        XCTAssertEqual(installer.readiness(for: .claude), .notConfigured)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".claude/settings.json").path))
+    }
+
+    func testReportsInvalidExistingConfigurationWithoutOverwritingIt() throws {
+        let copilot = home.appendingPathComponent(".copilot/hooks/atoll.json")
+        try write(["hooks": ["agentStop": "not-an-array"]], to: copilot)
+        let installer = LifecycleHookInstaller(homeDirectory: home, executablePath: executable)
+
+        guard case .invalidConfiguration = installer.readiness(for: .copilot) else {
+            return XCTFail("Expected invalid Copilot configuration")
+        }
+        XCTAssertThrowsError(try installer.install(agents: [.copilot]))
+        XCTAssertEqual((try read(copilot)["hooks"] as? [String: Any])?["agentStop"] as? String, "not-an-array")
+    }
+
     private func hook(_ harness: String, _ kind: String) -> String { "'\(home.path)/.atoll/bin/atoll-hook' \(harness) \(kind)" }
 
     private func commands(in root: [String: Any], event: String) -> [String] {
