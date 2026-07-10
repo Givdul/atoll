@@ -2,7 +2,7 @@
 
 ## Product
 
-Atoll is a native macOS menu-bar app that shows a Dynamic-Island-style session capsule for local coding agents. It watches local agent session stores and hook events, then displays only sessions that need attention, are actively running, or have just completed.
+Atoll is a native macOS menu-bar app that shows a Dynamic-Island-style session capsule for local coding agents. It receives lifecycle hooks through a local Unix socket, then displays only sessions that are actively running, need attention, or have just completed.
 
 The app name is `Atoll`.
 
@@ -239,12 +239,13 @@ Status item:
 
 ## Functionality
 
-Scan behavior:
+Lifecycle behavior:
 
-- Refreshes at launch.
-- Refresh timer interval: `3s`.
-- Scanner mode in app: `.hookEventsOnly`.
-- Prevents overlapping refresh work with `refreshInFlight`.
+- Hooks deliver `started`, terminal, and optional attention events directly to `~/.atoll/lifecycle.sock`.
+- The app refreshes immediately on each socket event.
+- A `1s` maintenance timer drains Atoll's own durable event queue and expires stale lifecycle state; it never scans agent transcripts, processes, or lock files.
+- Active sessions expire after `10m` without a newer event; done sessions remain available to the UI for `5s`.
+- **Install Lifecycle Hooks…** explicitly installs user-level bridges for Codex, Claude Code, Gemini CLI, and GitHub Copilot CLI.
 
 Settings:
 
@@ -252,25 +253,14 @@ Settings:
 - Defaults: `enabled = true`, `screenMode = "primary"`, `testMode = false`.
 - Saved as pretty-printed sorted JSON.
 
-Supported harnesses:
+Native hook integrations:
 
-- OpenCode
-- OpenAI Codex CLI / Codex app local sessions
 - Claude Code
-- Google Gemini CLI
-- Cursor Agent
-- Factory Droid
-- Qoder
-- Qwen Code
-- Kimi Code
-- DeepSeek CLI
+- Codex
+- Gemini CLI
 - GitHub Copilot CLI
-- CodeBuddy
-- Kiro
-- Hermes
-- Amp
-- Pi Agent
-- Atoll
+
+Any harness can use Atoll's normalized `--lifecycle-event <harness> <kind>` bridge. The app deliberately makes no claim of native lifecycle capture until that harness has a verified adapter.
 
 ## Icons
 

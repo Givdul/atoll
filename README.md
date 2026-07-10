@@ -1,37 +1,41 @@
 # Atoll
 
-Atoll is a native macOS menu-bar app that shows a Dynamic-Island-style session capsule for local coding agents.
+Atoll is a native macOS menu-bar app that shows a Dynamic-Island-style capsule for local coding agents.
 
-Supported scanners:
+It is event-driven: native agent hooks send lifecycle events to a user-only local Unix socket. Atoll persists only the resulting session state; it never infers a live run from transcript age, process names, or lock files.
 
-- OpenCode
-- OpenAI Codex CLI / Codex app local sessions
-- Claude Code
-- Google Gemini CLI
-- Cursor Agent
-- Factory Droid
-- Qoder
-- Qwen Code
-- Kimi Code
-- DeepSeek CLI
-- GitHub Copilot CLI
-- CodeBuddy
-- Kiro
-- Hermes
-- Amp
-- Pi Agent
+## Lifecycle model
 
-Atoll reads local session stores and uses process/lock-file heuristics to distinguish recent running sessions, completed sessions, sessions waiting for user input, and sessions waiting for permission approval.
+- `started` shows a running session immediately.
+- `finished`, `failed`, and `cancelled` end that session immediately.
+- `needsInput` and `needsPermission` are optional, supported by the same protocol.
+- Events emitted while Atoll is closed are queued under `~/.atoll` and consumed at launch.
+- Active events expire after ten minutes if no newer lifecycle event arrives, so an orphan cannot remain visible indefinitely.
+
+## Native hook integrations
+
+Choose **Install Lifecycle Hooks…** from Atoll’s menu to install user-level hooks for:
+
+- Claude Code: `UserPromptSubmit`, `Stop`, and `SessionEnd`
+- Codex: `UserPromptSubmit` and `Stop`
+- Gemini CLI: `BeforeAgent`, `AfterAgent`, and `SessionEnd`
+- GitHub Copilot CLI: `userPromptSubmitted`, `agentStop`, `sessionEnd`, and `errorOccurred`
+
+The installer preserves existing settings and hooks. It writes the bridge script to `~/.atoll/bin/atoll-hook` and never changes configuration until you explicitly select the menu action.
+
+Other harnesses can send the same normalized protocol through the Atoll executable:
+
+```sh
+printf '%s' '{"session_id":"session-123","cwd":"/path/to/project","prompt":"Fix auth"}' \
+  | /Applications/Atoll.app/Contents/MacOS/Atoll --lifecycle-event codex started
+```
+
+Use `finished`, `failed`, `cancelled`, `needsInput`, or `needsPermission` as the final argument for the corresponding lifecycle transition.
 
 ## Build
 
 ```sh
-swift build -c release
-```
-
-## Release Bundle
-
-```sh
+swift test
 ./Scripts/build-release.sh --install
 ```
 

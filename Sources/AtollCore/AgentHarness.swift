@@ -152,42 +152,4 @@ public enum AgentHarness: String, Codable, CaseIterable, Identifiable, Sendable 
         }
     }
 
-    public var processHints: [String] {
-        switch self {
-        case .opencode:
-            ["opencode"]
-        case .codex:
-            ["codex", "codex-app", "codex-vscode"]
-        case .claude:
-            ["claude"]
-        case .gemini:
-            ["gemini", "gemini-cli"]
-        case .cursor:
-            ["cursor-agent", "cursor"]
-        case .droid:
-            ["droid", "factory-droid", "factory"]
-        case .qoder:
-            ["qoder"]
-        case .qwen:
-            ["qwen", "qwen-code"]
-        case .kimi:
-            ["kimi", "kimi-code"]
-        case .deepseek:
-            ["deepseek"]
-        case .copilot:
-            ["copilot", "copilot-cli"]
-        case .codebuddy:
-            ["codebuddy"]
-        case .kiro:
-            ["kiro"]
-        case .hermes:
-            ["hermes"]
-        case .amp:
-            ["amp"]
-        case .pi:
-            ["pi", "pi-agent", "piagent", "pi-island"]
-        case .atoll:
-            ["atoll"]
-        }
-    }
 }

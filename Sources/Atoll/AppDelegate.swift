@@ -6,7 +6,11 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDelegate {
     private let state = AppState(settingsStore: SettingsStore())
-    private let scanner = AgentSessionScanner(scanMode: .hookEventsOnly, atollFrameNotBefore: Date())
+    private let lifecycleRegistry = LifecycleSessionRegistry(
+        fileURL: FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".atoll/lifecycle-sessions.json")
+    )
+    private let lifecycleQueue = LifecycleEventQueue()
     private let updaterController = SPUStandardUpdaterController(
         startingUpdater: false,
         updaterDelegate: nil,
@@ -15,7 +19,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
     private var refreshTimer: Timer?
     private var statusController: StatusMenuController?
     private var islandController: IslandWindowController?
-    private var refreshInFlight = false
+    private lazy var lifecycleServer = LifecycleSocketServer { [weak self] event in
+        Task { @MainActor [weak self] in
+            self?.apply(event)
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -27,8 +35,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
             updaterController.startUpdater()
         }
 
+        try? lifecycleServer.start()
         refreshNow()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refreshNow()
             }
@@ -37,25 +46,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
 
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
+        lifecycleServer.stop()
         islandController?.shutdown()
     }
 
     func refreshNow() {
-        guard !refreshInFlight else {
-            return
+        for event in lifecycleQueue.drain() {
+            _ = lifecycleRegistry.ingest(event)
         }
+        state.allSessions = lifecycleRegistry.sessions()
+        state.lastRefresh = Date()
+        islandController?.syncVisibility()
+        statusController?.refreshMenu()
+    }
 
-        refreshInFlight = true
-        Task.detached(priority: .utility) { [scanner] in
-            let sessions = scanner.scan()
-            await MainActor.run {
-                self.state.allSessions = sessions
-                self.state.lastRefresh = Date()
-                self.refreshInFlight = false
-                self.islandController?.syncVisibility()
-                self.statusController?.refreshMenu()
-            }
-        }
+    private func apply(_ event: LifecycleEvent) {
+        state.allSessions = lifecycleRegistry.ingest(event)
+        state.lastRefresh = Date()
+        islandController?.syncVisibility()
+        statusController?.refreshMenu()
     }
 
     func setEnabled(_ enabled: Bool) {
@@ -74,6 +83,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
         statusController?.refreshMenu()
     }
 
+    func installLifecycleHooks() {
+        do {
+            try LifecycleHookInstaller().install()
+            showHookInstallationAlert(message: "Installed hooks for Codex, Claude Code, Gemini CLI, and GitHub Copilot CLI.")
+        } catch {
+            showHookInstallationAlert(message: error.localizedDescription)
+        }
+    }
+
     var canCheckForUpdates: Bool {
         guard let feedURL = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String,
               let publicKey = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String else {
@@ -82,6 +100,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
 
         return !feedURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !publicKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func showHookInstallationAlert(message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Atoll Lifecycle Hooks"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     func checkForUpdates() {
