@@ -2,6 +2,12 @@ import AppKit
 import AtollCore
 import SwiftUI
 
+private final class LiveStatusPanelWindow: NSPanel {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        frameRect
+    }
+}
+
 @MainActor
 final class LiveStatusSetupWindowController {
     private var panel: NSPanel?
@@ -30,7 +36,7 @@ final class LiveStatusSetupWindowController {
     }
 
     private func present<Content: View>(_ content: Content, size: NSSize) -> NSApplication.ModalResponse {
-        let panel = NSPanel(
+        let panel = LiveStatusPanelWindow(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
@@ -44,9 +50,9 @@ final class LiveStatusSetupWindowController {
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.collectionBehavior = [.moveToActiveSpace, .transient]
-        panel.center()
         panel.contentView = NSHostingView(rootView: content)
         self.panel = panel
+        position(panel)
 
         NSApp.activate(ignoringOtherApps: true)
         let response = NSApp.runModal(for: panel)
@@ -63,7 +69,22 @@ final class LiveStatusSetupWindowController {
     private func resizePanel(to size: NSSize) {
         guard let panel else { return }
         panel.setContentSize(size)
-        panel.center()
+        position(panel)
+    }
+
+    private func position(_ panel: NSPanel) {
+        let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        guard let screen else { return }
+
+        let visibleFrame = screen.visibleFrame
+        let size = panel.frame.size
+        let origin = NSPoint(
+            x: visibleFrame.midX - size.width / 2,
+            y: visibleFrame.midY - size.height / 2
+        )
+        panel.setFrameOrigin(origin)
     }
 }
 
