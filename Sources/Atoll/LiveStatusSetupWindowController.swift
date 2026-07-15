@@ -16,7 +16,7 @@ final class LiveStatusSetupWindowController {
                 model: model,
                 onDismiss: { [weak self] in self?.finish() }
             ),
-            size: NSSize(width: 424, height: 500)
+            size: NSSize(width: 456, height: 500)
         )
     }
 
@@ -257,11 +257,11 @@ private struct AgentInstallTile: View {
             ZStack(alignment: .topTrailing) {
                 RoundedRectangle(cornerRadius: 17, style: .continuous)
                     .fill(.primary.opacity(0.07))
-                    .frame(width: 64, height: 64)
+                .frame(width: 76, height: 76)
 
                 AgentGlyphView(harness: agent, glyphColor: .primary)
-                    .frame(width: 41, height: 41)
-                    .frame(width: 64, height: 64)
+                    .frame(width: 52, height: 52)
+                    .frame(width: 76, height: 76)
 
                 AgentStatusBadge(status: status)
                     .offset(x: 5, y: -5)
