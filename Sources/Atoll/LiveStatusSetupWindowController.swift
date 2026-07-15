@@ -10,13 +10,15 @@ final class LiveStatusSetupWindowController {
         for agents: [AgentHarness],
         install: @escaping ([AgentHarness]) -> [HookInstallationResult]
     ) {
-        let model = LiveStatusSetupModel(agents: agents, install: install)
+        let model = LiveStatusSetupModel(agents: agents, install: install) { [weak self] in
+            self?.resizePanel(to: NSSize(width: 456, height: 400))
+        }
         _ = present(
             LiveStatusSetupView(
                 model: model,
                 onDismiss: { [weak self] in self?.finish() }
             ),
-            size: NSSize(width: 456, height: 500)
+            size: NSSize(width: 456, height: 430)
         )
     }
 
@@ -57,6 +59,12 @@ final class LiveStatusSetupWindowController {
         NSApp.stopModal(withCode: .alertFirstButtonReturn)
         panel?.orderOut(nil)
     }
+
+    private func resizePanel(to size: NSSize) {
+        guard let panel else { return }
+        panel.setContentSize(size)
+        panel.center()
+    }
 }
 
 struct HookInstallationResult: Identifiable {
@@ -80,10 +88,16 @@ private final class LiveStatusSetupModel: ObservableObject {
 
     let agents: [AgentHarness]
     private let installAction: ([AgentHarness]) -> [HookInstallationResult]
+    private let onComplete: () -> Void
 
-    init(agents: [AgentHarness], install: @escaping ([AgentHarness]) -> [HookInstallationResult]) {
+    init(
+        agents: [AgentHarness],
+        install: @escaping ([AgentHarness]) -> [HookInstallationResult],
+        onComplete: @escaping () -> Void
+    ) {
         self.agents = agents
         self.installAction = install
+        self.onComplete = onComplete
     }
 
     func install() {
@@ -96,6 +110,7 @@ private final class LiveStatusSetupModel: ObservableObject {
             withAnimation(.spring(response: 0.35, dampingFraction: 0.74)) {
                 self.phase = .complete
             }
+            self.onComplete()
         }
     }
 
@@ -129,7 +144,8 @@ private struct LiveStatusSetupView: View {
         LiveStatusPanel {
             VStack(alignment: .leading, spacing: 0) {
                 LiveStatusMark()
-                    .padding(.bottom, 20)
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, 12)
 
                 Text(model.phase == .complete ? "Live status is ready" : "Live status")
                     .font(.system(size: 27, weight: .semibold, design: .rounded))
@@ -145,14 +161,14 @@ private struct LiveStatusSetupView: View {
                         AgentInstallTile(agent: agent, status: model.status(for: agent))
                     }
                 }
-                .padding(.top, 24)
+                .padding(.top, 20)
 
                 Label("Uses local hooks only. Your agent conversations stay private.", systemImage: "lock.fill")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
-                    .padding(.top, 22)
+                    .padding(.top, 16)
 
-                Spacer(minLength: 20)
+                Spacer(minLength: 10)
 
                 if model.phase == .complete {
                     Button("Done", action: onDismiss)
@@ -235,16 +251,9 @@ private struct LiveStatusPanel<Content: View>: View {
 
 private struct LiveStatusMark: View {
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-                .frame(width: 50, height: 50)
-            Image(nsImage: AtollIcon.appIconImage())
-                .resizable()
-                .interpolation(.high)
-                .frame(width: 42, height: 42)
-        }
-        .shadow(color: .black.opacity(0.20), radius: 10, y: 5)
+        AgentGlyphView(harness: .atoll, glyphColor: .primary)
+            .frame(width: 42, height: 42)
+            .accessibilityLabel("Atoll")
     }
 }
 
