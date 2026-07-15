@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
     private var refreshTimer: Timer?
     private var statusController: StatusMenuController?
     private var islandController: IslandWindowController?
+    private let liveStatusSetupController = LiveStatusSetupWindowController()
     private var verificationSessionID: String?
     private var verificationReceived = false
     private lazy var lifecycleServer = LifecycleSocketServer { [weak self] event in
@@ -95,27 +96,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
         let installer = LifecycleHookInstaller()
         let agents = installer.detectedAgents()
         guard !agents.isEmpty else {
-            showHookInstallationAlert(message: "No supported local agents were found. Install Codex, Claude Code, Gemini CLI, or GitHub Copilot CLI, then return here.")
+            liveStatusSetupController.presentUnavailable()
             return
         }
 
-        let statuses = agents.map { "\($0.displayName) — \(readinessText(installer.readiness(for: $0)))" }.joined(separator: "\n")
-        let alert = NSAlert()
-        alert.messageText = "Enable Live Status?"
-        alert.informativeText = "Atoll receives live agent status from local lifecycle hooks. It does not inspect transcripts or processes.\n\nDetected agents:\n\(statuses)\n\nEnable Live Status adds only Atoll hook entries while preserving your existing settings."
-        alert.addButton(withTitle: "Enable Live Status")
-        alert.addButton(withTitle: "Not Now")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard liveStatusSetupController.presentSetup(for: agents) else { return }
 
-        let results = agents.map { agent -> String in
+        let results = agents.map { agent -> HookInstallationResult in
             do {
                 try installer.install(agents: [agent])
-                return "\(agent.displayName) — Ready"
+                return HookInstallationResult(agent: agent, detail: nil)
             } catch {
-                return "\(agent.displayName) — Needs repair: \(error.localizedDescription)"
+                return HookInstallationResult(agent: agent, detail: error.localizedDescription)
             }
         }
-        showHookInstallationAlert(message: results.joined(separator: "\n"))
+        liveStatusSetupController.presentInstalled(results: results)
         runLifecycleVerification()
     }
 
@@ -129,14 +124,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
             && !publicKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private func showHookInstallationAlert(message: String) {
-        let alert = NSAlert()
-        alert.messageText = "Atoll Lifecycle Hooks"
-        alert.informativeText = message
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
-    }
-
     private func presentOnboardingIfNeeded() {
         let key = "hasSeenLifecycleOnboarding"
         guard !UserDefaults.standard.bool(forKey: key) else { return }
@@ -145,14 +132,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
         let installer = LifecycleHookInstaller()
         guard installer.detectedAgents().contains(where: { installer.readiness(for: $0) != .configured }) else { return }
         showLifecycleSetup()
-    }
-
-    private func readinessText(_ readiness: LifecycleHookInstaller.Readiness) -> String {
-        switch readiness {
-        case .configured: "Ready"
-        case .notConfigured: "Needs setup"
-        case .invalidConfiguration: "Needs repair (existing configuration is invalid)"
-        }
     }
 
     private func runLifecycleVerification() {
@@ -177,9 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
                 guard let self else { return }
                 let verified = self.verificationReceived
                 self.verificationSessionID = nil
-                self.showHookInstallationAlert(message: verified
-                    ? "Live status verified with a harmless local lifecycle event."
-                    : "Hooks were installed, but Atoll did not receive the verification event. Reopen Live Status Setup to repair it.")
+                self.liveStatusSetupController.presentVerification(received: verified)
             }
         }
     }
