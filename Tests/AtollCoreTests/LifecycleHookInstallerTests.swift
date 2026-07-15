@@ -15,9 +15,12 @@ final class LifecycleHookInstallerTests: XCTestCase {
     func testInstallsBridgeAndMergesAllNativeConfigsIdempotently() throws {
         let claude = home.appendingPathComponent(".claude/settings.json")
         try write(["theme": "dark", "hooks": ["Stop": [["matcher": "existing", "hooks": [["type": "command", "command": "keep-me"]]]]]], to: claude)
+        try write(["name": "Personal"], to: home.appendingPathComponent(".kiro/agents/personal.json"))
 
         let installer = LifecycleHookInstaller(homeDirectory: home, executablePath: executable)
         try installer.install()
+        let piExtension = try String(contentsOf: home.appendingPathComponent(".pi/agent/extensions/atoll.ts"))
+        XCTAssertTrue(piExtension.contains("Atoll Live Status managed integration"), piExtension)
         let first = try Data(contentsOf: claude)
         try installer.install()
         XCTAssertEqual(first, try Data(contentsOf: claude))
@@ -49,6 +52,26 @@ final class LifecycleHookInstallerTests: XCTestCase {
         XCTAssertEqual(commands(in: copilot, event: "agentStop"), [hook("copilot", "finished")])
         XCTAssertEqual(commands(in: copilot, event: "sessionEnd"), [hook("copilot", "finished")])
         XCTAssertEqual(commands(in: copilot, event: "errorOccurred"), [hook("copilot", "failed")])
+
+        XCTAssertTrue(try String(contentsOf: home.appendingPathComponent(".pi/agent/extensions/atoll.ts")).contains("agent_settled"))
+        XCTAssertTrue(try String(contentsOf: home.appendingPathComponent(".config/opencode/plugin/atoll.js")).contains("session.status"))
+        XCTAssertTrue(try String(contentsOf: home.appendingPathComponent(".kimi-code/config.toml")).contains("Atoll Live Status managed integration"))
+
+        let cursor = try read(home.appendingPathComponent(".cursor/hooks.json"))
+        XCTAssertEqual(commands(in: cursor, event: "sessionStart"), [hook("cursor", "started")])
+        XCTAssertEqual(commands(in: cursor, event: "stop"), [hook("cursor", "finished")])
+        XCTAssertEqual(commands(in: cursor, event: "sessionEnd"), [hook("cursor", "finished")])
+
+        for agent in ["droid", "qoder", "qwen"] {
+            let settings = try read(home.appendingPathComponent(".\(agent == "droid" ? "factory" : agent)/settings.json"))
+            XCTAssertEqual(commands(in: settings, event: "UserPromptSubmit"), [hook(agent, "started")])
+            XCTAssertEqual(commands(in: settings, event: "Stop"), [hook(agent, "finished")])
+            XCTAssertEqual(commands(in: settings, event: "SessionEnd"), [hook(agent, "finished")])
+        }
+
+        let kiro = try read(home.appendingPathComponent(".kiro/agents/personal.json"))
+        XCTAssertEqual(commands(in: kiro, event: "agentSpawn"), [hook("kiro", "started")])
+        XCTAssertEqual(commands(in: kiro, event: "stop"), [hook("kiro", "finished")])
     }
 
     func testDoesNotOverwriteInvalidConfiguration() throws {
@@ -85,6 +108,13 @@ final class LifecycleHookInstallerTests: XCTestCase {
         }
         XCTAssertThrowsError(try installer.install(agents: [.copilot]))
         XCTAssertEqual((try read(copilot)["hooks"] as? [String: Any])?["agentStop"] as? String, "not-an-array")
+    }
+
+    func testKiroRequiresAnExistingCustomAgent() throws {
+        let installer = LifecycleHookInstaller(homeDirectory: home, executablePath: executable)
+        XCTAssertThrowsError(try installer.install(agents: [.kiro])) { error in
+            XCTAssertEqual(error.localizedDescription, "Create a Kiro CLI custom agent in \(self.home.appendingPathComponent(".kiro/agents").path) first, then run Live Status Setup again.")
+        }
     }
 
     private func hook(_ harness: String, _ kind: String) -> String { "'\(home.path)/.atoll/bin/atoll-hook' \(harness) \(kind)" }

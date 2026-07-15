@@ -241,7 +241,7 @@ private struct LiveStatusUnavailableView: View {
                 Text("No supported agents found")
                     .font(.system(size: 25, weight: .semibold, design: .rounded))
 
-                Text("Install Codex, Claude Code, Gemini CLI, or GitHub Copilot CLI, then return here.")
+                Text("Install a supported coding agent, then return here. Atoll supports Codex, Claude Code, Gemini, Copilot, Pi, OpenCode, Cursor, Droid, Qoder, Qwen, Kimi, and Kiro.")
                     .font(.system(size: 14))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

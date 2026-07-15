@@ -22,6 +22,12 @@ The setup installs user-level hooks for:
 - Codex: `UserPromptSubmit` and `Stop`
 - Gemini CLI: `BeforeAgent`, `AfterAgent`, and `SessionEnd`
 - GitHub Copilot CLI: `userPromptSubmitted`, `agentStop`, `sessionEnd`, and `errorOccurred`
+- Pi: a global TypeScript extension using `agent_start` and `agent_settled`
+- OpenCode: a global plugin observing `session.status`
+- Cursor Agent: `sessionStart`, `stop`, and `sessionEnd`
+- Factory Droid, Qoder, and Qwen Code: prompt, stop, and session-end hooks
+- Kimi Code: global lifecycle hook rules
+- Kiro CLI: hooks added to each existing custom-agent configuration
 
 The installer preserves existing settings and hooks. It writes the bridge script to `~/.atoll/bin/atoll-hook`, then sends a harmless local verification event so setup can confirm that Atoll receives it.
 
