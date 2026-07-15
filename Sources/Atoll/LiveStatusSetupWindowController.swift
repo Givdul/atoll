@@ -13,7 +13,7 @@ final class LiveStatusSetupWindowController {
                 onEnable: { [weak self] in self?.finish(with: .alertFirstButtonReturn) },
                 onDismiss: { [weak self] in self?.finish(with: .alertSecondButtonReturn) }
             ),
-            size: NSSize(width: 392, height: 426)
+            size: NSSize(width: 392, height: 500)
         ) == .alertFirstButtonReturn
     }
 
@@ -26,7 +26,7 @@ final class LiveStatusSetupWindowController {
                 buttonTitle: "Done",
                 onDismiss: { [weak self] in self?.finish(with: .alertFirstButtonReturn) }
             ),
-            size: NSSize(width: 392, height: 386)
+            size: NSSize(width: 392, height: 440)
         )
     }
 
