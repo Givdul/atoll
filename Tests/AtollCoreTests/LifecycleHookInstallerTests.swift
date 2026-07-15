@@ -16,6 +16,8 @@ final class LifecycleHookInstallerTests: XCTestCase {
         let claude = home.appendingPathComponent(".claude/settings.json")
         try write(["theme": "dark", "hooks": ["Stop": [["matcher": "existing", "hooks": [["type": "command", "command": "keep-me"]]]]]], to: claude)
         try write(["name": "Personal"], to: home.appendingPathComponent(".kiro/agents/personal.json"))
+        try writeHermesConfig(at: home.appendingPathComponent(".hermes/config.yaml"))
+        try writeHermesConfig(at: home.appendingPathComponent(".hermes/profiles/work/config.yaml"))
 
         let installer = LifecycleHookInstaller(homeDirectory: home, executablePath: executable)
         try installer.install()
@@ -57,6 +59,23 @@ final class LifecycleHookInstallerTests: XCTestCase {
         XCTAssertTrue(try String(contentsOf: home.appendingPathComponent(".config/opencode/plugin/atoll.js")).contains("session.status"))
         XCTAssertTrue(try String(contentsOf: home.appendingPathComponent(".kimi-code/config.toml")).contains("Atoll Live Status managed integration"))
 
+        let amp = try String(contentsOf: home.appendingPathComponent(".config/amp/plugins/atoll.ts"))
+        XCTAssertTrue(amp.contains("agent.start"), amp)
+        XCTAssertTrue(amp.contains("agent.end"), amp)
+        XCTAssertTrue(amp.contains("event.status === \"error\" ? \"failed\" : \"cancelled\""), amp)
+
+        let codeBuddy = try read(home.appendingPathComponent(".codebuddy/settings.json"))
+        XCTAssertEqual(commands(in: codeBuddy, event: "UserPromptSubmit"), [codeBuddyHook("started")])
+        XCTAssertEqual(commands(in: codeBuddy, event: "Stop"), [codeBuddyHook("finished")])
+        XCTAssertEqual(commands(in: codeBuddy, event: "StopFailure"), [codeBuddyHook("failed")])
+        XCTAssertEqual(commands(in: codeBuddy, event: "SessionEnd"), [codeBuddyHook("finished")])
+
+        for profile in [".hermes", ".hermes/profiles/work"] {
+            let pluginRoot = home.appendingPathComponent(profile).appendingPathComponent("plugins/atoll-live-status")
+            XCTAssertTrue(try String(contentsOf: pluginRoot.appendingPathComponent("plugin.yaml")).contains("on_session_end"))
+            XCTAssertTrue(try String(contentsOf: pluginRoot.appendingPathComponent("__init__.py")).contains("pre_llm_call"))
+        }
+
         let cursor = try read(home.appendingPathComponent(".cursor/hooks.json"))
         XCTAssertEqual(commands(in: cursor, event: "sessionStart"), [hook("cursor", "started")])
         XCTAssertEqual(commands(in: cursor, event: "stop"), [hook("cursor", "finished")])
@@ -72,6 +91,26 @@ final class LifecycleHookInstallerTests: XCTestCase {
         let kiro = try read(home.appendingPathComponent(".kiro/agents/personal.json"))
         XCTAssertEqual(commands(in: kiro, event: "agentSpawn"), [hook("kiro", "started")])
         XCTAssertEqual(commands(in: kiro, event: "stop"), [hook("kiro", "finished")])
+
+        for agent in LifecycleHookInstaller.supportedAgents {
+            XCTAssertEqual(installer.readiness(for: agent), .configured, "Expected \(agent.rawValue) to be configured")
+        }
+    }
+
+    func testEveryVisibleAgentHasNativeLifecycleSupport() {
+        XCTAssertEqual(
+            Set(LifecycleHookInstaller.supportedAgents),
+            Set(AgentHarness.allCases.filter { $0 != .atoll })
+        )
+    }
+
+    func testManagedPluginCollisionIsNotOverwritten() throws {
+        let plugin = home.appendingPathComponent(".config/amp/plugins/atoll.ts")
+        try FileManager.default.createDirectory(at: plugin.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "// another plugin".write(to: plugin, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try LifecycleHookInstaller(homeDirectory: home, executablePath: executable).install(agents: [.amp]))
+        XCTAssertEqual(try String(contentsOf: plugin), "// another plugin")
     }
 
     func testDoesNotOverwriteInvalidConfiguration() throws {
@@ -118,6 +157,12 @@ final class LifecycleHookInstallerTests: XCTestCase {
     }
 
     private func hook(_ harness: String, _ kind: String) -> String { "'\(home.path)/.atoll/bin/atoll-hook' \(harness) \(kind)" }
+    private func codeBuddyHook(_ kind: String) -> String { "\(hook("codebuddy", kind)) >/dev/null 2>&1" }
+
+    private func writeHermesConfig(at url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "plugins:\n  enabled:\n    - atoll-live-status\n".write(to: url, atomically: true, encoding: .utf8)
+    }
 
     private func commands(in root: [String: Any], event: String) -> [String] {
         let hooks = root["hooks"] as? [String: Any]

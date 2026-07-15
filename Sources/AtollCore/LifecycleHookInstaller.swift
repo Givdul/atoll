@@ -10,13 +10,16 @@ public struct LifecycleHookInstaller {
 
     public static let supportedAgents: [AgentHarness] = [
         .codex, .claude, .gemini, .copilot,
-        .pi, .opencode, .cursor, .droid, .qoder, .qwen, .kimi, .kiro
+        .pi, .opencode, .cursor, .droid, .qoder, .qwen, .kimi, .kiro,
+        .hermes, .amp, .codebuddy
     ]
     public enum Error: Swift.Error, LocalizedError {
         case invalidJSON(URL)
         case invalidHookConfiguration(URL)
         case managedFileConflict(URL)
         case noKiroAgentConfigurations(URL)
+        case commandUnavailable(String)
+        case commandFailed(String)
 
         public var errorDescription: String? {
             switch self {
@@ -24,6 +27,8 @@ public struct LifecycleHookInstaller {
             case .invalidHookConfiguration(let url): "Cannot merge hooks because \(url.path) has an invalid hooks configuration."
             case .managedFileConflict(let url): "Cannot install Atoll's managed integration because \(url.path) already belongs to another extension or plugin."
             case .noKiroAgentConfigurations(let url): "Create a Kiro CLI custom agent in \(url.path) first, then run Live Status Setup again."
+            case .commandUnavailable(let command): "Cannot finish setup because \(command) is not available."
+            case .commandFailed(let detail): "Cannot finish setup: \(detail)"
             }
         }
     }
@@ -74,6 +79,9 @@ public struct LifecycleHookInstaller {
             }
             case .kimi: try mergeKimiHooks()
             case .kiro: try mergeKiroHooks()
+            case .hermes: try installHermesPlugins()
+            case .amp: try writeAmpPlugin()
+            case .codebuddy: try mergeCodeBuddyHooks()
             default: break
             }
         }
@@ -89,6 +97,8 @@ public struct LifecycleHookInstaller {
         if agent == .opencode { return managedFileIsPresent(openCodePluginURL) ? .configured : .notConfigured }
         if agent == .kimi { return kimiHooksArePresent() ? .configured : .notConfigured }
         if agent == .kiro { return kiroHooksArePresent() ? .configured : .notConfigured }
+        if agent == .hermes { return hermesPluginsAreReady() ? .configured : .notConfigured }
+        if agent == .amp { return managedFileIsPresent(ampPluginURL) ? .configured : .notConfigured }
         do {
             let url = configurationURL(for: agent)
             let root = try jsonObject(at: url)
@@ -115,12 +125,16 @@ public struct LifecycleHookInstaller {
         case .pi: piExtensionURL
         case .opencode: openCodePluginURL
         case .kiro: homeDirectory.appendingPathComponent(".kiro/agents")
+        case .hermes: homeDirectory.appendingPathComponent(".hermes/config.yaml")
+        case .amp: ampPluginURL
+        case .codebuddy: homeDirectory.appendingPathComponent(".codebuddy/settings.json")
         default: homeDirectory
         }
     }
 
     private func configurationDirectory(for agent: AgentHarness) -> URL? {
         if agent == .kiro { return configurationURL(for: agent) }
+        if agent == .amp { return homeDirectory.appendingPathComponent(".config/amp") }
         return configurationURL(for: agent).deletingLastPathComponent()
     }
 
@@ -136,8 +150,14 @@ public struct LifecycleHookInstaller {
         case .qwen: ["qwen", "qwen-code"]
         case .kimi: ["kimi", "kimi-code"]
         case .kiro: ["kiro-cli", "kiro"]
+        case .codebuddy: ["codebuddy"]
         default: [agent.rawValue]
         }
+    }
+
+    private func readinessCommand(agent: AgentHarness, kind: String) -> String {
+        let command = hookCommand(harness: agent.rawValue, kind: kind)
+        return agent == .codebuddy ? "\(command) >/dev/null 2>&1" : command
     }
 
     private func hasAllCommands(in root: [String: Any], for agent: AgentHarness) -> Bool {
@@ -149,12 +169,13 @@ public struct LifecycleHookInstaller {
         case .copilot: commands = [("userPromptSubmitted", "started"), ("agentStop", "finished"), ("sessionEnd", "finished"), ("errorOccurred", "failed")]
         case .cursor: commands = [("sessionStart", "started"), ("stop", "finished"), ("sessionEnd", "finished")]
         case .droid, .qoder, .qwen: commands = [("UserPromptSubmit", "started"), ("Stop", "finished"), ("SessionEnd", "finished")]
+        case .codebuddy: commands = [("UserPromptSubmit", "started"), ("Stop", "finished"), ("StopFailure", "failed"), ("SessionEnd", "finished")]
         default: return false
         }
         guard let hooks = root["hooks"] as? [String: Any] else { return false }
         return commands.allSatisfy { event, kind in
             guard let entries = hooks[event] else { return false }
-            return containsCommand(entries, command: hookCommand(harness: agent.rawValue, kind: kind))
+            return containsCommand(entries, command: readinessCommand(agent: agent, kind: kind))
         }
     }
 
@@ -179,7 +200,13 @@ public struct LifecycleHookInstaller {
 
     private var piExtensionURL: URL { homeDirectory.appendingPathComponent(".pi/agent/extensions/atoll.ts") }
     private var openCodePluginURL: URL { homeDirectory.appendingPathComponent(".config/opencode/plugin/atoll.js") }
+    private var ampPluginURL: URL { homeDirectory.appendingPathComponent(".config/amp/plugins/atoll.ts") }
     private var managedMarker: String { "Atoll Live Status managed integration" }
+
+    private struct HermesProfile {
+        let name: String
+        let home: URL
+    }
 
     private func mergeFlatHooks(at url: URL, agent: AgentHarness, events: [(String, String)]) throws {
         var root = try jsonObject(at: url)
@@ -239,6 +266,190 @@ public struct LifecycleHookInstaller {
         try writeManagedFile(source, to: openCodePluginURL)
     }
 
+    private func writeAmpPlugin() throws {
+        let source = """
+        // \(managedMarker)
+        import { spawn } from "node:child_process";
+
+        const bridge = \(javaScriptString(bridgeURL.path));
+        function emit(kind, event) {
+          const child = spawn(bridge, ["amp", kind], { stdio: ["pipe", "ignore", "ignore"] });
+          child.stdin.end(JSON.stringify({ session_id: event.thread.id, cwd: process.cwd(), prompt: event.message }));
+        }
+
+        export default function (amp) {
+          amp.on("agent.start", event => emit("started", event));
+          amp.on("agent.end", event => {
+            const kind = event.status === "done" ? "finished" : event.status === "error" ? "failed" : "cancelled";
+            emit(kind, event);
+          });
+        }
+        """
+        try writeManagedFile(source, to: ampPluginURL)
+    }
+
+    private func mergeCodeBuddyHooks() throws {
+        let url = configurationURL(for: .codebuddy)
+        try mergeSettings(at: url) { hooks in
+            for (event, kind) in [("UserPromptSubmit", "started"), ("Stop", "finished"), ("StopFailure", "failed"), ("SessionEnd", "finished")] {
+                try addGroupedCommand(
+                    to: &hooks,
+                    event: event,
+                    command: readinessCommand(agent: .codebuddy, kind: kind),
+                    matcher: nil
+                )
+            }
+        }
+    }
+
+    private func installHermesPlugins() throws {
+        let profiles = hermesProfiles()
+        for profile in profiles {
+            let directory = profile.home.appendingPathComponent("plugins/atoll-live-status")
+            let manifest = """
+            # \(managedMarker)
+            name: atoll-live-status
+            kind: standalone
+            version: "1.0.0"
+            description: Reports Hermes agent activity to Atoll Live Status
+            provides_hooks:
+              - pre_llm_call
+              - on_session_end
+            """
+            let plugin = """
+            # \(managedMarker)
+            import json
+            import os
+            import subprocess
+
+            BRIDGE = \(javaScriptString(bridgeURL.path))
+
+            def _emit(kind, *, session_id, prompt="", model="", platform=""):
+                if not session_id:
+                    return
+                payload = {
+                    "session_id": session_id,
+                    "cwd": os.environ.get("TERMINAL_CWD") or os.getcwd(),
+                    "prompt": prompt,
+                    "model": model,
+                    "platform": platform,
+                }
+                try:
+                    subprocess.run(
+                        [BRIDGE, "hermes", kind],
+                        input=json.dumps(payload).encode("utf-8"),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=2,
+                        check=False,
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    pass
+
+            def _on_turn_start(session_id="", user_message="", model="", platform="", **kwargs):
+                _emit("started", session_id=session_id, prompt=user_message, model=model, platform=platform)
+
+            def _on_turn_end(session_id="", completed=False, interrupted=False, model="", platform="", **kwargs):
+                kind = "cancelled" if interrupted else "finished" if completed else "failed"
+                _emit(kind, session_id=session_id, model=model, platform=platform)
+
+            def register(ctx):
+                ctx.register_hook("pre_llm_call", _on_turn_start)
+                ctx.register_hook("on_session_end", _on_turn_end)
+            """
+            try writeManagedFile(manifest, to: directory.appendingPathComponent("plugin.yaml"))
+            try writeManagedFile(plugin, to: directory.appendingPathComponent("__init__.py"))
+
+            guard !hermesPluginEnabled(in: profile) else { continue }
+            try enableHermesPlugin(profile: profile)
+        }
+    }
+
+    private func hermesProfiles() -> [HermesProfile] {
+        let root = homeDirectory.appendingPathComponent(".hermes")
+        var profiles = [HermesProfile(name: "default", home: root)]
+        let profilesRoot = root.appendingPathComponent("profiles")
+        let urls = (try? fileManager.contentsOfDirectory(at: profilesRoot, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+        profiles += urls.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .map { HermesProfile(name: $0.lastPathComponent, home: $0) }
+        return profiles
+    }
+
+    private func hermesPluginEnabled(in profile: HermesProfile) -> Bool {
+        let url = profile.home.appendingPathComponent("config.yaml")
+        guard let config = try? String(contentsOf: url, encoding: .utf8) else { return false }
+        return yamlList(config, section: "plugins", key: "enabled", contains: "atoll-live-status")
+            && !yamlList(config, section: "plugins", key: "disabled", contains: "atoll-live-status")
+    }
+
+    private func hermesPluginsAreReady() -> Bool {
+        hermesProfiles().allSatisfy { profile in
+            let directory = profile.home.appendingPathComponent("plugins/atoll-live-status")
+            return managedFileIsPresent(directory.appendingPathComponent("plugin.yaml"))
+                && managedFileIsPresent(directory.appendingPathComponent("__init__.py"))
+                && hermesPluginEnabled(in: profile)
+        }
+    }
+
+    private func enableHermesPlugin(profile: HermesProfile) throws {
+        guard let executable = executableURL(named: "hermes") else { throw Error.commandUnavailable("hermes") }
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = executable
+        process.arguments = ["-p", profile.name, "plugins", "enable", "atoll-live-status"]
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            let detail = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw Error.commandFailed(detail?.isEmpty == false ? detail! : "Hermes could not enable the Atoll plugin for profile \(profile.name).")
+        }
+    }
+
+    private func executableURL(named command: String) -> URL? {
+        var directories = (ProcessInfo.processInfo.environment["PATH"]?.split(separator: ":").map(String.init) ?? [])
+        directories += [homeDirectory.appendingPathComponent(".local/bin").path, "/opt/homebrew/bin", "/usr/local/bin"]
+        for directory in directories {
+            let url = URL(fileURLWithPath: directory).appendingPathComponent(command)
+            if fileManager.isExecutableFile(atPath: url.path) { return url }
+        }
+        return nil
+    }
+
+    private func yamlList(_ source: String, section: String, key: String, contains value: String) -> Bool {
+        var inSection = false
+        var inList = false
+        for line in source.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            let indent = line.prefix { $0 == " " }.count
+            if indent == 0 {
+                inSection = trimmed == "\(section):"
+                inList = false
+                continue
+            }
+            guard inSection else { continue }
+            if indent == 2 {
+                inList = false
+                guard trimmed.hasPrefix("\(key):") else { continue }
+                let inline = String(trimmed.dropFirst(key.count + 1))
+                if inline.split(whereSeparator: { "[], ".contains($0) }).contains(where: { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\"'") ) == value }) {
+                    return true
+                }
+                inList = inline.trimmingCharacters(in: .whitespaces).isEmpty
+                continue
+            }
+            if inList && indent >= 4 && trimmed.hasPrefix("-") {
+                let item = trimmed.dropFirst().trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                if item == value { return true }
+            }
+        }
+        return false
+    }
+
     private func mergeKimiHooks() throws {
         let url = configurationURL(for: .kimi)
         let existing = fileManager.fileExists(atPath: url.path) ? try String(contentsOf: url, encoding: .utf8) : ""
@@ -288,7 +499,8 @@ public struct LifecycleHookInstaller {
     private func writeManagedFile(_ source: String, to url: URL) throws {
         if fileManager.fileExists(atPath: url.path) {
             let existing = try String(contentsOf: url, encoding: .utf8)
-            guard existing.hasPrefix("// \(managedMarker)") else { throw Error.managedFileConflict(url) }
+            let firstLine = existing.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first
+            guard firstLine?.contains(managedMarker) == true else { throw Error.managedFileConflict(url) }
         }
         try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try source.write(to: url, atomically: true, encoding: .utf8)

@@ -2,6 +2,23 @@ import XCTest
 @testable import AtollCore
 
 final class LifecycleEventTests: XCTestCase {
+    func testRegistrySkipsPersistedRecordsForRemovedHarnesses() throws {
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("AtollLossyRegistry-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let now = Date()
+        let registry = LifecycleSessionRegistry(fileURL: fileURL)
+        _ = registry.ingest(LifecycleEvent(sessionID: "known", harness: .codex, kind: .started, timestamp: now))
+
+        let validRecord = try XCTUnwrap((try JSONSerialization.jsonObject(with: Data(contentsOf: fileURL)) as? [[String: Any]])?.first)
+        var removedRecord = validRecord
+        removedRecord["sessionID"] = "removed"
+        removedRecord["harness"] = "deepseek"
+        try JSONSerialization.data(withJSONObject: [validRecord, removedRecord]).write(to: fileURL)
+
+        let restored = LifecycleSessionRegistry(fileURL: fileURL)
+        XCTAssertEqual(restored.sessions(now: now).map(\.id), ["codex-known"])
+    }
+
     private var directory: URL!
 
     override func setUpWithError() throws {

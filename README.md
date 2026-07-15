@@ -28,6 +28,9 @@ The setup installs user-level hooks for:
 - Factory Droid, Qoder, and Qwen Code: prompt, stop, and session-end hooks
 - Kimi Code: global lifecycle hook rules
 - Kiro CLI: hooks added to each existing custom-agent configuration
+- Hermes: a managed plugin for the default home and each named profile, using `pre_llm_call` and `on_session_end`
+- Amp: a global plugin using `agent.start` and `agent.end`
+- CodeBuddy: `UserPromptSubmit`, `Stop`, `StopFailure`, and `SessionEnd`
 
 The installer preserves existing settings and hooks. It writes the bridge script to `~/.atoll/bin/atoll-hook`, then sends a harmless local verification event so setup can confirm that Atoll receives it.
 

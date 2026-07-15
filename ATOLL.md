@@ -245,7 +245,7 @@ Lifecycle behavior:
 - The app refreshes immediately on each socket event.
 - A `1s` maintenance timer drains Atoll's own durable event queue and expires stale lifecycle state; it never scans agent transcripts, processes, or lock files.
 - Active sessions expire after `10m` without a newer event; done sessions remain available to the UI for `5s`.
-- **Install Lifecycle Hooks…** explicitly installs user-level bridges for Codex, Claude Code, Gemini CLI, GitHub Copilot CLI, Pi, OpenCode, Cursor Agent, Factory Droid, Qoder, Qwen Code, Kimi Code, and configured Kiro CLI custom agents.
+- **Install Lifecycle Hooks…** explicitly installs user-level bridges for Codex, Claude Code, Gemini CLI, GitHub Copilot CLI, Pi, OpenCode, Cursor Agent, Factory Droid, Qoder, Qwen Code, Kimi Code, configured Kiro CLI custom agents, Hermes, Amp, and CodeBuddy.
 
 Settings:
 
@@ -267,6 +267,9 @@ Native hook integrations:
 - Qwen Code
 - Kimi Code
 - Kiro CLI
+- Hermes
+- Amp
+- CodeBuddy
 
 Any harness can use Atoll's normalized `--lifecycle-event <harness> <kind>` bridge. The app deliberately makes no claim of native lifecycle capture until that harness has a verified adapter.
 
@@ -296,7 +299,6 @@ Agent SVG assets:
 | qoder | Qoder | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/qoder.svg` |
 | qwen | Qwen Code | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/qwen.svg` |
 | kimi | Kimi Code | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/kimi.svg` |
-| deepseek | DeepSeek | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/deepseek.svg` |
 | copilot | GitHub Copilot | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/copilot.svg` |
 | codebuddy | CodeBuddy | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/codebuddy.svg` |
 | kiro | Kiro | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/kiro.svg` |
@@ -306,7 +308,7 @@ Agent SVG assets:
 
 Icon padding in row glyphs:
 
-- `deepseek`, `droid`, `hermes`, `qoder`: `1.8`.
+- `droid`, `hermes`, `qoder`: `1.8`.
 - `opencode`, `amp`, `pi`: `1.2`.
 - All other SVG icons: `1.5`.
 

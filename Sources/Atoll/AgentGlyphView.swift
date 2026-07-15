@@ -22,7 +22,7 @@ struct AgentGlyphView: View {
 
     private var iconPadding: CGFloat {
         switch harness {
-        case .deepseek, .droid, .hermes, .qoder:
+        case .droid, .hermes, .qoder:
             1.8
         case .opencode, .amp, .pi:
             1.2
@@ -46,7 +46,7 @@ struct AgentGlyphView: View {
             ClaudeCrabGlyph()
                 .fill(glyphColor)
                 .padding(4)
-        case .gemini, .cursor, .droid, .qoder, .qwen, .kimi, .deepseek, .codebuddy, .kiro, .hermes, .amp:
+        case .gemini, .cursor, .droid, .qoder, .qwen, .kimi, .codebuddy, .kiro, .hermes, .amp:
             Text(harness.shortName)
                 .font(.system(size: 8.5, weight: .black, design: .rounded))
                 .foregroundStyle(glyphColor)
@@ -145,8 +145,6 @@ private enum AgentIconLibrary {
             "qwen"
         case .kimi:
             "kimi"
-        case .deepseek:
-            "deepseek"
         case .copilot:
             "copilot"
         case .codebuddy:

@@ -17,6 +17,14 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         var key: String { "\(harness.rawValue)-\(sessionID)" }
     }
 
+    private struct LossyRecord: Decodable {
+        let value: Record?
+
+        init(from decoder: Decoder) throws {
+            value = try? Record(from: decoder)
+        }
+    }
+
     private let fileURL: URL
     private let activeTTL: TimeInterval
     private let terminalTTL: TimeInterval
@@ -106,10 +114,10 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
 
     private static func load(from fileURL: URL) -> [String: Record] {
         guard let data = try? Data(contentsOf: fileURL),
-              let decoded = try? JSONDecoder().decode([Record].self, from: data) else {
+              let decoded = try? JSONDecoder().decode([LossyRecord].self, from: data) else {
             return [:]
         }
-        return Dictionary(uniqueKeysWithValues: decoded.map { ($0.key, $0) })
+        return Dictionary(uniqueKeysWithValues: decoded.compactMap(\.value).map { ($0.key, $0) })
     }
 
     private func save() {

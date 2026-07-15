@@ -10,6 +10,9 @@ SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 NOTARY_KEYCHAIN_PROFILE="${NOTARY_KEYCHAIN_PROFILE:-}"
 SPARKLE_FRAMEWORK="$ROOT/.build/release/Sparkle.framework"
 
+# SwiftPM can retain resources deleted from Sources in an existing generated
+# bundle. Recreate it so release builds never ship stale agent icons.
+rm -rf "$RESOURCE_BUNDLE"
 swift build -c release --package-path "$ROOT"
 
 rm -rf "$APP_BUNDLE"

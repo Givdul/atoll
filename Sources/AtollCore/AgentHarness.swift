@@ -10,7 +10,6 @@ public enum AgentHarness: String, Codable, CaseIterable, Identifiable, Sendable 
     case qoder
     case qwen
     case kimi
-    case deepseek
     case copilot
     case codebuddy
     case kiro
@@ -53,8 +52,6 @@ public enum AgentHarness: String, Codable, CaseIterable, Identifiable, Sendable 
             return .qwen
         case "kimi", "kimicode", "kimicli", "moonshot", "moonshotkimi":
             return .kimi
-        case "deepseek", "deepseekcli", "deepseekcode":
-            return .deepseek
         case "copilot", "copilotcli", "githubcopilot", "githubcopilotcli", "ghcopilot":
             return .copilot
         case "codebuddy", "codebuddycli", "tencentcodebuddy":
@@ -94,8 +91,6 @@ public enum AgentHarness: String, Codable, CaseIterable, Identifiable, Sendable 
             "Qwen Code"
         case .kimi:
             "Kimi Code"
-        case .deepseek:
-            "DeepSeek"
         case .copilot:
             "GitHub Copilot"
         case .codebuddy:
@@ -133,8 +128,6 @@ public enum AgentHarness: String, Codable, CaseIterable, Identifiable, Sendable 
             "QW"
         case .kimi:
             "KM"
-        case .deepseek:
-            "DS"
         case .copilot:
             "GH"
         case .codebuddy:
