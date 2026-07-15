@@ -20,8 +20,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
     private var statusController: StatusMenuController?
     private var islandController: IslandWindowController?
     private let liveStatusSetupController = LiveStatusSetupWindowController()
-    private var verificationSessionID: String?
-    private var verificationReceived = false
     private lazy var lifecycleServer = LifecycleSocketServer { [weak self] event in
         Task { @MainActor [weak self] in
             self?.apply(event)
@@ -67,9 +65,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
     }
 
     private func apply(_ event: LifecycleEvent) {
-        if event.sessionID == verificationSessionID {
-            verificationReceived = true
-        }
         state.allSessions = lifecycleRegistry.ingest(event)
         state.lastRefresh = Date()
         islandController?.syncVisibility()
@@ -100,18 +95,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
             return
         }
 
-        guard liveStatusSetupController.presentSetup(for: agents) else { return }
-
-        let results = agents.map { agent -> HookInstallationResult in
-            do {
-                try installer.install(agents: [agent])
-                return HookInstallationResult(agent: agent, detail: nil)
-            } catch {
-                return HookInstallationResult(agent: agent, detail: error.localizedDescription)
+        liveStatusSetupController.presentSetup(for: agents) { agents in
+            agents.map { agent in
+                do {
+                    try installer.install(agents: [agent])
+                    return HookInstallationResult(agent: agent, detail: nil)
+                } catch {
+                    return HookInstallationResult(agent: agent, detail: error.localizedDescription)
+                }
             }
         }
-        liveStatusSetupController.presentInstalled(results: results)
-        runLifecycleVerification()
     }
 
     var canCheckForUpdates: Bool {
@@ -132,33 +125,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
         let installer = LifecycleHookInstaller()
         guard installer.detectedAgents().contains(where: { installer.readiness(for: $0) != .configured }) else { return }
         showLifecycleSetup()
-    }
-
-    private func runLifecycleVerification() {
-        let sessionID = "atoll-setup-\(UUID().uuidString)"
-        verificationSessionID = sessionID
-        verificationReceived = false
-        let bridge = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".atoll/bin/atoll-hook")
-
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/sh")
-            process.arguments = [bridge.path, "atoll", "finished"]
-            let input = Pipe()
-            process.standardInput = input
-            do {
-                try process.run()
-                input.fileHandleForWriting.write(Data("{\"session_id\":\"\(sessionID)\"}".utf8))
-                input.fileHandleForWriting.closeFile()
-                process.waitUntilExit()
-            } catch { }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                guard let self else { return }
-                let verified = self.verificationReceived
-                self.verificationSessionID = nil
-                self.liveStatusSetupController.presentVerification(received: verified)
-            }
-        }
     }
 
     func checkForUpdates() {

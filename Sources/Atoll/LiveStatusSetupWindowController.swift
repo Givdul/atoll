@@ -6,57 +6,23 @@ import SwiftUI
 final class LiveStatusSetupWindowController {
     private var panel: NSPanel?
 
-    func presentSetup(for agents: [AgentHarness]) -> Bool {
-        present(
+    func presentSetup(
+        for agents: [AgentHarness],
+        install: @escaping ([AgentHarness]) -> [HookInstallationResult]
+    ) {
+        let model = LiveStatusSetupModel(agents: agents, install: install)
+        _ = present(
             LiveStatusSetupView(
-                agents: agents,
-                onEnable: { [weak self] in self?.finish(with: .alertFirstButtonReturn) },
-                onDismiss: { [weak self] in self?.finish(with: .alertSecondButtonReturn) }
+                model: model,
+                onDismiss: { [weak self] in self?.finish() }
             ),
-            size: NSSize(width: 392, height: 500)
-        ) == .alertFirstButtonReturn
-    }
-
-    func presentInstalled(results: [HookInstallationResult]) {
-        _ = present(
-            LiveStatusResultView(
-                title: "Live status is on",
-                message: "Atoll is ready to follow your local agent activity.",
-                results: results,
-                buttonTitle: "Done",
-                onDismiss: { [weak self] in self?.finish(with: .alertFirstButtonReturn) }
-            ),
-            size: NSSize(width: 392, height: 440)
-        )
-    }
-
-    func presentVerification(received: Bool) {
-        let title = received ? "Live status is connected" : "Live status needs attention"
-        let message = received
-            ? "Atoll received a local test signal."
-            : "Atoll could not confirm the connection. Open Live Status Setup to try again."
-
-        _ = present(
-            LiveStatusResultView(
-                title: title,
-                message: message,
-                results: [],
-                buttonTitle: "Done",
-                onDismiss: { [weak self] in self?.finish(with: .alertFirstButtonReturn) }
-            ),
-            size: NSSize(width: 392, height: 286)
+            size: NSSize(width: 424, height: 500)
         )
     }
 
     func presentUnavailable() {
         _ = present(
-            LiveStatusResultView(
-                title: "No supported agents found",
-                message: "Install Codex, Claude Code, Gemini CLI, or GitHub Copilot CLI, then return here.",
-                results: [],
-                buttonTitle: "Done",
-                onDismiss: { [weak self] in self?.finish(with: .alertFirstButtonReturn) }
-            ),
+            LiveStatusUnavailableView(onDismiss: { [weak self] in self?.finish() }),
             size: NSSize(width: 392, height: 286)
         )
     }
@@ -87,8 +53,8 @@ final class LiveStatusSetupWindowController {
         return response
     }
 
-    private func finish(with response: NSApplication.ModalResponse) {
-        NSApp.stopModal(withCode: response)
+    private func finish() {
+        NSApp.stopModal(withCode: .alertFirstButtonReturn)
         panel?.orderOut(nil)
     }
 }
@@ -101,65 +67,127 @@ struct HookInstallationResult: Identifiable {
     var isReady: Bool { detail == nil }
 }
 
-private struct LiveStatusSetupView: View {
+@MainActor
+private final class LiveStatusSetupModel: ObservableObject {
+    enum Phase {
+        case ready
+        case installing
+        case complete
+    }
+
+    @Published private(set) var phase: Phase = .ready
+    @Published private(set) var results: [String: HookInstallationResult] = [:]
+
     let agents: [AgentHarness]
-    let onEnable: () -> Void
-    let onDismiss: () -> Void
+    private let installAction: ([AgentHarness]) -> [HookInstallationResult]
 
-    var body: some View {
-        LiveStatusPanel {
-            VStack(alignment: .leading, spacing: 0) {
-                LiveStatusMark()
-                    .padding(.bottom, 22)
+    init(agents: [AgentHarness], install: @escaping ([AgentHarness]) -> [HookInstallationResult]) {
+        self.agents = agents
+        self.installAction = install
+    }
 
-                Text("Live status")
-                    .font(.system(size: 27, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
+    func install() {
+        guard phase == .ready else { return }
+        phase = .installing
 
-                Text("See when your local agents are working, waiting, or done.")
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundStyle(.white.opacity(0.66))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 7)
-
-                VStack(spacing: 0) {
-                    ForEach(agents) { agent in
-                        AgentRow(name: agent.displayName, detail: "Ready to connect", isReady: true)
-                        if agent != agents.last {
-                            Divider().overlay(.white.opacity(0.09))
-                        }
-                    }
-                }
-                .padding(.vertical, 5)
-                .background(.white.opacity(0.065), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-                .padding(.top, 20)
-
-                Label("Uses local hooks only. Your agent conversations stay private.", systemImage: "lock.fill")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.52))
-                    .padding(.top, 16)
-
-                Spacer(minLength: 18)
-
-                Button(action: onEnable) {
-                    Text("Turn On Live Status")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(LiveStatusPrimaryButtonStyle())
-
-                Button("Not Now", action: onDismiss)
-                    .buttonStyle(LiveStatusSecondaryButtonStyle())
-                    .padding(.top, 7)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self else { return }
+            self.results = Dictionary(uniqueKeysWithValues: self.installAction(self.agents).map { ($0.id, $0) })
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.74)) {
+                self.phase = .complete
             }
+        }
+    }
+
+    func status(for agent: AgentHarness) -> AgentInstallStatus {
+        switch phase {
+        case .ready:
+            return .available
+        case .installing:
+            return .installing
+        case .complete:
+            guard let result = results[agent.rawValue] else { return .failed("Unknown error") }
+            return result.isReady ? .installed : .failed(result.detail ?? "Needs attention")
         }
     }
 }
 
-private struct LiveStatusResultView: View {
-    let title: String
-    let message: String
-    let results: [HookInstallationResult]
-    let buttonTitle: String
+private enum AgentInstallStatus {
+    case available
+    case installing
+    case installed
+    case failed(String)
+}
+
+private struct LiveStatusSetupView: View {
+    @ObservedObject var model: LiveStatusSetupModel
+    let onDismiss: () -> Void
+
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: 4)
+
+    var body: some View {
+        LiveStatusPanel {
+            VStack(alignment: .leading, spacing: 0) {
+                LiveStatusMark()
+                    .padding(.bottom, 20)
+
+                Text(model.phase == .complete ? "Live status is ready" : "Live status")
+                    .font(.system(size: 27, weight: .semibold, design: .rounded))
+
+                Text(description)
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 7)
+
+                LazyVGrid(columns: columns, spacing: 14) {
+                    ForEach(model.agents) { agent in
+                        AgentInstallTile(agent: agent, status: model.status(for: agent))
+                    }
+                }
+                .padding(.top, 24)
+
+                Label("Uses local hooks only. Your agent conversations stay private.", systemImage: "lock.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 22)
+
+                Spacer(minLength: 20)
+
+                if model.phase == .complete {
+                    Button("Done", action: onDismiss)
+                        .buttonStyle(LiveStatusPrimaryButtonStyle())
+                } else {
+                    Button(action: model.install) {
+                        Text(model.phase == .installing ? "Adding Live Status…" : "Add Live Status")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(LiveStatusPrimaryButtonStyle())
+                    .disabled(model.phase == .installing)
+
+                    Button("Not Now", action: onDismiss)
+                        .buttonStyle(LiveStatusSecondaryButtonStyle())
+                        .padding(.top, 7)
+                        .opacity(model.phase == .installing ? 0 : 1)
+                        .disabled(model.phase == .installing)
+                }
+            }
+        }
+    }
+
+    private var description: String {
+        switch model.phase {
+        case .ready:
+            "See when your local agents are working, waiting, or done."
+        case .installing:
+            "Adding live status to your detected agents."
+        case .complete:
+            "Your agent status will now appear in Atoll."
+        }
+    }
+}
+
+private struct LiveStatusUnavailableView: View {
     let onDismiss: () -> Void
 
     var body: some View {
@@ -168,41 +196,19 @@ private struct LiveStatusResultView: View {
                 LiveStatusMark()
                     .padding(.bottom, 22)
 
-                Text(title)
+                Text("No supported agents found")
                     .font(.system(size: 25, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
 
-                Text(message)
+                Text("Install Codex, Claude Code, Gemini CLI, or GitHub Copilot CLI, then return here.")
                     .font(.system(size: 14))
-                    .foregroundStyle(.white.opacity(0.66))
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 7)
 
-                if !results.isEmpty {
-                    VStack(spacing: 0) {
-                        ForEach(results) { result in
-                            AgentRow(
-                                name: result.agent.displayName,
-                                detail: result.isReady ? "Connected" : result.detail ?? "Needs attention",
-                                isReady: result.isReady
-                            )
-                            if result.id != results.last?.id {
-                                Divider().overlay(.white.opacity(0.09))
-                            }
-                        }
-                    }
-                    .padding(.vertical, 5)
-                    .background(.white.opacity(0.065), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-                    .padding(.top, 20)
-                }
-
                 Spacer(minLength: 20)
 
-                Button(action: onDismiss) {
-                    Text(buttonTitle)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(LiveStatusPrimaryButtonStyle())
+                Button("Done", action: onDismiss)
+                    .buttonStyle(LiveStatusPrimaryButtonStyle())
             }
         }
     }
@@ -214,17 +220,16 @@ private struct LiveStatusPanel<Content: View>: View {
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .fill(Color(red: 0.075, green: 0.078, blue: 0.09))
+                .fill(.regularMaterial)
                 .overlay {
                     RoundedRectangle(cornerRadius: 28, style: .continuous)
-                        .stroke(.white.opacity(0.12), lineWidth: 1)
+                        .stroke(.primary.opacity(0.16), lineWidth: 1)
                 }
 
             content
                 .padding(28)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .preferredColorScheme(.dark)
     }
 }
 
@@ -232,41 +237,84 @@ private struct LiveStatusMark: View {
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .fill(.white)
+                .fill(Color(nsColor: .controlBackgroundColor))
                 .frame(width: 50, height: 50)
             Image(nsImage: AtollIcon.appIconImage())
                 .resizable()
                 .interpolation(.high)
                 .frame(width: 42, height: 42)
         }
-        .shadow(color: .black.opacity(0.35), radius: 10, y: 5)
+        .shadow(color: .black.opacity(0.20), radius: 10, y: 5)
     }
 }
 
-private struct AgentRow: View {
-    let name: String
-    let detail: String
-    let isReady: Bool
+private struct AgentInstallTile: View {
+    let agent: AgentHarness
+    let status: AgentInstallStatus
 
     var body: some View {
-        HStack(spacing: 11) {
-            Circle()
-                .fill(isReady ? Color(red: 0.22, green: 0.95, blue: 0.42) : Color(red: 1, green: 0.36, blue: 0.25))
-                .frame(width: 7, height: 7)
-                .shadow(color: isReady ? Color.green.opacity(0.45) : Color.red.opacity(0.45), radius: 4)
+        VStack(spacing: 8) {
+            ZStack(alignment: .topTrailing) {
+                RoundedRectangle(cornerRadius: 17, style: .continuous)
+                    .fill(.primary.opacity(0.07))
+                    .frame(width: 64, height: 64)
 
-            Text(name)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.white.opacity(0.9))
+                AgentGlyphView(harness: agent, glyphColor: .primary)
+                    .frame(width: 41, height: 41)
+                    .frame(width: 64, height: 64)
 
-            Spacer()
+                AgentStatusBadge(status: status)
+                    .offset(x: 5, y: -5)
+            }
 
-            Text(detail)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.white.opacity(0.48))
+            Text(agent.displayName)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
         }
-        .padding(.horizontal, 14)
-        .frame(height: 34)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(agent.displayName), \(accessibilityStatus)")
+    }
+
+    private var accessibilityStatus: String {
+        switch status {
+        case .available: "available"
+        case .installing: "adding live status"
+        case .installed: "live status added"
+        case .failed(let message): message
+        }
+    }
+}
+
+private struct AgentStatusBadge: View {
+    let status: AgentInstallStatus
+
+    var body: some View {
+        Group {
+            switch status {
+            case .available:
+                EmptyView()
+            case .installing:
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(width: 20, height: 20)
+                    .background(.regularMaterial, in: Circle())
+            case .installed:
+                Image(systemName: "checkmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Color(nsColor: .alternateSelectedControlTextColor))
+                    .frame(width: 20, height: 20)
+                    .background(Color.accentColor, in: Circle())
+            case .failed:
+                Image(systemName: "exclamationmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 20, height: 20)
+                    .background(.red, in: Circle())
+            }
+        }
+        .transition(.scale.combined(with: .opacity))
     }
 }
 
@@ -274,9 +322,10 @@ private struct LiveStatusPrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(.black)
+            .foregroundStyle(Color(nsColor: .alternateSelectedControlTextColor))
+            .frame(maxWidth: .infinity)
             .frame(height: 42)
-            .background(Color.white.opacity(configuration.isPressed ? 0.72 : 1), in: Capsule())
+            .background(Color.accentColor.opacity(configuration.isPressed ? 0.72 : 1), in: Capsule())
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
     }
 }
@@ -285,7 +334,7 @@ private struct LiveStatusSecondaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 14, weight: .medium))
-            .foregroundStyle(.white.opacity(configuration.isPressed ? 0.5 : 0.7))
+            .foregroundStyle(.secondary.opacity(configuration.isPressed ? 0.5 : 1))
             .frame(maxWidth: .infinity, minHeight: 34)
     }
 }
