@@ -11,31 +11,33 @@ private final class LiveStatusPanelWindow: NSPanel {
 @MainActor
 final class LiveStatusSetupWindowController {
     private var panel: NSPanel?
+    private var setupModel: LiveStatusSetupModel?
 
     func presentSetup(
         for agents: [AgentHarness],
         install: @escaping ([AgentHarness]) -> [HookInstallationResult]
     ) {
-        let model = LiveStatusSetupModel(agents: agents, install: install) { [weak self] in
-            self?.resizePanel(to: SetupPanelSize.size(for: agents.count, isComplete: true))
-        }
-        _ = present(
+        finish()
+        let model = LiveStatusSetupModel(agents: agents, install: install)
+        setupModel = model
+        present(
             LiveStatusSetupView(
                 model: model,
                 onDismiss: { [weak self] in self?.finish() }
             ),
-            size: SetupPanelSize.size(for: agents.count, isComplete: false)
+            size: SetupPanelSize.size(for: agents.count)
         )
     }
 
     func presentUnavailable() {
-        _ = present(
+        finish()
+        present(
             LiveStatusUnavailableView(onDismiss: { [weak self] in self?.finish() }),
             size: NSSize(width: 392, height: 286)
         )
     }
 
-    private func present<Content: View>(_ content: Content, size: NSSize) -> NSApplication.ModalResponse {
+    private func present<Content: View>(_ content: Content, size: NSSize) {
         let panel = LiveStatusPanelWindow(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .fullSizeContentView],
@@ -50,26 +52,23 @@ final class LiveStatusSetupWindowController {
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.collectionBehavior = [.moveToActiveSpace, .transient]
+        panel.hidesOnDeactivate = false
         panel.contentView = NSHostingView(rootView: content)
         self.panel = panel
-        position(panel)
 
         NSApp.activate(ignoringOtherApps: true)
-        let response = NSApp.runModal(for: panel)
-        panel.orderOut(nil)
-        self.panel = nil
-        return response
+        panel.makeKeyAndOrderFront(nil)
+        position(panel)
+        DispatchQueue.main.async { [weak self, weak panel] in
+            guard let self, let panel, self.panel === panel else { return }
+            self.position(panel)
+        }
     }
 
     private func finish() {
-        NSApp.stopModal(withCode: .alertFirstButtonReturn)
-        panel?.orderOut(nil)
-    }
-
-    private func resizePanel(to size: NSSize) {
-        guard let panel else { return }
-        panel.setContentSize(size)
-        position(panel)
+        panel?.close()
+        panel = nil
+        setupModel = nil
     }
 
     private func position(_ panel: NSPanel) {
@@ -80,19 +79,20 @@ final class LiveStatusSetupWindowController {
 
         let visibleFrame = screen.visibleFrame
         let size = panel.frame.size
-        let origin = NSPoint(
+        let frame = NSRect(
             x: visibleFrame.midX - size.width / 2,
-            y: visibleFrame.midY - size.height / 2
+            y: visibleFrame.midY - size.height / 2,
+            width: size.width,
+            height: size.height
         )
-        panel.setFrameOrigin(origin)
+        panel.setFrame(frame, display: true)
     }
 }
 
 private enum SetupPanelSize {
-    static func size(for agentCount: Int, isComplete: Bool) -> NSSize {
+    static func size(for agentCount: Int) -> NSSize {
         let rows = max(1, Int(ceil(Double(agentCount) / 4)))
-        let baseHeight: CGFloat = isComplete ? 288 : 326
-        let height = baseHeight + CGFloat(rows) * 104
+        let height = 326 + CGFloat(rows) * 104
         return NSSize(width: 456, height: height)
     }
 }
@@ -118,16 +118,13 @@ private final class LiveStatusSetupModel: ObservableObject {
 
     let agents: [AgentHarness]
     private let installAction: ([AgentHarness]) -> [HookInstallationResult]
-    private let onComplete: () -> Void
 
     init(
         agents: [AgentHarness],
-        install: @escaping ([AgentHarness]) -> [HookInstallationResult],
-        onComplete: @escaping () -> Void
+        install: @escaping ([AgentHarness]) -> [HookInstallationResult]
     ) {
         self.agents = agents
         self.installAction = install
-        self.onComplete = onComplete
     }
 
     func install() {
@@ -140,7 +137,6 @@ private final class LiveStatusSetupModel: ObservableObject {
             withAnimation(.spring(response: 0.35, dampingFraction: 0.74)) {
                 self.phase = .complete
             }
-            self.onComplete()
         }
     }
 
