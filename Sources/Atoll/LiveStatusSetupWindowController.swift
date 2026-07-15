@@ -11,14 +11,14 @@ final class LiveStatusSetupWindowController {
         install: @escaping ([AgentHarness]) -> [HookInstallationResult]
     ) {
         let model = LiveStatusSetupModel(agents: agents, install: install) { [weak self] in
-            self?.resizePanel(to: NSSize(width: 456, height: 400))
+            self?.resizePanel(to: SetupPanelSize.size(for: agents.count, isComplete: true))
         }
         _ = present(
             LiveStatusSetupView(
                 model: model,
                 onDismiss: { [weak self] in self?.finish() }
             ),
-            size: NSSize(width: 456, height: 430)
+            size: SetupPanelSize.size(for: agents.count, isComplete: false)
         )
     }
 
@@ -64,6 +64,15 @@ final class LiveStatusSetupWindowController {
         guard let panel else { return }
         panel.setContentSize(size)
         panel.center()
+    }
+}
+
+private enum SetupPanelSize {
+    static func size(for agentCount: Int, isComplete: Bool) -> NSSize {
+        let rows = max(1, Int(ceil(Double(agentCount) / 4)))
+        let baseHeight: CGFloat = isComplete ? 288 : 326
+        let height = baseHeight + CGFloat(rows) * 104
+        return NSSize(width: 456, height: height)
     }
 }
 
@@ -168,11 +177,10 @@ private struct LiveStatusSetupView: View {
                     .foregroundStyle(.secondary)
                     .padding(.top, 16)
 
-                Spacer(minLength: 10)
-
                 if model.phase == .complete {
                     Button("Done", action: onDismiss)
                         .buttonStyle(LiveStatusPrimaryButtonStyle())
+                        .padding(.top, 24)
                 } else {
                     Button(action: model.install) {
                         Text(model.phase == .installing ? "Adding Live Status…" : "Add Live Status")
@@ -180,6 +188,7 @@ private struct LiveStatusSetupView: View {
                     }
                     .buttonStyle(LiveStatusPrimaryButtonStyle())
                     .disabled(model.phase == .installing)
+                    .padding(.top, 24)
 
                     Button("Not Now", action: onDismiss)
                         .buttonStyle(LiveStatusSecondaryButtonStyle())
@@ -245,7 +254,7 @@ private struct LiveStatusPanel<Content: View>: View {
             content
                 .padding(28)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
