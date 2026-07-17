@@ -9,10 +9,7 @@ public enum AgentHarness: String, Codable, CaseIterable, Identifiable, Sendable 
     case droid
     case qoder
     case qwen
-    case kimi
     case copilot
-    case codebuddy
-    case kiro
     case hermes
     case amp
     case pi
@@ -50,14 +47,8 @@ public enum AgentHarness: String, Codable, CaseIterable, Identifiable, Sendable 
             return .qoder
         case "qwen", "qwencode", "qwencodercli", "alibabaqwen", "alibabaqwencode":
             return .qwen
-        case "kimi", "kimicode", "kimicli", "moonshot", "moonshotkimi":
-            return .kimi
         case "copilot", "copilotcli", "githubcopilot", "githubcopilotcli", "ghcopilot":
             return .copilot
-        case "codebuddy", "codebuddycli", "tencentcodebuddy":
-            return .codebuddy
-        case "kiro", "kirocli":
-            return .kiro
         case "hermes", "hermescli", "nousresearchhermes":
             return .hermes
         case "amp", "ampcli", "sourcegraphamp":
@@ -89,14 +80,8 @@ public enum AgentHarness: String, Codable, CaseIterable, Identifiable, Sendable 
             "Qoder"
         case .qwen:
             "Qwen Code"
-        case .kimi:
-            "Kimi Code"
         case .copilot:
             "GitHub Copilot"
-        case .codebuddy:
-            "CodeBuddy"
-        case .kiro:
-            "Kiro"
         case .hermes:
             "Hermes"
         case .amp:
@@ -126,14 +111,8 @@ public enum AgentHarness: String, Codable, CaseIterable, Identifiable, Sendable 
             "QD"
         case .qwen:
             "QW"
-        case .kimi:
-            "KM"
         case .copilot:
             "GH"
-        case .codebuddy:
-            "CB"
-        case .kiro:
-            "KI"
         case .hermes:
             "HM"
         case .amp:

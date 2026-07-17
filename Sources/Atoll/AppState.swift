@@ -21,7 +21,7 @@ final class AppState: ObservableObject {
     @Published var allSessions: [AgentSession] = []
     {
         didSet {
-            updateDoneObservationTimes(from: allSessions)
+            updateTerminalObservationTimes(from: allSessions)
         }
     }
     @Published var settings: AtollSettings
@@ -31,8 +31,8 @@ final class AppState: ObservableObject {
     private static let maxVisibleSessions = 8
 
     private let settingsStore: SettingsStore
-    private let doneDisplayWindow: TimeInterval = 3
-    private var doneObservedAt: [String: Date] = [:]
+    private let terminalDisplayWindow: TimeInterval = 3
+    private var terminalObservedAt: [String: Date] = [:]
 
     private var displaySessions: [AgentSession] {
         settings.testMode ? Self.testModeSessions() : allSessions
@@ -49,8 +49,8 @@ final class AppState: ObservableObject {
             switch session.state {
             case .waitingForPermission, .waitingForInput, .running:
                 session.confidence != .historical
-            case .done:
-                settings.testMode || isRecentDoneNotification(session, now: now)
+            case .done, .failed, .cancelled:
+                settings.testMode || isRecentTerminalNotification(session, now: now)
             case .unknown:
                 false
             }
@@ -76,15 +76,15 @@ final class AppState: ObservableObject {
         }.prefix(3))
     }
 
-    var recentDoneSessions: [AgentSession] {
+    var recentTerminalSessions: [AgentSession] {
         let now = Date()
         return displaySessions.filter {
-            $0.state == .done && (settings.testMode || isRecentDoneNotification($0, now: now))
+            $0.state.isTerminal && (settings.testMode || isRecentTerminalNotification($0, now: now))
         }
     }
 
     var hasIslandContent: Bool {
-        !runningSessions.isEmpty || !waitingSessions.isEmpty || !recentDoneSessions.isEmpty
+        !runningSessions.isEmpty || !waitingSessions.isEmpty || !recentTerminalSessions.isEmpty
     }
 
     var visibleAttentionCount: Int {
@@ -187,25 +187,25 @@ final class AppState: ObservableObject {
         session.state == .waitingForInput || session.state == .waitingForPermission
     }
 
-    private func isRecentDoneNotification(_ session: AgentSession, now: Date) -> Bool {
-        guard now.timeIntervalSince(session.updatedAt) <= doneDisplayWindow else {
+    private func isRecentTerminalNotification(_ session: AgentSession, now: Date) -> Bool {
+        guard now.timeIntervalSince(session.updatedAt) <= terminalDisplayWindow else {
             return false
         }
 
-        let observedAt = doneObservedAt[session.id] ?? session.updatedAt
-        return now.timeIntervalSince(observedAt) <= doneDisplayWindow
+        let observedAt = terminalObservedAt[session.id] ?? session.updatedAt
+        return now.timeIntervalSince(observedAt) <= terminalDisplayWindow
     }
 
-    private func updateDoneObservationTimes(from sessions: [AgentSession]) {
+    private func updateTerminalObservationTimes(from sessions: [AgentSession]) {
         let now = Date()
-        let activeDoneIDs = Set(sessions.filter { $0.state == .done }.map(\.id))
+        let activeTerminalIDs = Set(sessions.filter { $0.state.isTerminal }.map(\.id))
 
-        doneObservedAt = doneObservedAt.filter { id, _ in
-            activeDoneIDs.contains(id)
+        terminalObservedAt = terminalObservedAt.filter { id, _ in
+            activeTerminalIDs.contains(id)
         }
 
-        for id in activeDoneIDs where doneObservedAt[id] == nil {
-            doneObservedAt[id] = now
+        for id in activeTerminalIDs where terminalObservedAt[id] == nil {
+            terminalObservedAt[id] = now
         }
     }
 

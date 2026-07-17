@@ -3,6 +3,8 @@ import Foundation
 public enum SessionState: String, Codable, CaseIterable, Sendable {
     case running
     case done
+    case failed
+    case cancelled
     case waitingForInput
     case waitingForPermission
     case unknown
@@ -13,6 +15,10 @@ public enum SessionState: String, Codable, CaseIterable, Sendable {
             "Running"
         case .done:
             "Done"
+        case .failed:
+            "Failed"
+        case .cancelled:
+            "Cancelled"
         case .waitingForInput:
             "Needs Input"
         case .waitingForPermission:
@@ -32,8 +38,17 @@ public enum SessionState: String, Codable, CaseIterable, Sendable {
             2
         case .unknown:
             3
-        case .done:
+        case .done, .failed, .cancelled:
             4
+        }
+    }
+
+    public var isTerminal: Bool {
+        switch self {
+        case .done, .failed, .cancelled:
+            true
+        case .running, .waitingForInput, .waitingForPermission, .unknown:
+            false
         }
     }
 }

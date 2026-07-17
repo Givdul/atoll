@@ -12,7 +12,9 @@ public enum LifecycleEventKind: String, Codable, CaseIterable, Sendable {
     var sessionState: SessionState {
         switch self {
         case .started: .running
-        case .finished, .failed, .cancelled: .done
+        case .finished: .done
+        case .failed: .failed
+        case .cancelled: .cancelled
         case .needsInput: .waitingForInput
         case .needsPermission: .waitingForPermission
         }
@@ -114,10 +116,16 @@ public struct LifecycleEvent: Hashable, Sendable {
             return nil
         }
 
+        let resolvedKind = resolvedHookKind(
+            harness: harness,
+            fallback: kind,
+            payload: dictionary
+        )
+
         return LifecycleEvent(
             sessionID: sessionID,
             harness: harness,
-            kind: kind,
+            kind: resolvedKind,
             timestamp: JSONHelpers.directDate(
                 in: dictionary,
                 keys: ["timestamp", "time", "occurred_at", "occurredAt", "updated_at", "updatedAt"]
@@ -128,6 +136,33 @@ public struct LifecycleEvent: Hashable, Sendable {
             projectPath: JSONHelpers.directString(in: dictionary, keys: ["cwd", "project_path", "projectPath", "workspace"]),
             model: JSONHelpers.directString(in: dictionary, keys: ["model", "model_id", "modelId"])
         )
+    }
+
+    private static func resolvedHookKind(
+        harness: AgentHarness,
+        fallback: LifecycleEventKind,
+        payload: [String: Any]
+    ) -> LifecycleEventKind {
+        guard !fallback.isActive else { return fallback }
+
+        switch harness {
+        case .cursor:
+            switch JSONHelpers.directString(in: payload, keys: ["status"])?.lowercased() {
+            case "completed": return .finished
+            case "aborted": return .cancelled
+            case "error": return .failed
+            default: return fallback
+            }
+        case .copilot:
+            switch JSONHelpers.directString(in: payload, keys: ["reason"])?.lowercased() {
+            case "complete": return .finished
+            case "abort", "user_exit": return .cancelled
+            case "error", "timeout": return .failed
+            default: return fallback
+            }
+        default:
+            return fallback
+        }
     }
 
     public func jsonLine() -> String? {

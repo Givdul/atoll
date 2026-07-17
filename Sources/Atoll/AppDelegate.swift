@@ -99,7 +99,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
             agents.map { agent in
                 do {
                     try installer.install(agents: [agent])
-                    return HookInstallationResult(agent: agent, detail: nil)
+                    switch installer.readiness(for: agent) {
+                    case .configured:
+                        return HookInstallationResult(agent: agent, detail: nil)
+                    case .notConfigured:
+                        return HookInstallationResult(
+                            agent: agent,
+                            detail: "Atoll could not verify the installed Live Status integration. Try setup again."
+                        )
+                    case .invalidConfiguration(let detail):
+                        return HookInstallationResult(agent: agent, detail: detail)
+                    }
                 } catch {
                     return HookInstallationResult(agent: agent, detail: error.localizedDescription)
                 }

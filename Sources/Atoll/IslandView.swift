@@ -77,6 +77,8 @@ private enum SessionStateColor {
     static let question = Color(red: 0.22, green: 0.78, blue: 1.00)
     static let permission = Color(red: 1.00, green: 0.20, blue: 0.29)
     static let done = Color(red: 0.22, green: 0.95, blue: 0.42)
+    static let failed = Color(red: 1.00, green: 0.20, blue: 0.29)
+    static let cancelled = Color.white.opacity(0.52)
 
     static func accent(for state: SessionState) -> Color {
         switch state {
@@ -88,6 +90,10 @@ private enum SessionStateColor {
             permission
         case .done:
             done
+        case .failed:
+            failed
+        case .cancelled:
+            cancelled
         case .unknown:
             .white.opacity(0.52)
         }
@@ -104,7 +110,7 @@ struct IslandView: View {
     var body: some View {
         let metrics = IslandMetrics()
         let visibleSessions = state.visibleSessions
-        let hasFloatingDoneRows = visibleSessions.contains { $0.state == .done }
+        let hasFloatingTerminalRows = visibleSessions.contains { $0.state.isTerminal }
 
         ZStack(alignment: .top) {
             islandStack(metrics: metrics, sessions: visibleSessions)
@@ -112,12 +118,12 @@ struct IslandView: View {
         .frame(width: 440, height: 340, alignment: .top)
         .clipped()
         .onAppear {
-            if state.islandHoverState.expandsList || hasFloatingDoneRows {
+            if state.islandHoverState.expandsList || hasFloatingTerminalRows {
                 isListMounted = true
             }
         }
-        .onChange(of: hasFloatingDoneRows) { _, hasFloatingDoneRows in
-            if hasFloatingDoneRows {
+        .onChange(of: hasFloatingTerminalRows) { _, hasFloatingTerminalRows in
+            if hasFloatingTerminalRows {
                 showList()
             } else if !state.islandHoverState.expandsList {
                 scheduleListUnmount()
@@ -147,9 +153,9 @@ struct IslandView: View {
         let pinnedSessions = pinnedAttentionSessions(from: sessions)
         let hoverSessions = sessions.filter { !isAttentionSession($0) }
         let isExpanded = state.islandHoverState.expandsList
-        let floatingDoneSessions = hoverSessions.filter { $0.state == .done }
-        let rowSessions = isExpanded ? hoverSessions : floatingDoneSessions
-        let showsFloatingDoneRows = !isExpanded && !floatingDoneSessions.isEmpty
+        let floatingTerminalSessions = hoverSessions.filter { $0.state.isTerminal }
+        let rowSessions = isExpanded ? hoverSessions : floatingTerminalSessions
+        let showsFloatingTerminalRows = !isExpanded && !floatingTerminalSessions.isEmpty
         let attentionOpacity = state.islandHoverState.dimsAttentionRows ? 0.30 : 1.0
 
         return VStack(spacing: metrics.rowSpacing) {
@@ -170,11 +176,11 @@ struct IslandView: View {
                             glassID: "row-\(session.id)",
                             glassNamespace: glassNamespace
                         )
-                        .transition(doneRowTransition)
+                        .transition(terminalRowTransition)
                     }
                 }
-                .frame(height: rowListHeight(metrics: metrics, rowCount: rowSessions.count, isVisible: isExpanded || showsFloatingDoneRows), alignment: .top)
-                .opacity(isExpanded || showsFloatingDoneRows ? 1 : 0)
+                .frame(height: rowListHeight(metrics: metrics, rowCount: rowSessions.count, isVisible: isExpanded || showsFloatingTerminalRows), alignment: .top)
+                .opacity(isExpanded || showsFloatingTerminalRows ? 1 : 0)
                 .clipped()
             }
 
@@ -271,7 +277,7 @@ struct IslandView: View {
                                 style: StrokeStyle(lineWidth: waitingBorderWidth, lineCap: .butt, lineJoin: .round)
                             )
                             .mask(notchColoredRegion)
-                    case .done, .unknown:
+                    case .done, .failed, .cancelled, .unknown:
                         EmptyView()
                     }
                 }
@@ -413,7 +419,7 @@ struct IslandView: View {
         return .timingCurve(0.22, 1, 0.36, 1, duration: 0.22)
     }
 
-    private var doneRowTransition: AnyTransition {
+    private var terminalRowTransition: AnyTransition {
         if reduceMotion {
             return .opacity
         }
@@ -745,7 +751,7 @@ private struct SessionBubbleRow: View {
         let end: Date
 
         switch session.state {
-        case .done:
+        case .done, .failed, .cancelled:
             end = session.updatedAt
         case .running, .waitingForInput, .waitingForPermission, .unknown:
             end = now
@@ -775,6 +781,10 @@ private struct SessionBubbleRow: View {
             return Color(red: 1.00, green: 0.22, blue: 0.34)
         case .done:
             return Color(red: 0.24, green: 0.94, blue: 0.44)
+        case .failed:
+            return Color(red: 1.00, green: 0.22, blue: 0.34)
+        case .cancelled:
+            return .white.opacity(0.52)
         case .unknown:
             return .white.opacity(0.07)
         }
@@ -794,6 +804,10 @@ private struct SessionBubbleRow: View {
             "terminal"
         case .done:
             "checkmark"
+        case .failed:
+            "exclamationmark"
+        case .cancelled:
+            "minus"
         case .waitingForInput:
             "questionmark"
         case .waitingForPermission:
@@ -884,7 +898,7 @@ private struct RowActivityBorder: View {
             rowShape
                 .stroke(color.opacity(0.28), lineWidth: waitingBorderWidth)
                 .frame(width: metrics.rowWidth, height: metrics.rowHeight)
-        case .done:
+        case .done, .failed, .cancelled:
             rowShape
                 .stroke(color.opacity(0.20), lineWidth: waitingBorderWidth)
                 .frame(width: metrics.rowWidth, height: metrics.rowHeight)
@@ -994,6 +1008,24 @@ private struct SessionRowAppearance {
             borderAccent = SessionStateColor.done
             iconGlyph = accent
             titleOpacity = 0.78
+            iconScale = 0.94
+            titleWeight = .medium
+            glassTint = .black.opacity(0.96)
+        case .failed:
+            surfaceWash = .black
+            accent = SessionStateColor.failed
+            borderAccent = SessionStateColor.failed
+            iconGlyph = accent
+            titleOpacity = 0.88
+            iconScale = 0.94
+            titleWeight = .medium
+            glassTint = .black.opacity(0.96)
+        case .cancelled:
+            surfaceWash = .black
+            accent = SessionStateColor.cancelled
+            borderAccent = SessionStateColor.cancelled
+            iconGlyph = accent
+            titleOpacity = 0.72
             iconScale = 0.94
             titleWeight = .medium
             glassTint = .black.opacity(0.96)

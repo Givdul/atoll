@@ -12,7 +12,7 @@ final class LifecycleEventTests: XCTestCase {
         let validRecord = try XCTUnwrap((try JSONSerialization.jsonObject(with: Data(contentsOf: fileURL)) as? [[String: Any]])?.first)
         var removedRecord = validRecord
         removedRecord["sessionID"] = "removed"
-        removedRecord["harness"] = "deepseek"
+        removedRecord["harness"] = "kimi"
         try JSONSerialization.data(withJSONObject: [validRecord, removedRecord]).write(to: fileURL)
 
         let restored = LifecycleSessionRegistry(fileURL: fileURL)
@@ -52,6 +52,47 @@ final class LifecycleEventTests: XCTestCase {
         XCTAssertEqual(LifecycleEvent.parse(jsonLine: try XCTUnwrap(event.jsonLine()))?.kind, .started)
     }
 
+    func testCursorTerminalStatusSelectsOfficialOutcome() throws {
+        let outcomes: [(String, LifecycleEventKind)] = [
+            ("completed", .finished),
+            ("aborted", .cancelled),
+            ("error", .failed)
+        ]
+
+        for (status, expectedKind) in outcomes {
+            let event = try XCTUnwrap(
+                LifecycleEvent.fromHookPayload(
+                    harness: .cursor,
+                    kind: .finished,
+                    json: "{\"conversation_id\":\"cursor-\(status)\",\"status\":\"\(status)\"}"
+                )
+            )
+            XCTAssertEqual(event.kind, expectedKind)
+        }
+    }
+
+    func testCopilotSessionEndReasonSelectsOfficialOutcome() throws {
+        let outcomes: [(String, LifecycleEventKind)] = [
+            ("complete", .finished),
+            ("error", .failed),
+            ("abort", .cancelled),
+            ("timeout", .failed),
+            ("user_exit", .cancelled)
+        ]
+
+        for (reason, expectedKind) in outcomes {
+            let event = try XCTUnwrap(
+                LifecycleEvent.fromHookPayload(
+                    harness: .copilot,
+                    kind: .finished,
+                    json: "{\"sessionId\":\"copilot-\(reason)\",\"cwd\":\"/tmp/project\",\"reason\":\"\(reason)\"}"
+                )
+            )
+            XCTAssertEqual(event.kind, expectedKind)
+            XCTAssertEqual(event.projectPath, "/tmp/project")
+        }
+    }
+
     func testRegistryPersistsTerminalEventAndExpiresStaleActiveSession() throws {
         let store = directory.appendingPathComponent("registry.json")
         let start = Date(timeIntervalSince1970: 1_000)
@@ -71,6 +112,39 @@ final class LifecycleEventTests: XCTestCase {
         let sessions = registry.ingest(LifecycleEvent(sessionID: "one", harness: .codex, kind: .finished, timestamp: now.addingTimeInterval(1)), now: now.addingTimeInterval(1))
         XCTAssertEqual(sessions.first?.state, .done)
         XCTAssertNil(sessions.first?.processID)
+    }
+
+    func testTerminalOutcomesRemainDistinctAndExpireTogether() {
+        let registry = LifecycleSessionRegistry(
+            fileURL: directory.appendingPathComponent("registry.json"),
+            activeTTL: 60,
+            terminalTTL: 5
+        )
+        let startedAt = Date(timeIntervalSince1970: 1_000)
+        let terminalAt = startedAt.addingTimeInterval(1)
+        let outcomes: [(String, LifecycleEventKind, SessionState)] = [
+            ("finished", .finished, .done),
+            ("failed", .failed, .failed),
+            ("cancelled", .cancelled, .cancelled)
+        ]
+
+        for (sessionID, kind, _) in outcomes {
+            registry.ingest(
+                LifecycleEvent(sessionID: sessionID, harness: .codex, kind: .started, timestamp: startedAt),
+                now: startedAt
+            )
+            registry.ingest(
+                LifecycleEvent(sessionID: sessionID, harness: .codex, kind: kind, timestamp: terminalAt),
+                now: terminalAt
+            )
+        }
+
+        let statesByID = Dictionary(uniqueKeysWithValues: registry.sessions(now: terminalAt).map { ($0.id, $0.state) })
+        for (sessionID, _, expectedState) in outcomes {
+            XCTAssertEqual(statesByID["codex-\(sessionID)"], expectedState)
+        }
+        XCTAssertEqual(registry.sessions(now: terminalAt.addingTimeInterval(5)).count, outcomes.count)
+        XCTAssertTrue(registry.sessions(now: terminalAt.addingTimeInterval(5.01)).isEmpty)
     }
 
     func testOldReplayedStartDoesNotRecreateRunningSession() {

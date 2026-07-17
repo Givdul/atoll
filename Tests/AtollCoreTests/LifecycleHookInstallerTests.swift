@@ -15,11 +15,10 @@ final class LifecycleHookInstallerTests: XCTestCase {
     func testInstallsBridgeAndMergesAllNativeConfigsIdempotently() throws {
         let claude = home.appendingPathComponent(".claude/settings.json")
         try write(["theme": "dark", "hooks": ["Stop": [["matcher": "existing", "hooks": [["type": "command", "command": "keep-me"]]]]]], to: claude)
-        try write(["name": "Personal"], to: home.appendingPathComponent(".kiro/agents/personal.json"))
         try writeHermesConfig(at: home.appendingPathComponent(".hermes/config.yaml"))
         try writeHermesConfig(at: home.appendingPathComponent(".hermes/profiles/work/config.yaml"))
 
-        let installer = LifecycleHookInstaller(homeDirectory: home, executablePath: executable)
+        let installer = makeInstaller()
         try installer.install()
         let piExtension = try String(contentsOf: home.appendingPathComponent(".pi/agent/extensions/atoll.ts"))
         XCTAssertTrue(piExtension.contains("Atoll Live Status managed integration"), piExtension)
@@ -37,7 +36,8 @@ final class LifecycleHookInstallerTests: XCTestCase {
         XCTAssertEqual(commands(in: claudeJSON, event: "UserPromptSubmit"), [hook("claude", "started")])
         XCTAssertTrue(commands(in: claudeJSON, event: "Stop").contains("keep-me"))
         XCTAssertTrue(commands(in: claudeJSON, event: "Stop").contains(hook("claude", "finished")))
-        XCTAssertEqual(commands(in: claudeJSON, event: "SessionEnd"), [hook("claude", "finished")])
+        XCTAssertEqual(commands(in: claudeJSON, event: "StopFailure"), [hook("claude", "failed")])
+        XCTAssertTrue(commands(in: claudeJSON, event: "SessionEnd").isEmpty)
 
         let codex = try read(home.appendingPathComponent(".codex/hooks.json"))
         XCTAssertEqual(commands(in: codex, event: "UserPromptSubmit"), [hook("codex", "started")])
@@ -46,29 +46,34 @@ final class LifecycleHookInstallerTests: XCTestCase {
         let gemini = try read(home.appendingPathComponent(".gemini/settings.json"))
         XCTAssertEqual(commands(in: gemini, event: "BeforeAgent"), [hook("gemini", "started")])
         XCTAssertEqual(commands(in: gemini, event: "AfterAgent"), [hook("gemini", "finished")])
-        XCTAssertEqual(commands(in: gemini, event: "SessionEnd"), [hook("gemini", "finished")])
+        XCTAssertTrue(commands(in: gemini, event: "SessionEnd").isEmpty)
 
         let copilot = try read(home.appendingPathComponent(".copilot/hooks/atoll.json"))
         XCTAssertEqual(copilot["version"] as? Int, 1)
         XCTAssertEqual(commands(in: copilot, event: "userPromptSubmitted"), [hook("copilot", "started")])
         XCTAssertEqual(commands(in: copilot, event: "agentStop"), [hook("copilot", "finished")])
         XCTAssertEqual(commands(in: copilot, event: "sessionEnd"), [hook("copilot", "finished")])
-        XCTAssertEqual(commands(in: copilot, event: "errorOccurred"), [hook("copilot", "failed")])
+        XCTAssertTrue(commands(in: copilot, event: "errorOccurred").isEmpty)
 
-        XCTAssertTrue(try String(contentsOf: home.appendingPathComponent(".pi/agent/extensions/atoll.ts")).contains("agent_settled"))
-        XCTAssertTrue(try String(contentsOf: home.appendingPathComponent(".config/opencode/plugin/atoll.js")).contains("session.status"))
-        XCTAssertTrue(try String(contentsOf: home.appendingPathComponent(".kimi-code/config.toml")).contains("Atoll Live Status managed integration"))
+        let pi = try String(contentsOf: home.appendingPathComponent(".pi/agent/extensions/atoll.ts"))
+        XCTAssertTrue(pi.contains("agent_settled"))
+        XCTAssertTrue(pi.contains("cwd: ctx.sessionManager.getCwd()"))
+        XCTAssertFalse(pi.contains("cwd: process.cwd()"))
+
+        let openCode = try String(contentsOf: home.appendingPathComponent(".config/opencode/plugins/atoll.js"))
+        XCTAssertTrue(openCode.contains("async ({ directory })"))
+        XCTAssertTrue(openCode.contains("cwd: directory"))
+        XCTAssertTrue(openCode.contains("status.type === \"busy\" || status.type === \"retry\""))
+        XCTAssertTrue(openCode.contains("event.type === \"session.error\""))
+        XCTAssertTrue(openCode.contains("if (!sessionID) return;"))
+        XCTAssertTrue(openCode.contains("MessageAbortedError"))
+        XCTAssertTrue(openCode.contains("!terminalSessions.has(sessionID)"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".config/opencode/plugin/atoll.js").path))
 
         let amp = try String(contentsOf: home.appendingPathComponent(".config/amp/plugins/atoll.ts"))
         XCTAssertTrue(amp.contains("agent.start"), amp)
         XCTAssertTrue(amp.contains("agent.end"), amp)
         XCTAssertTrue(amp.contains("event.status === \"error\" ? \"failed\" : \"cancelled\""), amp)
-
-        let codeBuddy = try read(home.appendingPathComponent(".codebuddy/settings.json"))
-        XCTAssertEqual(commands(in: codeBuddy, event: "UserPromptSubmit"), [codeBuddyHook("started")])
-        XCTAssertEqual(commands(in: codeBuddy, event: "Stop"), [codeBuddyHook("finished")])
-        XCTAssertEqual(commands(in: codeBuddy, event: "StopFailure"), [codeBuddyHook("failed")])
-        XCTAssertEqual(commands(in: codeBuddy, event: "SessionEnd"), [codeBuddyHook("finished")])
 
         for profile in [".hermes", ".hermes/profiles/work"] {
             let pluginRoot = home.appendingPathComponent(profile).appendingPathComponent("plugins/atoll-live-status")
@@ -77,20 +82,24 @@ final class LifecycleHookInstallerTests: XCTestCase {
         }
 
         let cursor = try read(home.appendingPathComponent(".cursor/hooks.json"))
-        XCTAssertEqual(commands(in: cursor, event: "sessionStart"), [hook("cursor", "started")])
+        XCTAssertEqual(commands(in: cursor, event: "beforeSubmitPrompt"), [hook("cursor", "started")])
+        XCTAssertTrue(commands(in: cursor, event: "sessionStart").isEmpty)
         XCTAssertEqual(commands(in: cursor, event: "stop"), [hook("cursor", "finished")])
-        XCTAssertEqual(commands(in: cursor, event: "sessionEnd"), [hook("cursor", "finished")])
+        XCTAssertTrue(commands(in: cursor, event: "sessionEnd").isEmpty)
 
-        for agent in ["droid", "qoder", "qwen"] {
-            let settings = try read(home.appendingPathComponent(".\(agent == "droid" ? "factory" : agent)/settings.json"))
+        let droid = try read(home.appendingPathComponent(".factory/hooks.json"))
+        XCTAssertEqual(commands(in: droid, event: "UserPromptSubmit"), [hook("droid", "started")])
+        XCTAssertEqual(commands(in: droid, event: "Stop"), [hook("droid", "finished")])
+        XCTAssertTrue(commands(in: droid, event: "SessionEnd").isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".factory/settings.json").path))
+
+        for agent in ["qoder", "qwen"] {
+            let settings = try read(home.appendingPathComponent(".\(agent)/settings.json"))
             XCTAssertEqual(commands(in: settings, event: "UserPromptSubmit"), [hook(agent, "started")])
             XCTAssertEqual(commands(in: settings, event: "Stop"), [hook(agent, "finished")])
-            XCTAssertEqual(commands(in: settings, event: "SessionEnd"), [hook(agent, "finished")])
+            XCTAssertEqual(commands(in: settings, event: "StopFailure"), [hook(agent, "failed")])
+            XCTAssertTrue(commands(in: settings, event: "SessionEnd").isEmpty)
         }
-
-        let kiro = try read(home.appendingPathComponent(".kiro/agents/personal.json"))
-        XCTAssertEqual(commands(in: kiro, event: "agentSpawn"), [hook("kiro", "started")])
-        XCTAssertEqual(commands(in: kiro, event: "stop"), [hook("kiro", "finished")])
 
         for agent in LifecycleHookInstaller.supportedAgents {
             XCTAssertEqual(installer.readiness(for: agent), .configured, "Expected \(agent.rawValue) to be configured")
@@ -98,10 +107,19 @@ final class LifecycleHookInstallerTests: XCTestCase {
     }
 
     func testEveryVisibleAgentHasNativeLifecycleSupport() {
+        let expected: Set<AgentHarness> = [
+            .codex, .claude, .gemini, .copilot,
+            .pi, .opencode, .cursor, .droid, .qoder, .qwen,
+            .hermes, .amp
+        ]
         XCTAssertEqual(
             Set(LifecycleHookInstaller.supportedAgents),
-            Set(AgentHarness.allCases.filter { $0 != .atoll })
+            expected
         )
+        XCTAssertEqual(Set(AgentHarness.allCases), expected.union([.atoll]))
+        XCTAssertNil(AgentHarness.parse("kimi"))
+        XCTAssertNil(AgentHarness.parse("kiro"))
+        XCTAssertNil(AgentHarness.parse("codebuddy"))
     }
 
     func testManagedPluginCollisionIsNotOverwritten() throws {
@@ -109,7 +127,7 @@ final class LifecycleHookInstallerTests: XCTestCase {
         try FileManager.default.createDirectory(at: plugin.deletingLastPathComponent(), withIntermediateDirectories: true)
         try "// another plugin".write(to: plugin, atomically: true, encoding: .utf8)
 
-        XCTAssertThrowsError(try LifecycleHookInstaller(homeDirectory: home, executablePath: executable).install(agents: [.amp]))
+        XCTAssertThrowsError(try makeInstaller().install(agents: [.amp]))
         XCTAssertEqual(try String(contentsOf: plugin), "// another plugin")
     }
 
@@ -118,14 +136,14 @@ final class LifecycleHookInstallerTests: XCTestCase {
         try FileManager.default.createDirectory(at: settings.deletingLastPathComponent(), withIntermediateDirectories: true)
         try "not json".write(to: settings, atomically: true, encoding: .utf8)
 
-        XCTAssertThrowsError(try LifecycleHookInstaller(homeDirectory: home, executablePath: executable).install())
+        XCTAssertThrowsError(try makeInstaller().install())
         XCTAssertEqual(try String(contentsOf: settings), "not json")
     }
 
     func testDetectsOnlyInstalledAgentsAndReportsReadiness() throws {
         try FileManager.default.createDirectory(at: home.appendingPathComponent(".codex"), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: home.appendingPathComponent(".claude"), withIntermediateDirectories: true)
-        let installer = LifecycleHookInstaller(homeDirectory: home, executablePath: executable)
+        let installer = makeInstaller()
 
         XCTAssertTrue(installer.detectedAgents().contains(.codex))
         XCTAssertTrue(installer.detectedAgents().contains(.claude))
@@ -140,7 +158,7 @@ final class LifecycleHookInstallerTests: XCTestCase {
     func testReportsInvalidExistingConfigurationWithoutOverwritingIt() throws {
         let copilot = home.appendingPathComponent(".copilot/hooks/atoll.json")
         try write(["hooks": ["agentStop": "not-an-array"]], to: copilot)
-        let installer = LifecycleHookInstaller(homeDirectory: home, executablePath: executable)
+        let installer = makeInstaller()
 
         guard case .invalidConfiguration = installer.readiness(for: .copilot) else {
             return XCTFail("Expected invalid Copilot configuration")
@@ -149,15 +167,190 @@ final class LifecycleHookInstallerTests: XCTestCase {
         XCTAssertEqual((try read(copilot)["hooks"] as? [String: Any])?["agentStop"] as? String, "not-an-array")
     }
 
-    func testKiroRequiresAnExistingCustomAgent() throws {
-        let installer = LifecycleHookInstaller(homeDirectory: home, executablePath: executable)
-        XCTAssertThrowsError(try installer.install(agents: [.kiro])) { error in
-            XCTAssertEqual(error.localizedDescription, "Create a Kiro CLI custom agent in \(self.home.appendingPathComponent(".kiro/agents").path) first, then run Live Status Setup again.")
+    func testFailureHooksAreRequiredForReadiness() throws {
+        let installer = makeInstaller()
+        try installer.install(agents: [])
+
+        for (agent, path) in [
+            (AgentHarness.claude, ".claude/settings.json"),
+            (.qoder, ".qoder/settings.json"),
+            (.qwen, ".qwen/settings.json")
+        ] {
+            let harness = agent.rawValue
+            try write([
+                "hooks": [
+                    "UserPromptSubmit": [["hooks": [["type": "command", "command": hook(harness, "started")]]]],
+                    "Stop": [["hooks": [["type": "command", "command": hook(harness, "finished")]]]],
+                    "SessionEnd": [["hooks": [["type": "command", "command": hook(harness, "finished")]]]]
+                ]
+            ], to: home.appendingPathComponent(path))
+
+            XCTAssertEqual(installer.readiness(for: agent), .notConfigured, "Expected \(harness) to require StopFailure")
+            try installer.install(agents: [agent])
+            XCTAssertEqual(installer.readiness(for: agent), .configured)
         }
     }
 
+    func testDroidUsesCanonicalHooksFileForReadiness() throws {
+        let legacySettings = home.appendingPathComponent(".factory/settings.json")
+        let hooks: [String: Any] = [
+            "UserPromptSubmit": [["hooks": [["type": "command", "command": hook("droid", "started")]]]],
+            "Stop": [["hooks": [["type": "command", "command": hook("droid", "finished")]]]],
+            "SessionEnd": [["hooks": [["type": "command", "command": hook("droid", "finished")]]]]
+        ]
+        try write(["hooks": hooks], to: legacySettings)
+        let installer = makeInstaller()
+        try installer.install(agents: [])
+
+        XCTAssertEqual(installer.readiness(for: .droid), .notConfigured)
+        try installer.install(agents: [.droid])
+        XCTAssertEqual(installer.readiness(for: .droid), .configured)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: home.appendingPathComponent(".factory/hooks.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacySettings.path))
+    }
+
+    func testInstallRemovesOnlyLegacyCleanupHooks() throws {
+        let installer = makeInstaller()
+        try installer.install(agents: [])
+        let groupedAgents: [(AgentHarness, String, String)] = [
+            (.claude, ".claude/settings.json", "SessionEnd"),
+            (.gemini, ".gemini/settings.json", "SessionEnd"),
+            (.droid, ".factory/hooks.json", "SessionEnd"),
+            (.qoder, ".qoder/settings.json", "SessionEnd"),
+            (.qwen, ".qwen/settings.json", "SessionEnd")
+        ]
+
+        for (agent, path, event) in groupedAgents {
+            try write([
+                "hooks": [
+                    event: [[
+                        "hooks": [
+                            ["type": "command", "command": hook(agent.rawValue, "finished")],
+                            ["type": "command", "command": "keep-me"]
+                        ]
+                    ]]
+                ]
+            ], to: home.appendingPathComponent(path))
+        }
+        try write([
+            "hooks": [
+                "sessionEnd": [
+                    ["command": hook("cursor", "finished")],
+                    ["command": "keep-me"]
+                ]
+            ]
+        ], to: home.appendingPathComponent(".cursor/hooks.json"))
+
+        for (agent, _, _) in groupedAgents {
+            XCTAssertEqual(installer.readiness(for: agent), .notConfigured)
+        }
+        XCTAssertEqual(installer.readiness(for: .cursor), .notConfigured)
+
+        try installer.install(agents: groupedAgents.map { $0.0 } + [.cursor])
+
+        for (agent, path, event) in groupedAgents {
+            XCTAssertEqual(commands(in: try read(home.appendingPathComponent(path)), event: event), ["keep-me"])
+            XCTAssertEqual(installer.readiness(for: agent), .configured)
+        }
+        XCTAssertEqual(commands(in: try read(home.appendingPathComponent(".cursor/hooks.json")), event: "sessionEnd"), ["keep-me"])
+        XCTAssertEqual(installer.readiness(for: .cursor), .configured)
+    }
+
+    func testPiRequiresVersionWithLifecycleContextSupport() throws {
+        let supported = makeInstaller(piVersionOutput: "pi-coding-agent 0.80.4")
+        try supported.install(agents: [.pi])
+        XCTAssertEqual(supported.readiness(for: .pi), .configured)
+
+        let old = makeInstaller(piVersionOutput: "pi-coding-agent 0.80.3")
+        XCTAssertTrue(old.detectedAgents().contains(.pi))
+        XCTAssertEqual(
+            old.readiness(for: .pi),
+            .invalidConfiguration("Pi 0.80.4 or newer is required for Live Status; found 0.80.3.")
+        )
+        XCTAssertThrowsError(try old.install(agents: [.pi])) { error in
+            XCTAssertEqual(error.localizedDescription, "Pi 0.80.4 or newer is required for Live Status; found 0.80.3.")
+        }
+
+        let prerelease = makeInstaller(piVersionOutput: "0.80.4-beta.1")
+        XCTAssertEqual(
+            prerelease.readiness(for: .pi),
+            .invalidConfiguration("Pi 0.80.4 or newer is required for Live Status; found 0.80.4-prerelease.")
+        )
+
+        let unverifiable = makeInstaller(piVersionOutput: "not a version")
+        XCTAssertEqual(
+            unverifiable.readiness(for: .pi),
+            .invalidConfiguration("Pi 0.80.4 or newer is required for Live Status, but Atoll could not verify it: `pi --version` returned \"not a version\".")
+        )
+    }
+
+    func testManagedIntegrationsRequireCurrentContentAndCanBeRepaired() throws {
+        try writeHermesConfig(at: home.appendingPathComponent(".hermes/config.yaml"))
+        let installer = makeInstaller()
+        let agents: [AgentHarness] = [.pi, .opencode, .amp, .hermes]
+        try installer.install(agents: agents)
+
+        let managedFiles: [(AgentHarness, String, String)] = [
+            (.pi, ".pi/agent/extensions/atoll.ts", "// Atoll Live Status managed integration\n// stale"),
+            (.opencode, ".config/opencode/plugins/atoll.js", "// Atoll Live Status managed integration\n// stale"),
+            (.amp, ".config/amp/plugins/atoll.ts", "// Atoll Live Status managed integration\n// stale"),
+            (.hermes, ".hermes/plugins/atoll-live-status/__init__.py", "# Atoll Live Status managed integration\n# stale")
+        ]
+
+        for (agent, path, staleSource) in managedFiles {
+            let url = home.appendingPathComponent(path)
+            try staleSource.write(to: url, atomically: true, encoding: .utf8)
+            XCTAssertEqual(installer.readiness(for: agent), .notConfigured, "Expected stale \(agent.rawValue) content to need repair")
+
+            try installer.install(agents: [agent])
+            XCTAssertEqual(installer.readiness(for: agent), .configured, "Expected \(agent.rawValue) repair to restore readiness")
+            XCTAssertNotEqual(try String(contentsOf: url, encoding: .utf8), staleSource)
+        }
+    }
+
+    func testEveryIntegrationRequiresTheCurrentExecutableBridge() throws {
+        let installer = makeInstaller()
+        let bridge = home.appendingPathComponent(".atoll/bin/atoll-hook")
+        try installer.install(agents: [.pi])
+        XCTAssertEqual(installer.readiness(for: .pi), .configured)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: bridge.path)
+        XCTAssertEqual(installer.readiness(for: .pi), .notConfigured)
+
+        try installer.install(agents: [.pi])
+        XCTAssertEqual(installer.readiness(for: .pi), .configured)
+
+        try "#!/bin/sh\nexit 0\n".write(to: bridge, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: bridge.path)
+        XCTAssertEqual(installer.readiness(for: .pi), .notConfigured)
+
+        try installer.install(agents: [.pi])
+        try FileManager.default.removeItem(at: bridge)
+        XCTAssertEqual(installer.readiness(for: .pi), .notConfigured)
+
+        try installer.install(agents: [.pi])
+        XCTAssertEqual(installer.readiness(for: .pi), .configured)
+    }
+
+    func testDetectionUsesFallbackExecutableDirectories() throws {
+        let executable = home.appendingPathComponent(".local/bin/pi")
+        try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "#!/bin/sh\n".write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+
+        let detected = makeInstaller().detectedAgents()
+        XCTAssertTrue(detected.contains(.pi))
+    }
+
     private func hook(_ harness: String, _ kind: String) -> String { "'\(home.path)/.atoll/bin/atoll-hook' \(harness) \(kind)" }
-    private func codeBuddyHook(_ kind: String) -> String { "\(hook("codebuddy", kind)) >/dev/null 2>&1" }
+
+    private func makeInstaller(piVersionOutput: String = "pi-coding-agent 0.80.4") -> LifecycleHookInstaller {
+        LifecycleHookInstaller(
+            homeDirectory: home,
+            executablePath: executable,
+            piVersionOutput: { piVersionOutput }
+        )
+    }
 
     private func writeHermesConfig(at url: URL) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

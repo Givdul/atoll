@@ -46,7 +46,7 @@ struct AgentGlyphView: View {
             ClaudeCrabGlyph()
                 .fill(glyphColor)
                 .padding(4)
-        case .gemini, .cursor, .droid, .qoder, .qwen, .kimi, .codebuddy, .kiro, .hermes, .amp:
+        case .gemini, .cursor, .droid, .qoder, .qwen, .hermes, .amp:
             Text(harness.shortName)
                 .font(.system(size: 8.5, weight: .black, design: .rounded))
                 .foregroundStyle(glyphColor)
@@ -138,19 +138,13 @@ private enum AgentIconLibrary {
         case .cursor:
             "cursor"
         case .droid:
-            "droid"
+            nil
         case .qoder:
             "qoder"
         case .qwen:
             "qwen"
-        case .kimi:
-            "kimi"
         case .copilot:
             "copilot"
-        case .codebuddy:
-            "codebuddy"
-        case .kiro:
-            "kiro"
         case .hermes:
             "hermes"
         case .amp:

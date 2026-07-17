@@ -151,6 +151,16 @@ private final class LiveStatusSetupModel: ObservableObject {
             return result.isReady ? .installed : .failed(result.detail ?? "Needs attention")
         }
     }
+
+    var failedCount: Int {
+        agents.reduce(into: 0) { count, agent in
+            if results[agent.rawValue]?.isReady == false { count += 1 }
+        }
+    }
+
+    var installedCount: Int { agents.count - failedCount }
+
+    var hasFailures: Bool { phase == .complete && failedCount > 0 }
 }
 
 private enum AgentInstallStatus {
@@ -173,7 +183,7 @@ private struct LiveStatusSetupView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.bottom, 12)
 
-                Text(model.phase == .complete ? "Live status is ready" : "Live status")
+                Text(title)
                     .font(.system(size: 27, weight: .semibold, design: .rounded))
 
                 Text(description)
@@ -220,12 +230,24 @@ private struct LiveStatusSetupView: View {
     private var description: String {
         switch model.phase {
         case .ready:
-            "See when your local agents are working, waiting, or done."
+            "See when your local agents are working or done."
         case .installing:
             "Adding live status to your detected agents."
         case .complete:
-            "Your agent status will now appear in Atoll."
+            if model.hasFailures {
+                if model.installedCount == 0 {
+                    "Live Status could not be verified for these agents. Hover over an agent marked in red for details."
+                } else {
+                    "Live Status was added to \(model.installedCount) of \(model.agents.count) agents. Hover over an agent marked in red for details."
+                }
+            } else {
+                "Live Status was added. Codex and Droid may ask you to review new hooks through /hooks before status appears."
+            }
         }
+    }
+
+    private var title: String {
+        model.hasFailures ? "Some agents need attention" : model.phase == .complete ? "Live status added" : "Live status"
     }
 }
 
@@ -241,7 +263,7 @@ private struct LiveStatusUnavailableView: View {
                 Text("No supported agents found")
                     .font(.system(size: 25, weight: .semibold, design: .rounded))
 
-                Text("Install a supported coding agent, then return here. Atoll supports every agent shown in Live Status Setup, including Pi, Hermes, Amp, and CodeBuddy.")
+                Text("Install a supported coding agent, then return here. Atoll supports every agent shown in Live Status Setup, including Pi, Hermes, Amp, and OpenCode.")
                     .font(.system(size: 14))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -310,6 +332,7 @@ private struct AgentInstallTile: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(agent.displayName), \(accessibilityStatus)")
+        .help(accessibilityStatus)
     }
 
     private var accessibilityStatus: String {

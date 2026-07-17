@@ -36,6 +36,10 @@ enum AtollIcon {
             NSColor(calibratedRed: 1.0, green: 0.58, blue: 0.04, alpha: 1)
         case .done:
             NSColor(calibratedRed: 0.10, green: 0.96, blue: 0.40, alpha: 1)
+        case .failed:
+            NSColor(calibratedRed: 1.0, green: 0.12, blue: 0.18, alpha: 1)
+        case .cancelled:
+            NSColor.secondaryLabelColor
         case .waitingForInput:
             NSColor(calibratedRed: 0.18, green: 0.74, blue: 1.0, alpha: 1)
         case .waitingForPermission:

@@ -106,7 +106,7 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
     private func prune(now: Date) -> Bool {
         let before = records.count
         records = records.filter { _, record in
-            let ttl = record.state == .done ? terminalTTL : activeTTL
+            let ttl = record.state.isTerminal ? terminalTTL : activeTTL
             return now.timeIntervalSince(record.updatedAt) <= ttl
         }
         return records.count != before

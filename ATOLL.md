@@ -61,7 +61,7 @@ Hover state:
 Visibility rules:
 
 - Running, waiting-for-input, and waiting-for-permission sessions are visible unless confidence is historical.
-- Done sessions are visible for `3s`.
+- Done, failed, and cancelled sessions are visible for `3s`.
 - Max visible sessions: `8`.
 - Attention sessions are pinned after regular rows.
 - Waiting menu badge count uses the first `3` waiting sessions.
@@ -70,8 +70,8 @@ Animations:
 
 - Row/list reveal: cubic timing curve `(0.2, 0.8, 0.2, 1)`, `0.22s`.
 - Row identity changes: cubic timing curve `(0.22, 1, 0.36, 1)`, `0.22s`.
-- Done row insertion: move from top plus opacity.
-- Done row removal: `y: -18` plus opacity.
+- Terminal row insertion: move from top plus opacity.
+- Terminal row removal: `y: -18` plus opacity.
 - Attention fade: ease-in-out `0.18s`, delayed `0.2s` when dimming.
 - List unmount delay: `0.24s`.
 - Panel hide after row exit: `0.26s`.
@@ -131,6 +131,8 @@ Core state accents from `SessionStateColor`:
 | Waiting for input / question | `0.22, 0.78, 1.00` | `#38C7FF` |
 | Waiting for permission | `1.00, 0.20, 0.29` | `#FF334A` |
 | Done | `0.22, 0.95, 0.42` | `#38F26B` |
+| Failed | `1.00, 0.20, 0.29` | `#FF334A` |
+| Cancelled | white `0.52` opacity | `rgba(255,255,255,0.52)` |
 | Unknown | white `0.52` opacity | `rgba(255,255,255,0.52)` |
 
 Row status symbol accents:
@@ -141,6 +143,8 @@ Row status symbol accents:
 | Waiting for input | `0.18, 0.80, 1.00` | `#2ECCFF` |
 | Waiting for permission | `1.00, 0.22, 0.34` | `#FF3857` |
 | Done | `0.24, 0.94, 0.44` | `#3DF070` |
+| Failed | `1.00, 0.22, 0.34` | `#FF3857` |
+| Cancelled | white `0.52` opacity | `rgba(255,255,255,0.52)` |
 | Unknown | white `0.07` opacity | `rgba(255,255,255,0.07)` |
 
 App/status icon colors:
@@ -180,6 +184,8 @@ State title weights/opacities:
 | Waiting for input | bold | `1.00` | `1.02` |
 | Waiting for permission | bold | `1.00` | `1.02` |
 | Done | medium | `0.78` | `0.94` |
+| Failed | medium | `0.88` | `0.94` |
+| Cancelled | medium | `0.72` | `0.94` |
 | Unknown | medium | `0.82` | `0.96` |
 
 ## Row Content
@@ -197,6 +203,8 @@ Status symbols:
 | --- | --- |
 | Running | `terminal` |
 | Done | `checkmark` |
+| Failed | `exclamationmark` |
+| Cancelled | `minus` |
 | Waiting for input | `questionmark` |
 | Waiting for permission | `hand.raised.fill` |
 | Unknown | `ellipsis` |
@@ -206,7 +214,7 @@ Timer formatting:
 - `< 100s`: `"%02ds"`.
 - `< 6000s`: `"%02dm"`.
 - Otherwise: `"%02dh"`, capped at `99h`.
-- Done rows freeze timer at `updatedAt`; active rows tick every second.
+- Terminal rows freeze timer at `updatedAt`; active rows tick every second.
 
 Test-mode row text:
 
@@ -244,8 +252,8 @@ Lifecycle behavior:
 - Hooks deliver `started`, terminal, and optional attention events directly to `~/.atoll/lifecycle.sock`.
 - The app refreshes immediately on each socket event.
 - A `1s` maintenance timer drains Atoll's own durable event queue and expires stale lifecycle state; it never scans agent transcripts, processes, or lock files.
-- Active sessions expire after `10m` without a newer event; done sessions remain available to the UI for `5s`.
-- **Install Lifecycle Hooks…** explicitly installs user-level bridges for Codex, Claude Code, Gemini CLI, GitHub Copilot CLI, Pi, OpenCode, Cursor Agent, Factory Droid, Qoder, Qwen Code, Kimi Code, configured Kiro CLI custom agents, Hermes, Amp, and CodeBuddy.
+- Active sessions expire after `10m` without a newer event; done, failed, and cancelled sessions remain available to the UI for `5s`.
+- **Live Status Setup…** explicitly installs user-level bridges for Codex, Claude Code, Gemini CLI, GitHub Copilot CLI, Pi, OpenCode, Cursor Agent, Factory Droid, Qoder, Qwen Code, Hermes, and Amp.
 
 Settings:
 
@@ -265,11 +273,8 @@ Native hook integrations:
 - Factory Droid
 - Qoder
 - Qwen Code
-- Kimi Code
-- Kiro CLI
 - Hermes
 - Amp
-- CodeBuddy
 
 Any harness can use Atoll's normalized `--lifecycle-event <harness> <kind>` bridge. The app deliberately makes no claim of native lifecycle capture until that harness has a verified adapter.
 
@@ -295,13 +300,9 @@ Agent SVG assets:
 | claude | Claude Code | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/claude.svg` |
 | gemini | Gemini CLI | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/gemini.svg` |
 | cursor | Cursor Agent | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/cursor.svg` |
-| droid | Factory Droid | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/droid.svg` |
 | qoder | Qoder | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/qoder.svg` |
 | qwen | Qwen Code | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/qwen.svg` |
-| kimi | Kimi Code | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/kimi.svg` |
 | copilot | GitHub Copilot | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/copilot.svg` |
-| codebuddy | CodeBuddy | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/codebuddy.svg` |
-| kiro | Kiro | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/kiro.svg` |
 | hermes | Hermes | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/hermes.svg` |
 | amp | Amp | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/amp.svg` |
 | pi | Pi | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/pi.svg` |
