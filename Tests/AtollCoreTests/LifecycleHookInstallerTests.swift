@@ -37,6 +37,11 @@ final class LifecycleHookInstallerTests: XCTestCase {
         XCTAssertTrue(commands(in: claudeJSON, event: "Stop").contains("keep-me"))
         XCTAssertTrue(commands(in: claudeJSON, event: "Stop").contains(hook("claude", "finished")))
         XCTAssertEqual(commands(in: claudeJSON, event: "StopFailure"), [hook("claude", "failed")])
+        XCTAssertEqual(commands(in: claudeJSON, event: "Notification", matcher: "permission_prompt"), [hook("claude", "needsPermission")])
+        XCTAssertEqual(commands(in: claudeJSON, event: "Notification", matcher: "elicitation_dialog"), [hook("claude", "needsInput")])
+        XCTAssertEqual(commands(in: claudeJSON, event: "Notification", matcher: "agent_needs_input"), [hook("claude", "needsInput")])
+        XCTAssertEqual(commands(in: claudeJSON, event: "Notification", matcher: "elicitation_complete"), [hook("claude", "started")])
+        XCTAssertEqual(commands(in: claudeJSON, event: "PermissionDenied", matcher: "*"), [hook("claude", "started")])
         XCTAssertTrue(commands(in: claudeJSON, event: "SessionEnd").isEmpty)
 
         let codex = try read(home.appendingPathComponent(".codex/hooks.json"))
@@ -46,6 +51,8 @@ final class LifecycleHookInstallerTests: XCTestCase {
         let gemini = try read(home.appendingPathComponent(".gemini/settings.json"))
         XCTAssertEqual(commands(in: gemini, event: "BeforeAgent"), [hook("gemini", "started")])
         XCTAssertEqual(commands(in: gemini, event: "AfterAgent"), [hook("gemini", "finished")])
+        XCTAssertEqual(commands(in: gemini, event: "Notification", matcher: "ToolPermission"), [hook("gemini", "needsPermission")])
+        XCTAssertEqual(commands(in: gemini, event: "AfterTool", matcher: "*"), [hook("gemini", "started")])
         XCTAssertTrue(commands(in: gemini, event: "SessionEnd").isEmpty)
 
         let copilot = try read(home.appendingPathComponent(".copilot/hooks/atoll.json"))
@@ -54,6 +61,9 @@ final class LifecycleHookInstallerTests: XCTestCase {
         XCTAssertEqual(commands(in: copilot, event: "agentStop"), [hook("copilot", "finished")])
         XCTAssertEqual(commands(in: copilot, event: "sessionEnd"), [hook("copilot", "finished")])
         XCTAssertTrue(commands(in: copilot, event: "errorOccurred").isEmpty)
+        XCTAssertEqual(commands(in: copilot, event: "notification", matcher: "permission_prompt"), [hook("copilot", "needsPermission")])
+        XCTAssertEqual(commands(in: copilot, event: "notification", matcher: "elicitation_dialog"), [hook("copilot", "needsInput")])
+        XCTAssertEqual(commands(in: copilot, event: "postToolUseFailure"), [hook("copilot", "started")])
 
         let pi = try String(contentsOf: home.appendingPathComponent(".pi/agent/extensions/atoll.ts"))
         XCTAssertTrue(pi.contains("agent_settled"))
@@ -65,14 +75,38 @@ final class LifecycleHookInstallerTests: XCTestCase {
         XCTAssertTrue(openCode.contains("cwd: directory"))
         XCTAssertTrue(openCode.contains("status.type === \"busy\" || status.type === \"retry\""))
         XCTAssertTrue(openCode.contains("event.type === \"session.error\""))
+        XCTAssertTrue(openCode.contains("event.type === \"permission.asked\" || event.type === \"permission.updated\""))
+        XCTAssertTrue(openCode.contains("event.type === \"permission.replied\""))
+        XCTAssertTrue(openCode.contains("event.type === \"question.asked\""))
+        XCTAssertTrue(openCode.contains("event.type === \"question.replied\" || event.type === \"question.rejected\""))
+        XCTAssertTrue(openCode.contains("emit(\"needsPermission\", sessionID)"))
+        XCTAssertTrue(openCode.contains("emit(\"needsInput\", sessionID)"))
         XCTAssertTrue(openCode.contains("if (!sessionID) return;"))
         XCTAssertTrue(openCode.contains("MessageAbortedError"))
         XCTAssertTrue(openCode.contains("!terminalSessions.has(sessionID)"))
+        XCTAssertTrue(openCode.contains("""
+          const finish = sessionID => {
+            if (!sessionID || terminalSessions.has(sessionID)) return;
+            terminalSessions.add(sessionID);
+            emit("finished", sessionID);
+        """))
+        XCTAssertTrue(openCode.contains("""
+              if (event.type === "session.idle") {
+                finish(sessionID);
+                return;
+        """))
+        XCTAssertTrue(openCode.contains("if (status.type === \"idle\") finish(sessionID);"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".config/opencode/plugin/atoll.js").path))
 
         let amp = try String(contentsOf: home.appendingPathComponent(".config/amp/plugins/atoll.ts"))
         XCTAssertTrue(amp.contains("agent.start"), amp)
         XCTAssertTrue(amp.contains("agent.end"), amp)
+        XCTAssertTrue(amp.contains("thread.state.subscribe"), amp)
+        XCTAssertTrue(amp.contains("if (state === previousState) return;"), amp)
+        XCTAssertTrue(amp.contains("state === \"awaiting-approval\"") && amp.contains("emit(\"needsPermission\", thread.id)"), amp)
+        XCTAssertTrue(amp.contains("state === \"running\"") && amp.contains("emit(\"started\", thread.id)"), amp)
+        XCTAssertTrue(amp.contains("stateSubscriptions.get(event.thread.id)?.unsubscribe()"), amp)
+        XCTAssertTrue(amp.contains("stateSubscriptions.delete(event.thread.id)"), amp)
         XCTAssertTrue(amp.contains("event.status === \"error\" ? \"failed\" : \"cancelled\""), amp)
 
         for profile in [".hermes", ".hermes/profiles/work"] {
@@ -98,8 +132,12 @@ final class LifecycleHookInstallerTests: XCTestCase {
             XCTAssertEqual(commands(in: settings, event: "UserPromptSubmit"), [hook(agent, "started")])
             XCTAssertEqual(commands(in: settings, event: "Stop"), [hook(agent, "finished")])
             XCTAssertEqual(commands(in: settings, event: "StopFailure"), [hook(agent, "failed")])
+            XCTAssertEqual(commands(in: settings, event: "Notification", matcher: "permission_prompt"), [hook(agent, "needsPermission")])
+            XCTAssertEqual(commands(in: settings, event: "PostToolUseFailure", matcher: "*"), [hook(agent, "started")])
             XCTAssertTrue(commands(in: settings, event: "SessionEnd").isEmpty)
         }
+        let qoder = try read(home.appendingPathComponent(".qoder/settings.json"))
+        XCTAssertEqual(commands(in: qoder, event: "Notification", matcher: "elicitation_dialog"), [hook("qoder", "needsInput")])
 
         for agent in LifecycleHookInstaller.supportedAgents {
             XCTAssertEqual(installer.readiness(for: agent), .configured, "Expected \(agent.rawValue) to be configured")
@@ -165,6 +203,95 @@ final class LifecycleHookInstallerTests: XCTestCase {
         }
         XCTAssertThrowsError(try installer.install(agents: [.copilot]))
         XCTAssertEqual((try read(copilot)["hooks"] as? [String: Any])?["agentStop"] as? String, "not-an-array")
+    }
+
+    func testRejectsMalformedNestedHookShapeWithoutOverwritingIt() throws {
+        let settings = home.appendingPathComponent(".claude/settings.json")
+        try write([
+            "hooks": [
+                "UserPromptSubmit": [[
+                    "hooks": [
+                        "nested": [["type": "command", "command": hook("claude", "started")]]
+                    ]
+                ]]
+            ]
+        ], to: settings)
+        let original = try Data(contentsOf: settings)
+        let installer = makeInstaller()
+
+        guard case .invalidConfiguration = installer.readiness(for: .claude) else {
+            return XCTFail("Expected malformed grouped hook shape to be rejected")
+        }
+        XCTAssertThrowsError(try installer.install(agents: [.claude]))
+        XCTAssertEqual(try Data(contentsOf: settings), original)
+    }
+
+    func testCopilotReadinessAcceptsDocumentedCommandFallbackShape() throws {
+        let installer = makeInstaller()
+        try installer.install(agents: [])
+        let command: (String) -> [String: Any] = { kind in
+            ["command": self.hook("copilot", kind)]
+        }
+        try write([
+            "version": 1,
+            "hooks": [
+                "userPromptSubmitted": [command("started")],
+                "agentStop": [command("finished")],
+                "sessionEnd": [command("finished")],
+                "notification": [
+                    ["command": hook("copilot", "needsPermission"), "matcher": "permission_prompt"],
+                    ["command": hook("copilot", "needsInput"), "matcher": "elicitation_dialog"]
+                ],
+                "postToolUse": [command("started")],
+                "postToolUseFailure": [command("started")]
+            ]
+        ], to: home.appendingPathComponent(".copilot/hooks/atoll.json"))
+
+        XCTAssertEqual(installer.readiness(for: .copilot), .configured)
+    }
+
+    func testReportsDocumentedHookDisableSettingsWithoutChangingThem() throws {
+        let configurations: [(AgentHarness, String, [String: Any])] = [
+            (.claude, ".claude/settings.json", ["disableAllHooks": true, "hooks": [:]]),
+            (.gemini, ".gemini/settings.json", ["hooksConfig": ["enabled": false], "hooks": [:]]),
+            (.copilot, ".copilot/hooks/atoll.json", ["version": 1, "disableAllHooks": true, "hooks": [:]]),
+            (.qwen, ".qwen/settings.json", ["disableAllHooks": true, "hooks": [:]])
+        ]
+        let installer = makeInstaller()
+
+        for (agent, path, object) in configurations {
+            let url = home.appendingPathComponent(path)
+            try write(object, to: url)
+            let original = try Data(contentsOf: url)
+            guard case .invalidConfiguration = installer.readiness(for: agent) else {
+                return XCTFail("Expected disabled \(agent.rawValue) hooks to require user action")
+            }
+            XCTAssertThrowsError(try installer.install(agents: [agent]))
+            XCTAssertEqual(try Data(contentsOf: url), original)
+        }
+    }
+
+    func testUsesDocumentedCustomUserConfigurationHomes() throws {
+        let claude = home.appendingPathComponent("custom-claude")
+        let copilot = home.appendingPathComponent("custom-copilot")
+        let geminiRoot = home.appendingPathComponent("custom-gemini-root")
+        let qwen = home.appendingPathComponent("custom-qwen")
+        let installer = makeInstaller(environment: [
+            "CLAUDE_CONFIG_DIR": claude.path,
+            "COPILOT_HOME": copilot.path,
+            "GEMINI_CLI_HOME": geminiRoot.path,
+            "QWEN_HOME": qwen.path
+        ])
+
+        try installer.install(agents: [.claude, .copilot, .gemini, .qwen])
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: claude.appendingPathComponent("settings.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: copilot.appendingPathComponent("hooks/atoll.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: geminiRoot.appendingPathComponent(".gemini/settings.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: qwen.appendingPathComponent("settings.json").path))
+        for agent in [AgentHarness.claude, .copilot, .gemini, .qwen] {
+            XCTAssertEqual(installer.readiness(for: agent), .configured)
+        }
     }
 
     func testFailureHooksAreRequiredForReadiness() throws {
@@ -344,11 +471,15 @@ final class LifecycleHookInstallerTests: XCTestCase {
 
     private func hook(_ harness: String, _ kind: String) -> String { "'\(home.path)/.atoll/bin/atoll-hook' \(harness) \(kind)" }
 
-    private func makeInstaller(piVersionOutput: String = "pi-coding-agent 0.80.4") -> LifecycleHookInstaller {
+    private func makeInstaller(
+        piVersionOutput: String = "pi-coding-agent 0.80.4",
+        environment: [String: String] = [:]
+    ) -> LifecycleHookInstaller {
         LifecycleHookInstaller(
             homeDirectory: home,
             executablePath: executable,
-            piVersionOutput: { piVersionOutput }
+            piVersionOutput: { piVersionOutput },
+            environment: environment
         )
     }
 
@@ -360,6 +491,15 @@ final class LifecycleHookInstallerTests: XCTestCase {
     private func commands(in root: [String: Any], event: String) -> [String] {
         let hooks = root["hooks"] as? [String: Any]
         return collectCommands(hooks?[event]).sorted()
+    }
+
+    private func commands(in root: [String: Any], event: String, matcher: String) -> [String] {
+        let hooks = root["hooks"] as? [String: Any]
+        let entries = hooks?[event] as? [[String: Any]] ?? []
+        return entries
+            .filter { $0["matcher"] as? String == matcher }
+            .flatMap(collectCommands)
+            .sorted()
     }
 
     private func collectCommands(_ object: Any?) -> [String] {

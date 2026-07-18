@@ -16,6 +16,7 @@ public struct LifecycleHookInstaller {
     public enum Error: Swift.Error, LocalizedError {
         case invalidJSON(URL)
         case invalidHookConfiguration(URL)
+        case hooksDisabled(URL, setting: String)
         case managedFileConflict(URL)
         case commandUnavailable(String)
         case commandFailed(String)
@@ -26,6 +27,7 @@ public struct LifecycleHookInstaller {
             switch self {
             case .invalidJSON(let url): "Cannot merge hooks because \(url.path) is not a JSON object."
             case .invalidHookConfiguration(let url): "Cannot merge hooks because \(url.path) has an invalid hooks configuration."
+            case .hooksDisabled(let url, let setting): "Live Status hooks are disabled by \(setting) in \(url.path)."
             case .managedFileConflict(let url): "Cannot install Atoll's managed integration because \(url.path) already belongs to another extension or plugin."
             case .commandUnavailable(let command): "Cannot finish setup because \(command) is not available."
             case .commandFailed(let detail): "Cannot finish setup: \(detail)"
@@ -39,17 +41,20 @@ public struct LifecycleHookInstaller {
     public let executablePath: String
     private let fileManager: FileManager
     private let piVersionOutput: (() throws -> String)?
+    private let environment: [String: String]
 
     public init(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         executablePath: String = "/Applications/Atoll.app/Contents/MacOS/Atoll",
         fileManager: FileManager = .default,
-        piVersionOutput: (() throws -> String)? = nil
+        piVersionOutput: (() throws -> String)? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
         self.homeDirectory = homeDirectory
         self.executablePath = executablePath
         self.fileManager = fileManager
         self.piVersionOutput = piVersionOutput
+        self.environment = environment
     }
 
     public func install() throws {
@@ -73,22 +78,32 @@ public struct LifecycleHookInstaller {
                 events: [("beforeSubmitPrompt", "started"), ("stop", "finished")],
                 removing: [("sessionEnd", "finished")]
             )
-            case .droid: try mergeSettings(at: configurationURL(for: .droid)) { hooks in
-                try removeCommand(from: &hooks, event: "SessionEnd", command: hookCommand(harness: "droid", kind: "finished"))
+            case .droid: try mergeSettings(at: configurationURL(for: .droid), agent: .droid) { hooks in
+                try removeGroupedCommand(from: &hooks, event: "SessionEnd", command: hookCommand(harness: "droid", kind: "finished"))
                 try addGroupedCommand(to: &hooks, event: "UserPromptSubmit", command: hookCommand(harness: "droid", kind: "started"), matcher: nil)
                 try addGroupedCommand(to: &hooks, event: "Stop", command: hookCommand(harness: "droid", kind: "finished"), matcher: nil)
             }
-            case .qoder: try mergeSettings(at: configurationURL(for: .qoder)) { hooks in
-                try removeCommand(from: &hooks, event: "SessionEnd", command: hookCommand(harness: "qoder", kind: "finished"))
+            case .qoder: try mergeSettings(at: configurationURL(for: .qoder), agent: .qoder) { hooks in
+                try removeGroupedCommand(from: &hooks, event: "SessionEnd", command: hookCommand(harness: "qoder", kind: "finished"))
                 try addGroupedCommand(to: &hooks, event: "UserPromptSubmit", command: hookCommand(harness: "qoder", kind: "started"), matcher: nil)
                 try addGroupedCommand(to: &hooks, event: "Stop", command: hookCommand(harness: "qoder", kind: "finished"), matcher: nil)
                 try addGroupedCommand(to: &hooks, event: "StopFailure", command: hookCommand(harness: "qoder", kind: "failed"), matcher: nil)
+                try addGroupedCommand(to: &hooks, event: "Notification", command: hookCommand(harness: "qoder", kind: "needsPermission"), matcher: "permission_prompt")
+                try addGroupedCommand(to: &hooks, event: "Notification", command: hookCommand(harness: "qoder", kind: "needsInput"), matcher: "elicitation_dialog")
+                try addGroupedCommand(to: &hooks, event: "Notification", command: hookCommand(harness: "qoder", kind: "started"), matcher: "elicitation_response")
+                try addGroupedCommand(to: &hooks, event: "Notification", command: hookCommand(harness: "qoder", kind: "started"), matcher: "elicitation_complete")
+                try addGroupedCommand(to: &hooks, event: "PostToolUse", command: hookCommand(harness: "qoder", kind: "started"), matcher: "*")
+                try addGroupedCommand(to: &hooks, event: "PostToolUseFailure", command: hookCommand(harness: "qoder", kind: "started"), matcher: "*")
+                try addGroupedCommand(to: &hooks, event: "PermissionDenied", command: hookCommand(harness: "qoder", kind: "started"), matcher: "*")
             }
-            case .qwen: try mergeSettings(at: configurationURL(for: .qwen)) { hooks in
-                try removeCommand(from: &hooks, event: "SessionEnd", command: hookCommand(harness: "qwen", kind: "finished"))
+            case .qwen: try mergeSettings(at: configurationURL(for: .qwen), agent: .qwen) { hooks in
+                try removeGroupedCommand(from: &hooks, event: "SessionEnd", command: hookCommand(harness: "qwen", kind: "finished"))
                 try addGroupedCommand(to: &hooks, event: "UserPromptSubmit", command: hookCommand(harness: "qwen", kind: "started"), matcher: nil)
                 try addGroupedCommand(to: &hooks, event: "Stop", command: hookCommand(harness: "qwen", kind: "finished"), matcher: nil)
                 try addGroupedCommand(to: &hooks, event: "StopFailure", command: hookCommand(harness: "qwen", kind: "failed"), matcher: nil)
+                try addGroupedCommand(to: &hooks, event: "Notification", command: hookCommand(harness: "qwen", kind: "needsPermission"), matcher: "permission_prompt")
+                try addGroupedCommand(to: &hooks, event: "PostToolUse", command: hookCommand(harness: "qwen", kind: "started"), matcher: "*")
+                try addGroupedCommand(to: &hooks, event: "PostToolUseFailure", command: hookCommand(harness: "qwen", kind: "started"), matcher: "*")
             }
             case .hermes: try installHermesPlugins()
             case .amp: try writeAmpPlugin()
@@ -117,7 +132,7 @@ public struct LifecycleHookInstaller {
         do {
             let url = configurationURL(for: agent)
             let root = try jsonObject(at: url)
-            try validateHookConfiguration(root, at: url)
+            try validateHookConfiguration(root, for: agent, at: url)
             return readiness(requiring: hasAllCommands(in: root, for: agent))
         } catch {
             return .invalidConfiguration(error.localizedDescription)
@@ -128,14 +143,14 @@ public struct LifecycleHookInstaller {
 
     private func configurationURL(for agent: AgentHarness) -> URL {
         switch agent {
-        case .claude: homeDirectory.appendingPathComponent(".claude/settings.json")
+        case .claude: claudeConfigurationDirectory.appendingPathComponent("settings.json")
         case .codex: homeDirectory.appendingPathComponent(".codex/hooks.json")
-        case .gemini: homeDirectory.appendingPathComponent(".gemini/settings.json")
-        case .copilot: homeDirectory.appendingPathComponent(".copilot/hooks/atoll.json")
+        case .gemini: geminiConfigurationDirectory.appendingPathComponent("settings.json")
+        case .copilot: copilotConfigurationDirectory.appendingPathComponent("hooks/atoll.json")
         case .cursor: homeDirectory.appendingPathComponent(".cursor/hooks.json")
         case .droid: homeDirectory.appendingPathComponent(".factory/hooks.json")
         case .qoder: homeDirectory.appendingPathComponent(".qoder/settings.json")
-        case .qwen: homeDirectory.appendingPathComponent(".qwen/settings.json")
+        case .qwen: qwenConfigurationDirectory.appendingPathComponent("settings.json")
         case .pi: piExtensionURL
         case .opencode: openCodePluginURL
         case .hermes: homeDirectory.appendingPathComponent(".hermes/config.yaml")
@@ -147,6 +162,38 @@ public struct LifecycleHookInstaller {
     private func configurationDirectory(for agent: AgentHarness) -> URL? {
         if agent == .amp { return homeDirectory.appendingPathComponent(".config/amp") }
         return configurationURL(for: agent).deletingLastPathComponent()
+    }
+
+    private var claudeConfigurationDirectory: URL {
+        customDirectory(environmentVariable: "CLAUDE_CONFIG_DIR")
+            ?? homeDirectory.appendingPathComponent(".claude")
+    }
+
+    private var copilotConfigurationDirectory: URL {
+        customDirectory(environmentVariable: "COPILOT_HOME")
+            ?? homeDirectory.appendingPathComponent(".copilot")
+    }
+
+    private var geminiConfigurationDirectory: URL {
+        let root = customDirectory(environmentVariable: "GEMINI_CLI_HOME") ?? homeDirectory
+        return root.appendingPathComponent(".gemini")
+    }
+
+    private var qwenConfigurationDirectory: URL {
+        customDirectory(environmentVariable: "QWEN_HOME")
+            ?? homeDirectory.appendingPathComponent(".qwen")
+    }
+
+    private func customDirectory(environmentVariable name: String) -> URL? {
+        guard let raw = environment[name]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        if raw == "~" { return homeDirectory }
+        if raw.hasPrefix("~/") {
+            return homeDirectory.appendingPathComponent(String(raw.dropFirst(2)))
+        }
+        guard raw.hasPrefix("/") else { return nil }
+        return URL(fileURLWithPath: raw, isDirectory: true)
     }
 
     private func commandIsAvailable(_ command: String) -> Bool {
@@ -162,29 +209,112 @@ public struct LifecycleHookInstaller {
         }
     }
 
-    private func hasAllCommands(in root: [String: Any], for agent: AgentHarness) -> Bool {
-        let commands: [(String, String)]
-        switch agent {
-        case .claude: commands = [("UserPromptSubmit", "started"), ("Stop", "finished"), ("StopFailure", "failed")]
-        case .codex: commands = [("UserPromptSubmit", "started"), ("Stop", "finished")]
-        case .gemini: commands = [("BeforeAgent", "started"), ("AfterAgent", "finished")]
-        case .copilot: commands = [("userPromptSubmitted", "started"), ("agentStop", "finished"), ("sessionEnd", "finished")]
-        case .cursor: commands = [("beforeSubmitPrompt", "started"), ("stop", "finished")]
-        case .droid: commands = [("UserPromptSubmit", "started"), ("Stop", "finished")]
-        case .qoder, .qwen: commands = [("UserPromptSubmit", "started"), ("Stop", "finished"), ("StopFailure", "failed")]
-        default: return false
+    private struct HookRequirement {
+        let event: String
+        let kind: String
+        let matcher: String?
+
+        init(_ event: String, _ kind: String, matcher: String? = nil) {
+            self.event = event
+            self.kind = kind
+            self.matcher = matcher
         }
+    }
+
+    private func requiredHooks(for agent: AgentHarness) -> [HookRequirement] {
+        switch agent {
+        case .claude:
+            [
+                HookRequirement("UserPromptSubmit", "started"),
+                HookRequirement("Stop", "finished"),
+                HookRequirement("StopFailure", "failed"),
+                HookRequirement("Notification", "needsPermission", matcher: "permission_prompt"),
+                HookRequirement("Notification", "needsInput", matcher: "elicitation_dialog"),
+                HookRequirement("Notification", "needsInput", matcher: "agent_needs_input"),
+                HookRequirement("Notification", "started", matcher: "elicitation_complete"),
+                HookRequirement("Notification", "started", matcher: "elicitation_response"),
+                HookRequirement("PostToolUse", "started", matcher: "*"),
+                HookRequirement("PermissionDenied", "started", matcher: "*")
+            ]
+        case .codex:
+            [HookRequirement("UserPromptSubmit", "started"), HookRequirement("Stop", "finished")]
+        case .gemini:
+            [
+                HookRequirement("BeforeAgent", "started", matcher: "*"),
+                HookRequirement("AfterAgent", "finished", matcher: "*"),
+                HookRequirement("Notification", "needsPermission", matcher: "ToolPermission"),
+                HookRequirement("AfterTool", "started", matcher: "*")
+            ]
+        case .copilot:
+            [
+                HookRequirement("userPromptSubmitted", "started"),
+                HookRequirement("agentStop", "finished"),
+                HookRequirement("sessionEnd", "finished"),
+                HookRequirement("notification", "needsPermission", matcher: "permission_prompt"),
+                HookRequirement("notification", "needsInput", matcher: "elicitation_dialog"),
+                HookRequirement("postToolUse", "started"),
+                HookRequirement("postToolUseFailure", "started")
+            ]
+        case .cursor:
+            [HookRequirement("beforeSubmitPrompt", "started"), HookRequirement("stop", "finished")]
+        case .droid:
+            [HookRequirement("UserPromptSubmit", "started"), HookRequirement("Stop", "finished")]
+        case .qoder:
+            [
+                HookRequirement("UserPromptSubmit", "started"),
+                HookRequirement("Stop", "finished"),
+                HookRequirement("StopFailure", "failed"),
+                HookRequirement("Notification", "needsPermission", matcher: "permission_prompt"),
+                HookRequirement("Notification", "needsInput", matcher: "elicitation_dialog"),
+                HookRequirement("Notification", "started", matcher: "elicitation_response"),
+                HookRequirement("Notification", "started", matcher: "elicitation_complete"),
+                HookRequirement("PostToolUse", "started", matcher: "*"),
+                HookRequirement("PostToolUseFailure", "started", matcher: "*"),
+                HookRequirement("PermissionDenied", "started", matcher: "*")
+            ]
+        case .qwen:
+            [
+                HookRequirement("UserPromptSubmit", "started"),
+                HookRequirement("Stop", "finished"),
+                HookRequirement("StopFailure", "failed"),
+                HookRequirement("Notification", "needsPermission", matcher: "permission_prompt"),
+                HookRequirement("PostToolUse", "started", matcher: "*"),
+                HookRequirement("PostToolUseFailure", "started", matcher: "*")
+            ]
+        default:
+            []
+        }
+    }
+
+    private func hasAllCommands(in root: [String: Any], for agent: AgentHarness) -> Bool {
+        let requirements = requiredHooks(for: agent)
+        guard !requirements.isEmpty else { return false }
         guard let hooks = root["hooks"] as? [String: Any] else { return false }
-        guard commands.allSatisfy({ event, kind in
-            guard let entries = hooks[event] else { return false }
-            return containsCommand(entries, command: hookCommand(harness: agent.rawValue, kind: kind))
-        }) else { return false }
+        let hasRequiredHooks = requirements.allSatisfy { requirement in
+            let command = hookCommand(harness: agent.rawValue, kind: requirement.kind)
+            switch agent {
+            case .cursor:
+                return containsFlatCommand(hooks[requirement.event], command: command)
+            case .copilot:
+                return containsCopilotCommand(
+                    hooks[requirement.event],
+                    command: command,
+                    matcher: requirement.matcher
+                )
+            default:
+                return containsGroupedCommand(
+                    hooks[requirement.event],
+                    command: command,
+                    matcher: requirement.matcher
+                )
+            }
+        }
+        guard hasRequiredHooks else { return false }
 
         guard let cleanupEvent = legacyCleanupEvent(for: agent) else { return true }
-        return !containsCommand(
-            hooks[cleanupEvent],
-            command: hookCommand(harness: agent.rawValue, kind: "finished")
-        )
+        let command = hookCommand(harness: agent.rawValue, kind: "finished")
+        if agent == .cursor { return !containsFlatCommand(hooks[cleanupEvent], command: command) }
+        return !containsGroupedCommand(hooks[cleanupEvent], command: command, matcher: nil, matchingAnyMatcher: true)
     }
 
     private func legacyCleanupEvent(for agent: AgentHarness) -> String? {
@@ -195,10 +325,46 @@ public struct LifecycleHookInstaller {
         }
     }
 
-    private func validateHookConfiguration(_ root: [String: Any], at url: URL) throws {
-        guard let hooks = root["hooks"] else { return }
-        guard let map = hooks as? [String: Any], map.values.allSatisfy({ $0 is [Any] }) else {
+    private func validateHookConfiguration(_ root: [String: Any], for agent: AgentHarness, at url: URL) throws {
+        if root["disableAllHooks"] != nil {
+            guard let disabled = root["disableAllHooks"] as? Bool else {
+                throw Error.invalidHookConfiguration(url)
+            }
+            if disabled { throw Error.hooksDisabled(url, setting: "disableAllHooks") }
+        }
+        if agent == .gemini,
+           let hooksConfig = root["hooksConfig"] {
+            guard let dictionary = hooksConfig as? [String: Any] else {
+                throw Error.invalidHookConfiguration(url)
+            }
+            if dictionary["enabled"] != nil {
+                guard let enabled = dictionary["enabled"] as? Bool else {
+                    throw Error.invalidHookConfiguration(url)
+                }
+                if !enabled { throw Error.hooksDisabled(url, setting: "hooksConfig.enabled") }
+            }
+        }
+        if agent == .copilot,
+           let version = root["version"],
+           version as? Int != 1 {
             throw Error.invalidHookConfiguration(url)
+        }
+        guard let hooks = root["hooks"] else { return }
+        guard let map = hooks as? [String: Any] else {
+            throw Error.invalidHookConfiguration(url)
+        }
+        for value in map.values {
+            guard let entries = value as? [Any] else { throw Error.invalidHookConfiguration(url) }
+            let valid: Bool
+            switch agent {
+            case .cursor:
+                valid = entries.allSatisfy(isValidFlatHook)
+            case .copilot:
+                valid = entries.allSatisfy(isValidCopilotHook)
+            default:
+                valid = entries.allSatisfy(isValidGroupedHook)
+            }
+            guard valid else { throw Error.invalidHookConfiguration(url) }
         }
     }
 
@@ -290,24 +456,51 @@ public struct LifecycleHookInstaller {
             const child = Bun.spawn([bridge, "opencode", kind], { stdin: JSON.stringify({ session_id: sessionID, cwd: directory }), stdout: "ignore", stderr: "ignore" });
             child.unref();
           };
+          const finish = sessionID => {
+            if (!sessionID || terminalSessions.has(sessionID)) return;
+            terminalSessions.add(sessionID);
+            emit("finished", sessionID);
+          };
 
           return {
             event: async ({ event }) => {
+              const sessionID = event.properties?.sessionID ?? event.properties?.session_id;
+              if (event.type === "permission.asked" || event.type === "permission.updated") {
+                if (sessionID && !terminalSessions.has(sessionID)) emit("needsPermission", sessionID);
+                return;
+              }
+              if (event.type === "permission.replied") {
+                if (sessionID && !terminalSessions.has(sessionID)) emit("started", sessionID);
+                return;
+              }
+              if (event.type === "question.asked") {
+                if (sessionID && !terminalSessions.has(sessionID)) emit("needsInput", sessionID);
+                return;
+              }
+              if (event.type === "question.replied" || event.type === "question.rejected") {
+                if (sessionID && !terminalSessions.has(sessionID)) emit("started", sessionID);
+                return;
+              }
               if (event.type === "session.error") {
-                const { sessionID, error } = event.properties;
+                const { error } = event.properties;
                 if (!sessionID) return;
                 terminalSessions.add(sessionID);
                 const errorName = error?.name ?? error?.data?.name;
                 emit(errorName === "MessageAbortedError" ? "cancelled" : "failed", sessionID);
                 return;
               }
+              if (event.type === "session.idle") {
+                finish(sessionID);
+                return;
+              }
               if (event.type !== "session.status") return;
-              const { sessionID, status } = event.properties;
+              const { status } = event.properties;
+              if (!sessionID) return;
               if (status.type === "busy" || status.type === "retry") {
                 terminalSessions.delete(sessionID);
                 emit("started", sessionID);
               }
-              if (status.type === "idle" && !terminalSessions.has(sessionID)) emit("finished", sessionID);
+              if (status.type === "idle") finish(sessionID);
             },
           };
         };
@@ -320,16 +513,35 @@ public struct LifecycleHookInstaller {
         import { spawn } from "node:child_process";
 
         const bridge = \(javaScriptString(bridgeURL.path));
-        function emit(kind, event) {
+        function emit(kind, threadID, prompt) {
           const child = spawn(bridge, ["amp", kind], { stdio: ["pipe", "ignore", "ignore"] });
-          child.stdin.end(JSON.stringify({ session_id: event.thread.id, cwd: process.cwd(), prompt: event.message }));
+          child.stdin.end(JSON.stringify({ session_id: threadID, cwd: process.cwd(), prompt }));
         }
 
         export default function (amp) {
-          amp.on("agent.start", event => emit("started", event));
+          const stateSubscriptions = new Map();
+          const observeState = thread => {
+            if (stateSubscriptions.has(thread.id)) return;
+            // Amp's stable thread.state observable distinguishes approval waits from running work.
+            let previousState = "running";
+            const subscription = thread.state.subscribe(state => {
+              if (state === previousState) return;
+              previousState = state;
+              if (state === "awaiting-approval") emit("needsPermission", thread.id);
+              if (state === "running") emit("started", thread.id);
+            });
+            stateSubscriptions.set(thread.id, subscription);
+          };
+
+          amp.on("agent.start", (event, ctx) => {
+            emit("started", event.thread.id, event.message);
+            observeState(ctx.thread);
+          });
           amp.on("agent.end", event => {
             const kind = event.status === "done" ? "finished" : event.status === "error" ? "failed" : "cancelled";
-            emit(kind, event);
+            emit(kind, event.thread.id, event.message);
+            stateSubscriptions.get(event.thread.id)?.unsubscribe();
+            stateSubscriptions.delete(event.thread.id);
           });
         }
         """
@@ -404,16 +616,17 @@ public struct LifecycleHookInstaller {
         removing removedEvents: [(String, String)] = []
     ) throws {
         var root = try jsonObject(at: url)
+        try validateHookConfiguration(root, for: agent, at: url)
         let value = root["hooks"] ?? [String: Any]()
         guard var hooks = value as? [String: Any] else { throw Error.invalidHookConfiguration(url) }
         for (event, kind) in removedEvents {
-            try removeCommand(from: &hooks, event: event, command: hookCommand(harness: agent.rawValue, kind: kind))
+            try removeFlatCommand(from: &hooks, event: event, command: hookCommand(harness: agent.rawValue, kind: kind))
         }
         for (event, kind) in events {
             let command = hookCommand(harness: agent.rawValue, kind: kind)
             let value = hooks[event] ?? []
             guard var entries = value as? [Any] else { throw Error.invalidHookConfiguration(url) }
-            if !containsCommand(entries, command: command) {
+            if !containsFlatCommand(entries, command: command) {
                 entries.append(["command": command])
                 hooks[event] = entries
             }
@@ -615,48 +828,63 @@ public struct LifecycleHookInstaller {
     }
 
     private func mergeClaudeHooks() throws {
-        let url = homeDirectory.appendingPathComponent(".claude/settings.json")
-        try mergeSettings(at: url) { hooks in
-            try removeCommand(from: &hooks, event: "SessionEnd", command: hookCommand(harness: "claude", kind: "finished"))
+        let url = configurationURL(for: .claude)
+        try mergeSettings(at: url, agent: .claude) { hooks in
+            try removeGroupedCommand(from: &hooks, event: "SessionEnd", command: hookCommand(harness: "claude", kind: "finished"))
             try addGroupedCommand(to: &hooks, event: "UserPromptSubmit", command: hookCommand(harness: "claude", kind: "started"), matcher: nil)
             try addGroupedCommand(to: &hooks, event: "Stop", command: hookCommand(harness: "claude", kind: "finished"), matcher: nil)
             try addGroupedCommand(to: &hooks, event: "StopFailure", command: hookCommand(harness: "claude", kind: "failed"), matcher: nil)
+            try addGroupedCommand(to: &hooks, event: "Notification", command: hookCommand(harness: "claude", kind: "needsPermission"), matcher: "permission_prompt")
+            try addGroupedCommand(to: &hooks, event: "Notification", command: hookCommand(harness: "claude", kind: "needsInput"), matcher: "elicitation_dialog")
+            try addGroupedCommand(to: &hooks, event: "Notification", command: hookCommand(harness: "claude", kind: "needsInput"), matcher: "agent_needs_input")
+            try addGroupedCommand(to: &hooks, event: "Notification", command: hookCommand(harness: "claude", kind: "started"), matcher: "elicitation_complete")
+            try addGroupedCommand(to: &hooks, event: "Notification", command: hookCommand(harness: "claude", kind: "started"), matcher: "elicitation_response")
+            try addGroupedCommand(to: &hooks, event: "PostToolUse", command: hookCommand(harness: "claude", kind: "started"), matcher: "*")
+            try addGroupedCommand(to: &hooks, event: "PermissionDenied", command: hookCommand(harness: "claude", kind: "started"), matcher: "*")
         }
     }
 
     private func mergeCodexHooks() throws {
-        let url = homeDirectory.appendingPathComponent(".codex/hooks.json")
-        try mergeSettings(at: url) { hooks in
+        let url = configurationURL(for: .codex)
+        try mergeSettings(at: url, agent: .codex) { hooks in
             try addGroupedCommand(to: &hooks, event: "UserPromptSubmit", command: hookCommand(harness: "codex", kind: "started"), matcher: nil)
             try addGroupedCommand(to: &hooks, event: "Stop", command: hookCommand(harness: "codex", kind: "finished"), matcher: nil)
         }
     }
 
     private func mergeGeminiHooks() throws {
-        let url = homeDirectory.appendingPathComponent(".gemini/settings.json")
-        try mergeSettings(at: url) { hooks in
-            try removeCommand(from: &hooks, event: "SessionEnd", command: hookCommand(harness: "gemini", kind: "finished"))
+        let url = configurationURL(for: .gemini)
+        try mergeSettings(at: url, agent: .gemini) { hooks in
+            try removeGroupedCommand(from: &hooks, event: "SessionEnd", command: hookCommand(harness: "gemini", kind: "finished"))
             try addGroupedCommand(to: &hooks, event: "BeforeAgent", command: hookCommand(harness: "gemini", kind: "started"), matcher: "*")
             try addGroupedCommand(to: &hooks, event: "AfterAgent", command: hookCommand(harness: "gemini", kind: "finished"), matcher: "*")
+            try addGroupedCommand(to: &hooks, event: "Notification", command: hookCommand(harness: "gemini", kind: "needsPermission"), matcher: "ToolPermission")
+            try addGroupedCommand(to: &hooks, event: "AfterTool", command: hookCommand(harness: "gemini", kind: "started"), matcher: "*")
         }
     }
 
     private func mergeCopilotHooks() throws {
-        let url = homeDirectory.appendingPathComponent(".copilot/hooks/atoll.json")
+        let url = configurationURL(for: .copilot)
         var root = try jsonObject(at: url)
+        try validateHookConfiguration(root, for: .copilot, at: url)
         let hooks = root["hooks"] ?? [String: Any]()
         guard var hookMap = hooks as? [String: Any] else { throw Error.invalidHookConfiguration(url) }
 
         try addCopilotCommand(to: &hookMap, event: "userPromptSubmitted", command: hookCommand(harness: "copilot", kind: "started"), url: url)
         try addCopilotCommand(to: &hookMap, event: "agentStop", command: hookCommand(harness: "copilot", kind: "finished"), url: url)
         try addCopilotCommand(to: &hookMap, event: "sessionEnd", command: hookCommand(harness: "copilot", kind: "finished"), url: url)
+        try addCopilotCommand(to: &hookMap, event: "notification", command: hookCommand(harness: "copilot", kind: "needsPermission"), matcher: "permission_prompt", url: url)
+        try addCopilotCommand(to: &hookMap, event: "notification", command: hookCommand(harness: "copilot", kind: "needsInput"), matcher: "elicitation_dialog", url: url)
+        try addCopilotCommand(to: &hookMap, event: "postToolUse", command: hookCommand(harness: "copilot", kind: "started"), url: url)
+        try addCopilotCommand(to: &hookMap, event: "postToolUseFailure", command: hookCommand(harness: "copilot", kind: "started"), url: url)
         root["version"] = root["version"] ?? 1
         root["hooks"] = hookMap
         try write(root, to: url)
     }
 
-    private func mergeSettings(at url: URL, update: (inout [String: Any]) throws -> Void) throws {
+    private func mergeSettings(at url: URL, agent: AgentHarness, update: (inout [String: Any]) throws -> Void) throws {
         var root = try jsonObject(at: url)
+        try validateHookConfiguration(root, for: agent, at: url)
         let value = root["hooks"] ?? [String: Any]()
         guard var hooks = value as? [String: Any] else { throw Error.invalidHookConfiguration(url) }
         try update(&hooks)
@@ -681,19 +909,30 @@ public struct LifecycleHookInstaller {
     private func addGroupedCommand(to hooks: inout [String: Any], event: String, command: String, matcher: String?) throws {
         let value = hooks[event] ?? []
         guard var entries = value as? [Any] else { throw Error.invalidHookConfiguration(homeDirectory) }
-        guard !containsCommand(entries, command: command) else { return }
-        var hook: [String: Any] = ["type": "command", "command": command]
-        if let matcher { hook["matcher"] = matcher }
+        guard !containsGroupedCommand(entries, command: command, matcher: matcher) else { return }
+        let hook: [String: Any] = ["type": "command", "command": command]
         var entry: [String: Any] = ["hooks": [hook]]
         if let matcher { entry["matcher"] = matcher }
         entries.append(entry)
         hooks[event] = entries
     }
 
-    private func removeCommand(from hooks: inout [String: Any], event: String, command: String) throws {
+    private func removeGroupedCommand(from hooks: inout [String: Any], event: String, command: String) throws {
         guard let value = hooks[event] else { return }
         guard let entries = value as? [Any] else { throw Error.invalidHookConfiguration(homeDirectory) }
-        let remaining = entries.compactMap { removingCommand($0, matching: command) }
+        let remaining = entries.compactMap { object -> Any? in
+            guard var group = object as? [String: Any], let handlers = group["hooks"] as? [Any] else {
+                return object
+            }
+            let retained = handlers.filter { handler in
+                guard let dictionary = handler as? [String: Any] else { return true }
+                return dictionary["type"] as? String != "command"
+                    || dictionary["command"] as? String != command
+            }
+            guard !retained.isEmpty else { return nil }
+            group["hooks"] = retained
+            return group
+        }
         if remaining.isEmpty {
             hooks.removeValue(forKey: event)
         } else {
@@ -701,43 +940,117 @@ public struct LifecycleHookInstaller {
         }
     }
 
-    private func removingCommand(_ object: Any, matching command: String) -> Any? {
-        if var dictionary = object as? [String: Any] {
-            if dictionary["command"] as? String == command || dictionary["bash"] as? String == command {
-                return nil
-            }
-            let hadNestedHooks = dictionary["hooks"] is [Any]
-            for key in Array(dictionary.keys) {
-                guard let currentValue = dictionary[key] else { continue }
-                if let value = removingCommand(currentValue, matching: command) {
-                    dictionary[key] = value
-                } else {
-                    dictionary.removeValue(forKey: key)
-                }
-            }
-            if hadNestedHooks, (dictionary["hooks"] as? [Any])?.isEmpty != false { return nil }
-            return dictionary
+    private func removeFlatCommand(from hooks: inout [String: Any], event: String, command: String) throws {
+        guard let value = hooks[event] else { return }
+        guard let entries = value as? [Any] else { throw Error.invalidHookConfiguration(homeDirectory) }
+        let remaining = entries.filter { ($0 as? [String: Any])?["command"] as? String != command }
+        if remaining.isEmpty {
+            hooks.removeValue(forKey: event)
+        } else {
+            hooks[event] = remaining
         }
-        if let array = object as? [Any] {
-            return array.compactMap { removingCommand($0, matching: command) }
-        }
-        return object
     }
 
-    private func addCopilotCommand(to hooks: inout [String: Any], event: String, command: String, url: URL) throws {
+    private func addCopilotCommand(
+        to hooks: inout [String: Any],
+        event: String,
+        command: String,
+        matcher: String? = nil,
+        url: URL
+    ) throws {
         let value = hooks[event] ?? []
         guard var entries = value as? [Any] else { throw Error.invalidHookConfiguration(url) }
-        guard !containsCommand(entries, command: command) else { return }
-        entries.append(["type": "command", "bash": command])
+        guard !containsCopilotCommand(entries, command: command, matcher: matcher) else { return }
+        var entry: [String: Any] = ["type": "command", "bash": command]
+        if let matcher { entry["matcher"] = matcher }
+        entries.append(entry)
         hooks[event] = entries
     }
 
-    private func containsCommand(_ object: Any?, command: String) -> Bool {
-        if let dictionary = object as? [String: Any] {
-            if dictionary["command"] as? String == command || dictionary["bash"] as? String == command { return true }
-            return dictionary.values.contains { containsCommand($0, command: command) }
+    private func containsGroupedCommand(
+        _ object: Any?,
+        command: String,
+        matcher: String?,
+        matchingAnyMatcher: Bool = false
+    ) -> Bool {
+        guard let groups = object as? [Any] else { return false }
+        return groups.contains { object in
+            guard let group = object as? [String: Any],
+                  matchingAnyMatcher || matcherMatches(group["matcher"], expected: matcher),
+                  let handlers = group["hooks"] as? [Any] else {
+                return false
+            }
+            return handlers.contains { handler in
+                guard let dictionary = handler as? [String: Any] else { return false }
+                return dictionary["type"] as? String == "command"
+                    && dictionary["command"] as? String == command
+            }
         }
-        return (object as? [Any])?.contains { containsCommand($0, command: command) } ?? false
+    }
+
+    private func containsCopilotCommand(_ object: Any?, command: String, matcher: String?) -> Bool {
+        guard let entries = object as? [Any] else { return false }
+        return entries.contains { object in
+            guard let entry = object as? [String: Any],
+                  (entry["type"] == nil || entry["type"] as? String == "command"),
+                  matcherMatches(entry["matcher"], expected: matcher) else {
+                return false
+            }
+            return entry["bash"] as? String == command || entry["command"] as? String == command
+        }
+    }
+
+    private func containsFlatCommand(_ object: Any?, command: String) -> Bool {
+        guard let entries = object as? [Any] else { return false }
+        return entries.contains { ($0 as? [String: Any])?["command"] as? String == command }
+    }
+
+    private func matcherMatches(_ value: Any?, expected: String?) -> Bool {
+        guard let actual = value as? String else { return value == nil && (expected == nil || expected == "*") }
+        if expected == nil || expected == "*" { return actual.isEmpty || actual == "*" }
+        return actual == expected
+    }
+
+    private func isValidGroupedHook(_ object: Any) -> Bool {
+        guard let group = object as? [String: Any],
+              group["matcher"] == nil || group["matcher"] is String,
+              let handlers = group["hooks"] as? [Any] else {
+            return false
+        }
+        return handlers.allSatisfy { object in
+            guard let handler = object as? [String: Any], let type = handler["type"] as? String else {
+                return false
+            }
+            switch type {
+            case "command": return handler["command"] is String
+            case "http": return handler["url"] is String
+            case "prompt", "agent": return handler["prompt"] is String
+            default: return true
+            }
+        }
+    }
+
+    private func isValidFlatHook(_ object: Any) -> Bool {
+        guard let hook = object as? [String: Any] else { return false }
+        return hook["command"] is String
+    }
+
+    private func isValidCopilotHook(_ object: Any) -> Bool {
+        guard let hook = object as? [String: Any],
+              hook["matcher"] == nil || hook["matcher"] is String else {
+            return false
+        }
+        let type = hook["type"] as? String ?? "command"
+        switch type {
+        case "command":
+            return hook["bash"] is String || hook["command"] is String || hook["powershell"] is String
+        case "http":
+            return hook["url"] is String
+        case "prompt":
+            return hook["prompt"] is String
+        default:
+            return true
+        }
     }
 
     private func hookCommand(harness: String, kind: String) -> String {
