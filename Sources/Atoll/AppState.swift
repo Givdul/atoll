@@ -32,7 +32,12 @@ final class AppState: ObservableObject {
 
     private let settingsStore: SettingsStore
     private let terminalDisplayWindow: TimeInterval = 3
-    private var terminalObservedAt: [String: Date] = [:]
+    private struct TerminalObservation {
+        var state: SessionState
+        var sourceObservedAt: Date?
+        var displayedAt: Date
+    }
+    private var terminalObservations: [String: TerminalObservation] = [:]
 
     private var displaySessions: [AgentSession] {
         settings.testMode ? Self.testModeSessions() : allSessions
@@ -188,11 +193,9 @@ final class AppState: ObservableObject {
     }
 
     private func isRecentTerminalNotification(_ session: AgentSession, now: Date) -> Bool {
-        guard now.timeIntervalSince(session.updatedAt) <= terminalDisplayWindow else {
-            return false
-        }
-
-        let observedAt = terminalObservedAt[session.id] ?? session.updatedAt
+        let observedAt = terminalObservations[session.id]?.displayedAt
+            ?? session.observedAt
+            ?? session.updatedAt
         return now.timeIntervalSince(observedAt) <= terminalDisplayWindow
     }
 
@@ -200,12 +203,22 @@ final class AppState: ObservableObject {
         let now = Date()
         let activeTerminalIDs = Set(sessions.filter { $0.state.isTerminal }.map(\.id))
 
-        terminalObservedAt = terminalObservedAt.filter { id, _ in
+        terminalObservations = terminalObservations.filter { id, _ in
             activeTerminalIDs.contains(id)
         }
 
-        for id in activeTerminalIDs where terminalObservedAt[id] == nil {
-            terminalObservedAt[id] = now
+        for session in sessions where session.state.isTerminal {
+            let existing = terminalObservations[session.id]
+            let shouldReset = existing == nil
+                || existing?.state != session.state
+                || existing?.sourceObservedAt != session.observedAt
+            guard shouldReset else { continue }
+
+            terminalObservations[session.id] = TerminalObservation(
+                state: session.state,
+                sourceObservedAt: session.observedAt,
+                displayedAt: now
+            )
         }
     }
 

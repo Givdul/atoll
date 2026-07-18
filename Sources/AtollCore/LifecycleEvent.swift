@@ -166,11 +166,13 @@ public struct LifecycleEvent: Hashable, Sendable {
     }
 
     public func jsonLine() -> String? {
+        let timestampFormatter = ISO8601DateFormatter()
+        timestampFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         var object: [String: Any] = [
             "harness": harness.rawValue,
             "session_id": sessionID,
             "event": kind.rawValue,
-            "timestamp": ISO8601DateFormatter().string(from: timestamp)
+            "timestamp": timestampFormatter.string(from: timestamp)
         ]
         object["title"] = title
         object["detail"] = detail

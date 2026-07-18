@@ -6,7 +6,14 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         var sessionID: String
         var harness: AgentHarness
         var state: SessionState
+        /// Timestamp reported by the lifecycle provider.
         var updatedAt: Date
+        /// Local time when Atoll accepted the current state. Optional so
+        /// registries written before this field existed continue to decode.
+        var observedAt: Date?
+        /// Provider time capped at local receipt time, used only for ordering.
+        /// This prevents a future-skewed event from blocking later events.
+        var orderingAt: Date?
         var startedAt: Date?
         var title: String?
         var detail: String?
@@ -49,19 +56,76 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         prune(now: now)
 
         let key = "\(event.harness.rawValue)-\(event.sessionID)"
-        var record = records[key] ?? Record(
+        let incomingOrderingAt = min(event.timestamp, now)
+        let existingRecord = records[key]
+
+        if existingRecord == nil,
+           event.kind.isActive,
+           now.timeIntervalSince(incomingOrderingAt) > activeTTL {
+            return sessionsLocked(now: now)
+        }
+
+        var record = existingRecord ?? Record(
             sessionID: event.sessionID,
             harness: event.harness,
             state: event.kind.sessionState,
             updatedAt: event.timestamp,
+            observedAt: now,
+            orderingAt: incomingOrderingAt,
             startedAt: event.kind == .started ? event.timestamp : nil,
             title: nil, detail: nil, prompt: nil, projectPath: nil, model: nil
         )
-        guard event.timestamp >= record.updatedAt else { return sessionsLocked(now: now) }
 
-        record.state = event.kind.sessionState
+        let currentOrderingAt = record.orderingAt
+            ?? min(record.updatedAt, record.observedAt ?? record.updatedAt)
+
+        if existingRecord != nil,
+           record.state.isTerminal,
+           event.kind.sessionState == record.state {
+            // Repeated cleanup/session-end notifications are exact duplicates,
+            // not new ordering evidence. Keeping the original ordering point
+            // lets a queued start for the next cycle pass the tombstone.
+            return sessionsLocked(now: now)
+        }
+
+        guard incomingOrderingAt >= currentOrderingAt else {
+            return sessionsLocked(now: now)
+        }
+
+        let nextState = event.kind.sessionState
+        if incomingOrderingAt == currentOrderingAt,
+           record.state.isTerminal,
+           !nextState.isTerminal,
+           now.timeIntervalSince(record.observedAt ?? record.updatedAt) <= terminalTTL {
+            // A terminal outcome wins over an equal-time active retry. Once its
+            // visible dwell elapses, the retained tombstone can open a genuine
+            // new cycle without letting a late retry erase the outcome early.
+            return sessionsLocked(now: now)
+        }
+
+        if record.state == .failed || record.state == .cancelled,
+           nextState == .done {
+            // Generic cleanup/session-end hooks often arrive after the hook that
+            // captured the actual outcome. They must not flatten it to Done.
+            return sessionsLocked(now: now)
+        }
+
+        let stateChanged = record.state != nextState
+        let startsNewCycle = record.state.isTerminal && !nextState.isTerminal
+
+        record.state = nextState
         record.updatedAt = event.timestamp
-        if event.kind == .started { record.startedAt = event.timestamp }
+        record.orderingAt = incomingOrderingAt
+        if startsNewCycle {
+            record.startedAt = event.timestamp
+        } else if record.startedAt == nil, event.kind == .started {
+            record.startedAt = event.timestamp
+        }
+        if !nextState.isTerminal || stateChanged {
+            // Active retries refresh liveness without changing startedAt.
+            // A corrected terminal outcome receives a fresh visible dwell.
+            record.observedAt = now
+        }
         record.title = event.title ?? record.title
         record.detail = event.detail ?? record.detail
         record.prompt = event.prompt ?? record.prompt
@@ -83,7 +147,12 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
     }
 
     private func sessionsLocked(now: Date) -> [AgentSession] {
-        records.values.map { record in
+        records.values
+        .filter { record in
+            !record.state.isTerminal
+                || now.timeIntervalSince(record.observedAt ?? record.updatedAt) <= terminalTTL
+        }
+        .map { record in
             AgentSession(
                 id: record.key,
                 harness: record.harness,
@@ -94,6 +163,7 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
                 model: record.model,
                 state: record.state,
                 updatedAt: record.updatedAt,
+                observedAt: record.observedAt,
                 startedAt: record.startedAt,
                 sourcePath: "lifecycle://\(record.key)",
                 confidence: .live
@@ -106,8 +176,10 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
     private func prune(now: Date) -> Bool {
         let before = records.count
         records = records.filter { _, record in
-            let ttl = record.state.isTerminal ? terminalTTL : activeTTL
-            return now.timeIntervalSince(record.updatedAt) <= ttl
+            // Terminal records outlive their visible dwell as tombstones so a
+            // late cleanup cannot recreate a second, phantom Done notification.
+            let ttl = record.state.isTerminal ? max(activeTTL, terminalTTL) : activeTTL
+            return now.timeIntervalSince(record.observedAt ?? record.updatedAt) <= ttl
         }
         return records.count != before
     }
@@ -117,7 +189,15 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
               let decoded = try? JSONDecoder().decode([LossyRecord].self, from: data) else {
             return [:]
         }
-        return Dictionary(uniqueKeysWithValues: decoded.compactMap(\.value).map { ($0.key, $0) })
+        let now = Date()
+        let records = decoded.compactMap(\.value).map { decodedRecord in
+            var record = decodedRecord
+            let observedAt = record.observedAt ?? min(record.updatedAt, now)
+            record.observedAt = observedAt
+            record.orderingAt = record.orderingAt ?? min(record.updatedAt, observedAt)
+            return record
+        }
+        return Dictionary(uniqueKeysWithValues: records.map { ($0.key, $0) })
     }
 
     private func save() {

@@ -70,6 +70,9 @@ public struct AgentSession: Identifiable, Hashable, Codable, Sendable {
     public var model: String?
     public var state: SessionState
     public var updatedAt: Date
+    /// Local time when Atoll observed the current lifecycle state. Provider
+    /// timestamps remain in `updatedAt` for source-faithful display and sorting.
+    public var observedAt: Date?
     public var startedAt: Date?
     public var sourcePath: String
     public var processID: Int32?
@@ -86,6 +89,7 @@ public struct AgentSession: Identifiable, Hashable, Codable, Sendable {
         model: String? = nil,
         state: SessionState,
         updatedAt: Date,
+        observedAt: Date? = nil,
         startedAt: Date? = nil,
         sourcePath: String,
         processID: Int32? = nil,
@@ -101,6 +105,7 @@ public struct AgentSession: Identifiable, Hashable, Codable, Sendable {
         self.model = model
         self.state = state
         self.updatedAt = updatedAt
+        self.observedAt = observedAt
         self.startedAt = startedAt
         self.sourcePath = sourcePath
         self.processID = processID
