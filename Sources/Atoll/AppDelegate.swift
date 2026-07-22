@@ -88,30 +88,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
     }
 
     func showLifecycleSetup() {
-        let installer = LifecycleHookInstaller()
-        let agents = installer.detectedAgents()
+        let agents = LifecycleHookInstaller().detectedAgents()
         guard !agents.isEmpty else {
             liveStatusSetupController.presentUnavailable()
             return
         }
 
         liveStatusSetupController.presentSetup(for: agents) { agents in
-            agents.map { agent in
+            let installer = LifecycleHookInstaller()
+            return agents.map { agent in
+                HookInstallationResult(agent: agent, installerReadiness: installer.readiness(for: agent))
+            }
+        } install: { agents in
+            let installer = LifecycleHookInstaller()
+            return agents.map { agent in
                 do {
                     try installer.install(agents: [agent])
                     switch installer.readiness(for: agent) {
                     case .configured:
-                        return HookInstallationResult(agent: agent, detail: nil)
+                        return HookInstallationResult(agent: agent, readiness: .configured)
                     case .notConfigured:
                         return HookInstallationResult(
                             agent: agent,
-                            detail: "Atoll could not verify the installed Live Status integration. Try setup again."
+                            readiness: .invalidConfiguration(
+                                "Atoll could not verify the installed Live Status integration. Try setup again."
+                            )
                         )
                     case .invalidConfiguration(let detail):
-                        return HookInstallationResult(agent: agent, detail: detail)
+                        return HookInstallationResult(agent: agent, readiness: .invalidConfiguration(detail))
                     }
                 } catch {
-                    return HookInstallationResult(agent: agent, detail: error.localizedDescription)
+                    return HookInstallationResult(
+                        agent: agent,
+                        readiness: .invalidConfiguration(error.localizedDescription)
+                    )
                 }
             }
         }

@@ -15,10 +15,11 @@ final class LiveStatusSetupWindowController {
 
     func presentSetup(
         for agents: [AgentHarness],
-        install: @escaping ([AgentHarness]) -> [HookInstallationResult]
+        check: @escaping @Sendable ([AgentHarness]) -> [HookInstallationResult],
+        install: @escaping @Sendable ([AgentHarness]) -> [HookInstallationResult]
     ) {
         finish()
-        let model = LiveStatusSetupModel(agents: agents, install: install)
+        let model = LiveStatusSetupModel(agents: agents, check: check, install: install)
         setupModel = model
         present(
             LiveStatusSetupView(
@@ -97,43 +98,102 @@ private enum SetupPanelSize {
     }
 }
 
-struct HookInstallationResult: Identifiable {
+enum HookSetupReadiness: Equatable, Sendable {
+    case notConfigured
+    case configured
+    case invalidConfiguration(String)
+}
+
+struct HookInstallationResult: Identifiable, Sendable {
     let agent: AgentHarness
-    let detail: String?
+    let readiness: HookSetupReadiness
 
     var id: String { agent.rawValue }
-    var isReady: Bool { detail == nil }
+    var isReady: Bool { readiness == .configured }
+
+    var detail: String? {
+        guard case .invalidConfiguration(let detail) = readiness else { return nil }
+        return detail
+    }
+
+    init(agent: AgentHarness, readiness: HookSetupReadiness) {
+        self.agent = agent
+        self.readiness = readiness
+    }
+
+    init(agent: AgentHarness, installerReadiness: LifecycleHookInstaller.Readiness) {
+        self.agent = agent
+        switch installerReadiness {
+        case .notConfigured:
+            readiness = .notConfigured
+        case .configured:
+            readiness = .configured
+        case .invalidConfiguration(let detail):
+            readiness = .invalidConfiguration(detail)
+        }
+    }
 }
 
 @MainActor
 private final class LiveStatusSetupModel: ObservableObject {
     enum Phase {
+        case checking
         case ready
         case installing
         case complete
     }
 
-    @Published private(set) var phase: Phase = .ready
+    @Published private(set) var phase: Phase = .checking
     @Published private(set) var results: [String: HookInstallationResult] = [:]
+    @Published private(set) var installingAgentIDs: Set<String> = []
 
     let agents: [AgentHarness]
-    private let installAction: ([AgentHarness]) -> [HookInstallationResult]
+    private let checkAction: @Sendable ([AgentHarness]) -> [HookInstallationResult]
+    private let installAction: @Sendable ([AgentHarness]) -> [HookInstallationResult]
 
     init(
         agents: [AgentHarness],
-        install: @escaping ([AgentHarness]) -> [HookInstallationResult]
+        check: @escaping @Sendable ([AgentHarness]) -> [HookInstallationResult],
+        install: @escaping @Sendable ([AgentHarness]) -> [HookInstallationResult]
     ) {
         self.agents = agents
+        self.checkAction = check
         self.installAction = install
+
+        Task { [weak self] in
+            await self?.checkSetup()
+        }
+    }
+
+    private func checkSetup() async {
+        let agents = agents
+        let checkAction = checkAction
+        let checkResults = await Task.detached(priority: .userInitiated) {
+            checkAction(agents)
+        }.value
+        guard phase == .checking else { return }
+        results = keyedResults(checkResults)
+        withAnimation(.easeInOut(duration: 0.2)) {
+            phase = .ready
+        }
     }
 
     func install() {
-        guard phase == .ready else { return }
+        let agentsToInstall = agents.filter {
+            results[$0.rawValue]?.readiness == .notConfigured
+        }
+        guard phase == .ready, !agentsToInstall.isEmpty else { return }
+        installingAgentIDs = Set(agentsToInstall.map(\.rawValue))
         phase = .installing
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            guard let self else { return }
-            self.results = Dictionary(uniqueKeysWithValues: self.installAction(self.agents).map { ($0.id, $0) })
+        let installAction = installAction
+        Task { [weak self] in
+            let installationResults = await Task.detached(priority: .userInitiated) {
+                installAction(agentsToInstall)
+            }.value
+            guard let self, self.phase == .installing else { return }
+            self.results.merge(self.keyedResults(installationResults)) { _, new in new }
+            self.installingAgentIDs = []
             withAnimation(.spring(response: 0.35, dampingFraction: 0.74)) {
                 self.phase = .complete
             }
@@ -142,31 +202,59 @@ private final class LiveStatusSetupModel: ObservableObject {
 
     func status(for agent: AgentHarness) -> AgentInstallStatus {
         switch phase {
-        case .ready:
-            return .available
-        case .installing:
+        case .checking:
+            return .checking
+        case .installing where installingAgentIDs.contains(agent.rawValue):
             return .installing
-        case .complete:
-            guard let result = results[agent.rawValue] else { return .failed("Unknown error") }
-            return result.isReady ? .installed : .failed(result.detail ?? "Needs attention")
+        case .ready, .installing, .complete:
+            guard let result = results[agent.rawValue] else {
+                return .failed("Atoll could not check this tool.")
+            }
+            switch result.readiness {
+            case .configured:
+                return .configured
+            case .notConfigured:
+                return .notConfigured
+            case .invalidConfiguration(let detail):
+                return .failed(detail)
+            }
+        }
+    }
+
+    private func keyedResults(_ results: [HookInstallationResult]) -> [String: HookInstallationResult] {
+        results.reduce(into: [:]) { keyed, result in
+            keyed[result.id] = result
+        }
+    }
+
+    var needsSetupCount: Int {
+        agents.reduce(into: 0) { count, agent in
+            if results[agent.rawValue]?.readiness == .notConfigured { count += 1 }
+        }
+    }
+
+    var configuredCount: Int {
+        agents.reduce(into: 0) { count, agent in
+            if results[agent.rawValue]?.isReady == true { count += 1 }
         }
     }
 
     var failedCount: Int {
         agents.reduce(into: 0) { count, agent in
-            if results[agent.rawValue]?.isReady == false { count += 1 }
+            if results[agent.rawValue]?.detail != nil { count += 1 }
         }
     }
 
-    var installedCount: Int { agents.count - failedCount }
-
-    var hasFailures: Bool { phase == .complete && failedCount > 0 }
+    var hasFailures: Bool { failedCount > 0 }
+    var setupIsComplete: Bool { phase == .ready && needsSetupCount == 0 && !hasFailures }
+    var hasNothingToInstall: Bool { phase == .ready && needsSetupCount == 0 }
 }
 
 private enum AgentInstallStatus {
-    case available
+    case checking
+    case notConfigured
     case installing
-    case installed
+    case configured
     case failed(String)
 }
 
@@ -204,13 +292,24 @@ private struct LiveStatusSetupView: View {
                     .foregroundStyle(.secondary)
                     .padding(.top, 16)
 
-                if model.phase == .complete {
+                Text("Atoll checks integration files, not runtime activation. Hover over a tool for activation steps.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 5)
+
+                if model.phase == .checking {
+                    Button("Checking Setup…") {}
+                        .buttonStyle(LiveStatusPrimaryButtonStyle())
+                        .disabled(true)
+                        .padding(.top, 24)
+                } else if model.phase == .complete || model.hasNothingToInstall {
                     Button("Done", action: onDismiss)
                         .buttonStyle(LiveStatusPrimaryButtonStyle())
                         .padding(.top, 24)
                 } else {
                     Button(action: model.install) {
-                        Text(model.phase == .installing ? "Adding Live Status…" : "Add Live Status")
+                        Text(installButtonTitle)
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(LiveStatusPrimaryButtonStyle())
@@ -229,25 +328,42 @@ private struct LiveStatusSetupView: View {
 
     private var description: String {
         switch model.phase {
+        case .checking:
+            "Checking the integration files for each detected tool."
         case .ready:
-            "See when your local agents are working or done."
+            if model.setupIsComplete {
+                "Atoll's integration files are installed for every detected tool. Each tool may still need activation."
+            } else if model.needsSetupCount == 0 {
+                "Atoll found integration files that need attention. Hover over a tool marked in red for details."
+            } else {
+                "\(model.needsSetupCount) detected \(model.needsSetupCount == 1 ? "tool needs" : "tools need") the Atoll integration. Confirm below to add only what is missing."
+            }
         case .installing:
-            "Adding live status to your detected agents."
+            "Installing Atoll integration files only where they are missing."
         case .complete:
             if model.hasFailures {
-                if model.installedCount == 0 {
-                    "Live Status could not be verified for these agents. Hover over an agent marked in red for details."
+                if model.configuredCount == 0 {
+                    "Atoll could not verify these integration files. Hover over a tool marked in red for details."
                 } else {
-                    "Live Status was added to \(model.installedCount) of \(model.agents.count) agents. Hover over an agent marked in red for details."
+                    "Integration files are installed for \(model.configuredCount) of \(model.agents.count) tools. Hover over a tool marked in red for details."
                 }
             } else {
-                "Live Status was added. Codex and Droid may ask you to review new hooks through /hooks before status appears."
+                "Atoll's integration files are installed. Review each tool's activation note before expecting status to appear."
             }
         }
     }
 
     private var title: String {
-        model.hasFailures ? "Some agents need attention" : model.phase == .complete ? "Live status added" : "Live status"
+        if model.phase == .checking { return "Checking live status" }
+        if model.hasFailures { return "Some tools need attention" }
+        if model.phase == .complete || model.setupIsComplete { return "Integrations installed" }
+        return "Add live status"
+    }
+
+    private var installButtonTitle: String {
+        guard model.phase != .installing else { return "Adding Live Status…" }
+        let count = model.needsSetupCount
+        return "Add Live Status to \(count) \(count == 1 ? "Tool" : "Tools")"
     }
 }
 
@@ -337,9 +453,10 @@ private struct AgentInstallTile: View {
 
     private var accessibilityStatus: String {
         switch status {
-        case .available: "available"
+        case .checking: "checking setup"
+        case .notConfigured: "live status not set up"
         case .installing: "adding live status"
-        case .installed: "live status added"
+        case .configured: "live status set up correctly"
         case .failed(let message): message
         }
     }
@@ -351,19 +468,23 @@ private struct AgentStatusBadge: View {
     var body: some View {
         Group {
             switch status {
-            case .available:
-                EmptyView()
-            case .installing:
+            case .checking, .installing:
                 ProgressView()
                     .controlSize(.mini)
                     .frame(width: 20, height: 20)
                     .background(.regularMaterial, in: Circle())
-            case .installed:
+            case .notConfigured:
+                Image(systemName: "plus")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 20, height: 20)
+                    .background(.orange, in: Circle())
+            case .configured:
                 Image(systemName: "checkmark")
                     .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(Color(nsColor: .alternateSelectedControlTextColor))
                     .frame(width: 20, height: 20)
-                    .background(Color.accentColor, in: Circle())
+                    .background(.green, in: Circle())
             case .failed:
                 Image(systemName: "exclamationmark")
                     .font(.system(size: 10, weight: .bold))
