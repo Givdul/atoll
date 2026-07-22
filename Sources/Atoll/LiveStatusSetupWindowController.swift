@@ -2,12 +2,6 @@ import AppKit
 import AtollCore
 import SwiftUI
 
-private final class LiveStatusPanelWindow: NSPanel {
-    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
-        frameRect
-    }
-}
-
 @MainActor
 final class LiveStatusSetupWindowController {
     private var panel: NSPanel?
@@ -39,9 +33,9 @@ final class LiveStatusSetupWindowController {
     }
 
     private func present<Content: View>(_ content: Content, size: NSSize) {
-        let panel = LiveStatusPanelWindow(
+        let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: size),
-            styleMask: [.borderless, .fullSizeContentView],
+            styleMask: [.titled, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -52,6 +46,9 @@ final class LiveStatusSetupWindowController {
         panel.isMovableByWindowBackground = true
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
+        panel.standardWindowButton(.closeButton)?.isHidden = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
         panel.collectionBehavior = [.moveToActiveSpace, .transient]
         panel.hidesOnDeactivate = false
         panel.contentView = NSHostingView(rootView: content)
@@ -78,15 +75,18 @@ final class LiveStatusSetupWindowController {
             ?? NSScreen.screens.first
         guard let screen else { return }
 
-        let visibleFrame = screen.visibleFrame
-        let size = panel.frame.size
+        let visibleFrame = screen.visibleFrame.insetBy(dx: 12, dy: 12)
+        let size = NSSize(
+            width: min(panel.frame.width, visibleFrame.width),
+            height: min(panel.frame.height, visibleFrame.height)
+        )
         let frame = NSRect(
             x: visibleFrame.midX - size.width / 2,
             y: visibleFrame.midY - size.height / 2,
             width: size.width,
             height: size.height
         )
-        panel.setFrame(frame, display: true)
+        panel.setFrame(panel.constrainFrameRect(frame, to: screen), display: true)
     }
 }
 
