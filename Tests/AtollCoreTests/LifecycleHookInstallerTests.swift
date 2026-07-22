@@ -41,6 +41,7 @@ final class LifecycleHookInstallerTests: XCTestCase {
         XCTAssertEqual(commands(in: claudeJSON, event: "Notification", matcher: "elicitation_dialog"), [hook("claude", "needsInput")])
         XCTAssertEqual(commands(in: claudeJSON, event: "Notification", matcher: "agent_needs_input"), [hook("claude", "needsInput")])
         XCTAssertEqual(commands(in: claudeJSON, event: "Notification", matcher: "elicitation_complete"), [hook("claude", "started")])
+        XCTAssertEqual(commands(in: claudeJSON, event: "PostToolUseFailure", matcher: "*"), [hook("claude", "started")])
         XCTAssertEqual(commands(in: claudeJSON, event: "PermissionDenied", matcher: "*"), [hook("claude", "started")])
         XCTAssertTrue(commands(in: claudeJSON, event: "SessionEnd").isEmpty)
 
@@ -336,7 +337,7 @@ final class LifecycleHookInstallerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: legacySettings.path))
     }
 
-    func testInstallRemovesOnlyLegacyCleanupHooks() throws {
+    func testInstallRemovesOnlyLegacyHooks() throws {
         let installer = makeInstaller()
         try installer.install(agents: [])
         let groupedAgents: [(AgentHarness, String, String)] = [
@@ -361,26 +362,43 @@ final class LifecycleHookInstallerTests: XCTestCase {
         }
         try write([
             "hooks": [
+                "sessionStart": [
+                    ["command": hook("cursor", "started")],
+                    ["command": "keep-session-start"]
+                ],
                 "sessionEnd": [
                     ["command": hook("cursor", "finished")],
                     ["command": "keep-me"]
                 ]
             ]
         ], to: home.appendingPathComponent(".cursor/hooks.json"))
+        try write([
+            "version": 1,
+            "hooks": [
+                "errorOccurred": [
+                    ["type": "command", "bash": hook("copilot", "failed")],
+                    ["type": "command", "bash": "keep-error-hook"]
+                ]
+            ]
+        ], to: home.appendingPathComponent(".copilot/hooks/atoll.json"))
 
         for (agent, _, _) in groupedAgents {
             XCTAssertEqual(installer.readiness(for: agent), .notConfigured)
         }
         XCTAssertEqual(installer.readiness(for: .cursor), .notConfigured)
+        XCTAssertEqual(installer.readiness(for: .copilot), .notConfigured)
 
-        try installer.install(agents: groupedAgents.map { $0.0 } + [.cursor])
+        try installer.install(agents: groupedAgents.map { $0.0 } + [.cursor, .copilot])
 
         for (agent, path, event) in groupedAgents {
             XCTAssertEqual(commands(in: try read(home.appendingPathComponent(path)), event: event), ["keep-me"])
             XCTAssertEqual(installer.readiness(for: agent), .configured)
         }
         XCTAssertEqual(commands(in: try read(home.appendingPathComponent(".cursor/hooks.json")), event: "sessionEnd"), ["keep-me"])
+        XCTAssertEqual(commands(in: try read(home.appendingPathComponent(".cursor/hooks.json")), event: "sessionStart"), ["keep-session-start"])
         XCTAssertEqual(installer.readiness(for: .cursor), .configured)
+        XCTAssertEqual(commands(in: try read(home.appendingPathComponent(".copilot/hooks/atoll.json")), event: "errorOccurred"), ["keep-error-hook"])
+        XCTAssertEqual(installer.readiness(for: .copilot), .configured)
     }
 
     func testPiRequiresVersionWithLifecycleContextSupport() throws {

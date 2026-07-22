@@ -76,7 +76,7 @@ public struct LifecycleHookInstaller {
                 at: configurationURL(for: .cursor),
                 agent: .cursor,
                 events: [("beforeSubmitPrompt", "started"), ("stop", "finished")],
-                removing: [("sessionEnd", "finished")]
+                removing: [("sessionStart", "started"), ("sessionEnd", "finished")]
             )
             case .droid: try mergeSettings(at: configurationURL(for: .droid), agent: .droid) { hooks in
                 try removeGroupedCommand(from: &hooks, event: "SessionEnd", command: hookCommand(harness: "droid", kind: "finished"))
@@ -234,6 +234,7 @@ public struct LifecycleHookInstaller {
                 HookRequirement("Notification", "started", matcher: "elicitation_complete"),
                 HookRequirement("Notification", "started", matcher: "elicitation_response"),
                 HookRequirement("PostToolUse", "started", matcher: "*"),
+                HookRequirement("PostToolUseFailure", "started", matcher: "*"),
                 HookRequirement("PermissionDenied", "started", matcher: "*")
             ]
         case .codex:
@@ -311,10 +312,30 @@ public struct LifecycleHookInstaller {
         }
         guard hasRequiredHooks else { return false }
 
-        guard let cleanupEvent = legacyCleanupEvent(for: agent) else { return true }
-        let command = hookCommand(harness: agent.rawValue, kind: "finished")
-        if agent == .cursor { return !containsFlatCommand(hooks[cleanupEvent], command: command) }
-        return !containsGroupedCommand(hooks[cleanupEvent], command: command, matcher: nil, matchingAnyMatcher: true)
+        if let cleanupEvent = legacyCleanupEvent(for: agent) {
+            let command = hookCommand(harness: agent.rawValue, kind: "finished")
+            let containsCleanup = agent == .cursor
+                ? containsFlatCommand(hooks[cleanupEvent], command: command)
+                : containsGroupedCommand(hooks[cleanupEvent], command: command, matcher: nil, matchingAnyMatcher: true)
+            if containsCleanup { return false }
+        }
+
+        switch agent {
+        case .copilot:
+            return !containsCopilotCommand(
+                hooks["errorOccurred"],
+                command: hookCommand(harness: "copilot", kind: "failed"),
+                matcher: nil,
+                matchingAnyMatcher: true
+            )
+        case .cursor:
+            return !containsFlatCommand(
+                hooks["sessionStart"],
+                command: hookCommand(harness: "cursor", kind: "started")
+            )
+        default:
+            return true
+        }
     }
 
     private func legacyCleanupEvent(for agent: AgentHarness) -> String? {
@@ -840,6 +861,7 @@ public struct LifecycleHookInstaller {
             try addGroupedCommand(to: &hooks, event: "Notification", command: hookCommand(harness: "claude", kind: "started"), matcher: "elicitation_complete")
             try addGroupedCommand(to: &hooks, event: "Notification", command: hookCommand(harness: "claude", kind: "started"), matcher: "elicitation_response")
             try addGroupedCommand(to: &hooks, event: "PostToolUse", command: hookCommand(harness: "claude", kind: "started"), matcher: "*")
+            try addGroupedCommand(to: &hooks, event: "PostToolUseFailure", command: hookCommand(harness: "claude", kind: "started"), matcher: "*")
             try addGroupedCommand(to: &hooks, event: "PermissionDenied", command: hookCommand(harness: "claude", kind: "started"), matcher: "*")
         }
     }
@@ -870,6 +892,7 @@ public struct LifecycleHookInstaller {
         let hooks = root["hooks"] ?? [String: Any]()
         guard var hookMap = hooks as? [String: Any] else { throw Error.invalidHookConfiguration(url) }
 
+        try removeCopilotCommand(from: &hookMap, event: "errorOccurred", command: hookCommand(harness: "copilot", kind: "failed"), url: url)
         try addCopilotCommand(to: &hookMap, event: "userPromptSubmitted", command: hookCommand(harness: "copilot", kind: "started"), url: url)
         try addCopilotCommand(to: &hookMap, event: "agentStop", command: hookCommand(harness: "copilot", kind: "finished"), url: url)
         try addCopilotCommand(to: &hookMap, event: "sessionEnd", command: hookCommand(harness: "copilot", kind: "finished"), url: url)
@@ -967,6 +990,25 @@ public struct LifecycleHookInstaller {
         hooks[event] = entries
     }
 
+    private func removeCopilotCommand(
+        from hooks: inout [String: Any],
+        event: String,
+        command: String,
+        url: URL
+    ) throws {
+        guard let value = hooks[event] else { return }
+        guard let entries = value as? [Any] else { throw Error.invalidHookConfiguration(url) }
+        let remaining = entries.filter { object in
+            guard let entry = object as? [String: Any] else { return true }
+            return entry["bash"] as? String != command && entry["command"] as? String != command
+        }
+        if remaining.isEmpty {
+            hooks.removeValue(forKey: event)
+        } else {
+            hooks[event] = remaining
+        }
+    }
+
     private func containsGroupedCommand(
         _ object: Any?,
         command: String,
@@ -988,12 +1030,17 @@ public struct LifecycleHookInstaller {
         }
     }
 
-    private func containsCopilotCommand(_ object: Any?, command: String, matcher: String?) -> Bool {
+    private func containsCopilotCommand(
+        _ object: Any?,
+        command: String,
+        matcher: String?,
+        matchingAnyMatcher: Bool = false
+    ) -> Bool {
         guard let entries = object as? [Any] else { return false }
         return entries.contains { object in
             guard let entry = object as? [String: Any],
                   (entry["type"] == nil || entry["type"] as? String == "command"),
-                  matcherMatches(entry["matcher"], expected: matcher) else {
+                  matchingAnyMatcher || matcherMatches(entry["matcher"], expected: matcher) else {
                 return false
             }
             return entry["bash"] as? String == command || entry["command"] as? String == command

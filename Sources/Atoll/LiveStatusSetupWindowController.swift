@@ -93,7 +93,7 @@ final class LiveStatusSetupWindowController {
 private enum SetupPanelSize {
     static func size(for agentCount: Int) -> NSSize {
         let rows = max(1, Int(ceil(Double(agentCount) / 4)))
-        let height = 326 + CGFloat(rows) * 104
+        let height = 348 + CGFloat(rows) * 104
         return NSSize(width: 456, height: height)
     }
 }
@@ -292,7 +292,7 @@ private struct LiveStatusSetupView: View {
                     .foregroundStyle(.secondary)
                     .padding(.top, 16)
 
-                Text("Atoll checks integration files, not runtime activation. Hover over a tool for activation steps.")
+                Text("Configured files do not prove runtime activation. Hover over a tool for its activation step.")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -354,7 +354,7 @@ private struct LiveStatusSetupView: View {
     }
 
     private var title: String {
-        if model.phase == .checking { return "Checking live status" }
+        if model.phase == .checking { return "Checking integrations" }
         if model.hasFailures { return "Some tools need attention" }
         if model.phase == .complete || model.setupIsComplete { return "Integrations installed" }
         return "Add live status"
@@ -448,15 +448,30 @@ private struct AgentInstallTile: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(agent.displayName), \(accessibilityStatus)")
-        .help(accessibilityStatus)
+        .accessibilityHint(accessibilityHint)
+        .help(helpText)
+    }
+
+    private var accessibilityHint: String {
+        if case .configured = status { return agent.activationGuidance }
+        return ""
+    }
+
+    private var helpText: String {
+        switch status {
+        case .configured:
+            "Integration configured. Runtime activation is not detected. \(agent.activationGuidance)"
+        default:
+            accessibilityStatus
+        }
     }
 
     private var accessibilityStatus: String {
         switch status {
         case .checking: "checking setup"
-        case .notConfigured: "live status not set up"
-        case .installing: "adding live status"
-        case .configured: "live status set up correctly"
+        case .notConfigured: "integration not installed"
+        case .installing: "installing integration"
+        case .configured: "integration configured; runtime activation not verified"
         case .failed(let message): message
         }
     }
@@ -494,6 +509,39 @@ private struct AgentStatusBadge: View {
             }
         }
         .transition(.scale.combined(with: .opacity))
+    }
+}
+
+private extension AgentHarness {
+    var activationGuidance: String {
+        switch self {
+        case .codex:
+            "In Codex, run /hooks and trust the Atoll UserPromptSubmit and Stop commands, then start a new turn."
+        case .droid:
+            "In Droid, run /hooks and trust the Atoll UserPromptSubmit and Stop commands, then start a new session if needed. Organization policy may still block user hooks."
+        case .opencode:
+            "Restart OpenCode or start a new session so it loads the Atoll plugin."
+        case .amp:
+            "In Amp, run plugins: reload after changes, then start a new thread if needed."
+        case .claude:
+            "Reload Claude Code settings or start a new session after changes."
+        case .gemini:
+            "Restart Gemini CLI or start a new session after changes; runtime policy may still disable hooks."
+        case .copilot:
+            "Start a new GitHub Copilot CLI session after changes; repository or policy hooks can affect activation."
+        case .cursor:
+            "Start a new Cursor Agent session if the current session does not reload the hook file."
+        case .qoder:
+            "Qoder documents immediate settings changes; if the current session does not pick them up, start a new session."
+        case .qwen:
+            "Start a new Qwen Code session if the current session does not reload the hook settings."
+        case .hermes:
+            "Confirm the Atoll plugin is enabled, then restart Hermes or start a new session after changes."
+        case .pi:
+            "Start a new Pi session after changes. The Atoll extension requires Pi 0.80.4 or newer."
+        case .atoll:
+            "No external agent activation step applies to Atoll's own lifecycle events."
+        }
     }
 }
 
