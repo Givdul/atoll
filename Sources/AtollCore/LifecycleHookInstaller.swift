@@ -10,7 +10,7 @@ public struct LifecycleHookInstaller {
     }
 
     public static let supportedAgents: [AgentHarness] = [
-        .codex, .claude, .opencode, .cursor, .pi
+        .codex, .claude, .cursor, .opencode, .pi
     ]
     public enum Error: Swift.Error, LocalizedError {
         case invalidJSON(URL)

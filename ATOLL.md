@@ -261,7 +261,7 @@ Lifecycle behavior:
 - The app refreshes immediately from a persisted receipt and removes that queue file only after the lifecycle registry is written successfully.
 - A `1s` maintenance timer retries pending receipts and expires stale lifecycle state; it never scans agent transcripts, processes, or lock files.
 - Active sessions expire after `10m` of local inactivity. Terminal records are visible to the registry for `5s`, receive a `3s` UI dwell from local observation, and remain as non-visible tombstones for `10m` to suppress late cleanup duplicates.
-- **Live Status Setup…** explicitly installs user-level bridges for Codex, Claude Code, OpenCode, Cursor Agent, and Pi.
+- **Live Status Setup…** explicitly installs user-level bridges for Codex, Claude Code, Cursor Agent, OpenCode, and Pi.
 - Setup readiness verifies Atoll's static files and bridge permissions. Runtime hook trust, managed policy, plugin reload, and active-session reload remain external and are described in `LIVE_STATUS_SUPPORT.md`.
 
 Settings:
@@ -272,11 +272,11 @@ Settings:
 
 Native hook integrations:
 
-- Claude Code
 - Codex
-- Pi
-- OpenCode
+- Claude Code
 - Cursor Agent
+- OpenCode
+- Pi
 
 Each supported harness can use Atoll's normalized `--lifecycle-event <harness> <kind>` bridge.
 
@@ -298,10 +298,10 @@ Agent SVG assets:
 
 | Harness | Display name | Absolute path |
 | --- | --- | --- |
-| opencode | OpenCode | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/opencode.svg` |
 | codex | Codex | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/codex.svg` |
 | claude | Claude Code | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/claude.svg` |
 | cursor | Cursor Agent | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/cursor.svg` |
+| opencode | OpenCode | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/opencode.svg` |
 | pi | Pi | `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/Resources/AgentIcons/pi.svg` |
 
 Icon padding in row glyphs:
@@ -311,12 +311,12 @@ Icon padding in row glyphs:
 
 Fallback glyphs:
 
-- `opencode`: custom stroked angle-bracket shape.
 - `codex`: custom stroked three-curve loop.
 - `claude`: custom filled shape.
+- `cursor`: two-letter short name.
+- `opencode`: custom stroked angle-bracket shape.
 - `pi`: custom stroked Pi shape.
 - `atoll`: custom stroked Atoll glyph.
-- `cursor`: two-letter short name.
 
 ## Website Demo Notes
 

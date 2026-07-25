@@ -92,9 +92,8 @@ final class LiveStatusSetupWindowController {
 
 private enum SetupPanelSize {
     static func size(for agentCount: Int) -> NSSize {
-        let rows = max(1, Int(ceil(Double(agentCount) / 4)))
-        let height = 348 + CGFloat(rows) * 104
-        return NSSize(width: 456, height: height)
+        let tileRowWidth = CGFloat(agentCount * 76 + max(0, agentCount - 1) * 12)
+        return NSSize(width: max(456, tileRowWidth + 56), height: 452)
     }
 }
 
@@ -262,8 +261,6 @@ private struct LiveStatusSetupView: View {
     @ObservedObject var model: LiveStatusSetupModel
     let onDismiss: () -> Void
 
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: 4)
-
     var body: some View {
         LiveStatusPanel {
             VStack(alignment: .leading, spacing: 0) {
@@ -280,11 +277,12 @@ private struct LiveStatusSetupView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 7)
 
-                LazyVGrid(columns: columns, spacing: 14) {
+                HStack(spacing: 12) {
                     ForEach(model.agents) { agent in
                         AgentInstallTile(agent: agent, status: model.status(for: agent))
                     }
                 }
+                .frame(maxWidth: .infinity)
                 .padding(.top, 20)
 
                 Label("Uses local hooks only. Your agent conversations stay private.", systemImage: "lock.fill")

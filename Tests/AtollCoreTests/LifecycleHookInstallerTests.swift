@@ -94,10 +94,10 @@ final class LifecycleHookInstallerTests: XCTestCase {
         }
     }
 
-    func testSupportedHarnessSetIsExactlyTheFiveShippedAgents() {
-        let expected: Set<AgentHarness> = [.codex, .claude, .opencode, .cursor, .pi]
-        XCTAssertEqual(Set(LifecycleHookInstaller.supportedAgents), expected)
-        XCTAssertEqual(Set(AgentHarness.allCases), expected.union([.atoll]))
+    func testSupportedHarnessesAreExactlyTheFiveShippedAgentsInDisplayOrder() {
+        let expected: [AgentHarness] = [.codex, .claude, .cursor, .opencode, .pi]
+        XCTAssertEqual(LifecycleHookInstaller.supportedAgents, expected)
+        XCTAssertEqual(Set(AgentHarness.allCases), Set(expected).union([.atoll]))
         for removed in ["gemini", "copilot", "droid", "qoder", "qwen", "hermes", "amp", "kimi", "kiro", "codebuddy"] {
             XCTAssertNil(AgentHarness.parse(removed))
         }
@@ -168,6 +168,30 @@ final class LifecycleHookInstallerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: claude.appendingPathComponent("settings.json").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: pi.appendingPathComponent("extensions/atoll.ts").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: openCode.appendingPathComponent("plugins/atoll.js").path))
+    }
+
+    func testDetectedAgentsAreInstalledOnlyInDisplayOrderAndScopedInstallPreservesOthers() throws {
+        let claude = home.appendingPathComponent(".claude/settings.json")
+        try write(["theme": "dark"], to: claude)
+        try FileManager.default.createDirectory(at: home.appendingPathComponent(".cursor"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: home.appendingPathComponent(".config/opencode"),
+            withIntermediateDirectories: true
+        )
+        let pi = home.appendingPathComponent(".local/bin/pi")
+        try FileManager.default.createDirectory(at: pi.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "#!/bin/sh\n".write(to: pi, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: pi.path)
+
+        let installer = makeInstaller(
+            environment: ["PATH": home.appendingPathComponent("bin").path],
+            fileManager: HomeScopedFileManager(home: home)
+        )
+        XCTAssertEqual(installer.detectedAgents(), [.claude, .cursor, .opencode, .pi])
+
+        let originalClaude = try Data(contentsOf: claude)
+        try installer.install(agents: [.codex])
+        XCTAssertEqual(try Data(contentsOf: claude), originalClaude)
     }
 
     func testCodexDisabledHooksArePreserved() throws {
@@ -291,11 +315,13 @@ final class LifecycleHookInstallerTests: XCTestCase {
 
     private func makeInstaller(
         piVersionOutput: String = "pi-coding-agent 0.80.4",
-        environment: [String: String] = [:]
+        environment: [String: String] = [:],
+        fileManager: FileManager = .default
     ) -> LifecycleHookInstaller {
         LifecycleHookInstaller(
             homeDirectory: home,
             executablePath: executable,
+            fileManager: fileManager,
             piVersionOutput: { piVersionOutput },
             environment: environment
         )
@@ -329,5 +355,22 @@ final class LifecycleHookInstallerTests: XCTestCase {
 
     private func read(_ url: URL) throws -> [String: Any] {
         try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    }
+}
+
+private final class HomeScopedFileManager: FileManager {
+    private let homePath: String
+
+    init(home: URL) {
+        homePath = home.path + "/"
+        super.init()
+    }
+
+    override func fileExists(atPath path: String) -> Bool {
+        path.hasPrefix(homePath) && super.fileExists(atPath: path)
+    }
+
+    override func isExecutableFile(atPath path: String) -> Bool {
+        path.hasPrefix(homePath) && super.isExecutableFile(atPath: path)
     }
 }

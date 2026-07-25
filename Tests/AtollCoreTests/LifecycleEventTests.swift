@@ -12,7 +12,7 @@ final class LifecycleEventTests: XCTestCase {
         let validRecord = try XCTUnwrap((try JSONSerialization.jsonObject(with: Data(contentsOf: fileURL)) as? [[String: Any]])?.first)
         var removedRecord = validRecord
         removedRecord["sessionID"] = "removed"
-        removedRecord["harness"] = "kimi"
+        removedRecord["harness"] = "gemini"
         try JSONSerialization.data(withJSONObject: [validRecord, removedRecord]).write(to: fileURL)
 
         let restored = LifecycleSessionRegistry(fileURL: fileURL)

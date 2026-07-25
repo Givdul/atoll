@@ -22,11 +22,11 @@ The setup installs user-level hooks for:
 
 - Codex: `UserPromptSubmit` and `Stop`
 - Claude Code: `UserPromptSubmit`, `Stop`, `StopFailure`, and typed permission/input notifications
-- Pi 0.80.4 or newer: a global TypeScript extension using `agent_start`, `agent_end`, and `agent_settled`
-- OpenCode: a global plugin observing session status/error plus current and legacy permission/question events
 - Cursor Agent: `beforeSubmitPrompt` and `stop`
+- OpenCode: a global plugin observing session status/error plus current and legacy permission/question events
+- Pi 0.80.4 or newer: a global TypeScript extension using `agent_start`, `agent_end`, and `agent_settled`
 
-The installer preserves existing settings and hooks. It verifies the exact managed integration, bridge contents, and bridge permissions after writing, but that is static readiness rather than proof of runtime activation. Codex may still require `/hooks` review; extensions and plugins may need a reload or new session. Atoll honors inherited custom user homes documented by Codex, Claude Code, Pi, and OpenCode, while leaving project and policy layers untouched.
+The installer preserves existing settings and hooks. It verifies the exact managed integration, bridge contents, and bridge permissions after writing, but that is static readiness rather than proof of runtime activation. Codex may still require `/hooks` review; extensions and plugins may need a reload or new session. Atoll honors inherited custom user homes documented by Codex, Claude Code, OpenCode, and Pi, while leaving project and policy layers untouched.
 
 See [Live Status Support](LIVE_STATUS_SUPPORT.md) for the source-linked event contract, state fidelity, activation requirements, and release limitations for every shipped integration.
 

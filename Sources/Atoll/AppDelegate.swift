@@ -151,7 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
     }
 
     private func presentOnboardingIfNeeded() {
-        let key = "hasSeenLifecycleOnboarding"
+        let key = "hasSeenLifecycleOnboardingV2"
         guard !UserDefaults.standard.bool(forKey: key) else { return }
 
         Task { [weak self] in
