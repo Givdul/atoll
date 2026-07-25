@@ -61,8 +61,15 @@ final class AppState: ObservableObject {
             }
         }
 
-        let attentionSessions = Self.attentionSessions(from: candidates)
-        let regularSessions = candidates.filter { !Self.needsAttention($0) }
+        let attentionSessions = Array(
+            Self.attentionSessions(from: candidates).prefix(Self.maxVisibleSessions)
+        )
+        let regularCandidates = candidates.filter { !Self.needsAttention($0) }
+        let terminalSessions = regularCandidates
+            .filter { $0.state.isTerminal }
+            .sorted { terminalDisplayDate(for: $0) > terminalDisplayDate(for: $1) }
+        let activeSessions = regularCandidates.filter { !$0.state.isTerminal }
+        let regularSessions = terminalSessions + activeSessions
         let regularLimit = max(0, Self.maxVisibleSessions - attentionSessions.count)
 
         return Array(regularSessions.prefix(regularLimit)) + attentionSessions
@@ -75,10 +82,10 @@ final class AppState: ObservableObject {
     }
 
     var waitingSessions: [AgentSession] {
-        Array(displaySessions.filter {
+        displaySessions.filter {
             ($0.state == .waitingForInput || $0.state == .waitingForPermission)
                 && $0.confidence != .historical
-        }.prefix(3))
+        }
     }
 
     var recentTerminalSessions: [AgentSession] {
@@ -193,10 +200,14 @@ final class AppState: ObservableObject {
     }
 
     private func isRecentTerminalNotification(_ session: AgentSession, now: Date) -> Bool {
-        let observedAt = terminalObservations[session.id]?.displayedAt
+        let observedAt = terminalDisplayDate(for: session)
+        return now.timeIntervalSince(observedAt) <= terminalDisplayWindow
+    }
+
+    private func terminalDisplayDate(for session: AgentSession) -> Date {
+        terminalObservations[session.id]?.displayedAt
             ?? session.observedAt
             ?? session.updatedAt
-        return now.timeIntervalSince(observedAt) <= terminalDisplayWindow
     }
 
     private func updateTerminalObservationTimes(from sessions: [AgentSession]) {

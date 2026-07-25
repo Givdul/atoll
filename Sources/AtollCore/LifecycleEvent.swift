@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// The small, harness-neutral protocol written by lifecycle hooks.
@@ -51,6 +52,9 @@ public struct LifecycleEvent: Hashable, Sendable {
     public var prompt: String?
     public var projectPath: String?
     public var model: String?
+    /// Atoll-generated transport identity. It remains stable through socket and
+    /// queue retries while distinct hook invocations receive distinct values.
+    public var deliveryID: String?
 
     public init(
         sessionID: String,
@@ -61,7 +65,8 @@ public struct LifecycleEvent: Hashable, Sendable {
         detail: String? = nil,
         prompt: String? = nil,
         projectPath: String? = nil,
-        model: String? = nil
+        model: String? = nil,
+        deliveryID: String? = UUID().uuidString
     ) {
         self.sessionID = sessionID
         self.harness = harness
@@ -72,6 +77,7 @@ public struct LifecycleEvent: Hashable, Sendable {
         self.prompt = prompt
         self.projectPath = projectPath
         self.model = model
+        self.deliveryID = deliveryID
     }
 
     /// Parses one JSONL hook record. Aliases cover common hook payloads while
@@ -96,7 +102,8 @@ public struct LifecycleEvent: Hashable, Sendable {
             detail: JSONHelpers.directString(in: dictionary, keys: ["detail", "reason", "message"]),
             prompt: JSONHelpers.directString(in: dictionary, keys: ["prompt"]),
             projectPath: JSONHelpers.directString(in: dictionary, keys: ["project_path", "projectPath", "cwd", "workspace"]),
-            model: JSONHelpers.directString(in: dictionary, keys: ["model", "model_id", "modelId"])
+            model: JSONHelpers.directString(in: dictionary, keys: ["model", "model_id", "modelId"]),
+            deliveryID: JSONHelpers.directString(in: dictionary, keys: ["delivery_id", "deliveryId"])
         )
     }
 
@@ -179,12 +186,69 @@ public struct LifecycleEvent: Hashable, Sendable {
         object["prompt"] = prompt
         object["project_path"] = projectPath
         object["model"] = model
+        object["delivery_id"] = deliveryID
 
         guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(withJSONObject: object),
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
               let line = String(data: data, encoding: .utf8) else {
             return nil
         }
         return line
+    }
+
+    /// Stable identity for at-least-once delivery deduplication. Current events
+    /// use their transport ID; legacy events use their canonical wire form so an
+    /// in-memory receipt and the same event reparsed after a crash still match.
+    var deliveryIdentity: String {
+        if let deliveryID, !deliveryID.isEmpty {
+            return Self.deliveryIdentity(forCanonicalRepresentation: "delivery-id:\(deliveryID)")
+        }
+        if let line = jsonLine() {
+            return Self.deliveryIdentity(forCanonicalRepresentation: line)
+        }
+
+        // Lifecycle events contain JSON-safe values, so this is defensive only.
+        // Length prefixes keep the fallback unambiguous.
+        func component(_ value: String?) -> String {
+            guard let value else { return "n" }
+            return "s\(value.utf8.count):\(value)"
+        }
+
+        let representation = [
+            component(harness.rawValue),
+            component(sessionID),
+            component(kind.rawValue),
+            component(String(timestamp.timeIntervalSinceReferenceDate.bitPattern)),
+            component(title),
+            component(detail),
+            component(prompt),
+            component(projectPath),
+            component(model)
+        ].joined(separator: "|")
+        return Self.deliveryIdentity(forCanonicalRepresentation: representation)
+    }
+
+    /// Normalizes the unbounded canonical wire form into a fixed-size persisted
+    /// key. This also migrates `lastEventKey` values written before the receipt
+    /// ledger used digests.
+    static func deliveryIdentity(forCanonicalRepresentation representation: String) -> String {
+        if representation.hasPrefix("sha256:"), representation.count == 71 {
+            return representation
+        }
+        let digest = SHA256.hash(data: Data(representation.utf8))
+        return "sha256:" + digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Migrates either the former canonical JSON key or an already-digested key
+    /// without hashing a digest a second time.
+    static func migratedDeliveryIdentity(_ legacyKey: String) -> String {
+        if legacyKey.hasPrefix("sha256:"), legacyKey.count == 71 {
+            return legacyKey
+        }
+        if let legacyEvent = LifecycleEvent.parse(jsonLine: legacyKey),
+           legacyEvent.deliveryID != nil {
+            return legacyEvent.deliveryIdentity
+        }
+        return deliveryIdentity(forCanonicalRepresentation: legacyKey)
     }
 }

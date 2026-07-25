@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Installs the small native-hook bridge. Call this only from an explicit user action.
@@ -42,19 +43,22 @@ public struct LifecycleHookInstaller {
     private let fileManager: FileManager
     private let piVersionOutput: (() throws -> String)?
     private let environment: [String: String]
+    private let commandTimeout: TimeInterval
 
     public init(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         executablePath: String = "/Applications/Atoll.app/Contents/MacOS/Atoll",
         fileManager: FileManager = .default,
         piVersionOutput: (() throws -> String)? = nil,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        commandTimeout: TimeInterval = 10
     ) {
         self.homeDirectory = homeDirectory
         self.executablePath = executablePath
         self.fileManager = fileManager
         self.piVersionOutput = piVersionOutput
         self.environment = environment
+        self.commandTimeout = max(0.01, commandTimeout)
     }
 
     public func install() throws {
@@ -130,6 +134,7 @@ public struct LifecycleHookInstaller {
         if agent == .hermes { return readiness(requiring: hermesPluginsAreReady()) }
         if agent == .amp { return readiness(requiring: managedFileMatches(ampPluginSource, at: ampPluginURL)) }
         do {
+            if agent == .codex { try validateCodexHooksEnabled() }
             let url = configurationURL(for: agent)
             let root = try jsonObject(at: url)
             try validateHookConfiguration(root, for: agent, at: url)
@@ -144,7 +149,7 @@ public struct LifecycleHookInstaller {
     private func configurationURL(for agent: AgentHarness) -> URL {
         switch agent {
         case .claude: claudeConfigurationDirectory.appendingPathComponent("settings.json")
-        case .codex: homeDirectory.appendingPathComponent(".codex/hooks.json")
+        case .codex: codexConfigurationDirectory.appendingPathComponent("hooks.json")
         case .gemini: geminiConfigurationDirectory.appendingPathComponent("settings.json")
         case .copilot: copilotConfigurationDirectory.appendingPathComponent("hooks/atoll.json")
         case .cursor: homeDirectory.appendingPathComponent(".cursor/hooks.json")
@@ -153,13 +158,15 @@ public struct LifecycleHookInstaller {
         case .qwen: qwenConfigurationDirectory.appendingPathComponent("settings.json")
         case .pi: piExtensionURL
         case .opencode: openCodePluginURL
-        case .hermes: homeDirectory.appendingPathComponent(".hermes/config.yaml")
+        case .hermes: hermesConfigurationDirectory.appendingPathComponent("config.yaml")
         case .amp: ampPluginURL
         default: homeDirectory
         }
     }
 
     private func configurationDirectory(for agent: AgentHarness) -> URL? {
+        if agent == .pi { return piConfigurationDirectory }
+        if agent == .opencode { return openCodeConfigurationDirectory }
         if agent == .amp { return homeDirectory.appendingPathComponent(".config/amp") }
         return configurationURL(for: agent).deletingLastPathComponent()
     }
@@ -167,6 +174,11 @@ public struct LifecycleHookInstaller {
     private var claudeConfigurationDirectory: URL {
         customDirectory(environmentVariable: "CLAUDE_CONFIG_DIR")
             ?? homeDirectory.appendingPathComponent(".claude")
+    }
+
+    private var codexConfigurationDirectory: URL {
+        customDirectory(environmentVariable: "CODEX_HOME")
+            ?? homeDirectory.appendingPathComponent(".codex")
     }
 
     private var copilotConfigurationDirectory: URL {
@@ -182,6 +194,25 @@ public struct LifecycleHookInstaller {
     private var qwenConfigurationDirectory: URL {
         customDirectory(environmentVariable: "QWEN_HOME")
             ?? homeDirectory.appendingPathComponent(".qwen")
+    }
+
+    private var piConfigurationDirectory: URL {
+        customDirectory(environmentVariable: "PI_CODING_AGENT_DIR")
+            ?? homeDirectory.appendingPathComponent(".pi/agent")
+    }
+
+    private var openCodeConfigurationDirectory: URL {
+        customDirectory(environmentVariable: "OPENCODE_CONFIG_DIR")
+            ?? homeDirectory.appendingPathComponent(".config/opencode")
+    }
+
+    private var hermesConfigurationDirectory: URL {
+        inheritedHermesHome
+            ?? homeDirectory.appendingPathComponent(".hermes")
+    }
+
+    private var inheritedHermesHome: URL? {
+        customDirectory(environmentVariable: "HERMES_HOME")
     }
 
     private func customDirectory(environmentVariable name: String) -> URL? {
@@ -395,8 +426,8 @@ public struct LifecycleHookInstaller {
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: bridgeURL.path)
     }
 
-    private var piExtensionURL: URL { homeDirectory.appendingPathComponent(".pi/agent/extensions/atoll.ts") }
-    private var openCodePluginURL: URL { homeDirectory.appendingPathComponent(".config/opencode/plugins/atoll.js") }
+    private var piExtensionURL: URL { piConfigurationDirectory.appendingPathComponent("extensions/atoll.ts") }
+    private var openCodePluginURL: URL { openCodeConfigurationDirectory.appendingPathComponent("plugins/atoll.js") }
     private var ampPluginURL: URL { homeDirectory.appendingPathComponent(".config/amp/plugins/atoll.ts") }
     private var managedMarker: String { "Atoll Live Status managed integration" }
     private static let minimumPiVersion = PiVersion(major: 0, minor: 80, patch: 4, isPrerelease: false)
@@ -456,8 +487,12 @@ public struct LifecycleHookInstaller {
 
         const bridge = \(javaScriptString(bridgeURL.path));
         function emit(kind, ctx) {
-          const child = spawn(bridge, ["pi", kind], { stdio: ["pipe", "ignore", "ignore"] });
-          child.stdin.end(JSON.stringify({ session_id: ctx.sessionManager.getSessionId(), cwd: ctx.sessionManager.getCwd() }));
+          try {
+            const child = spawn(bridge, ["pi", kind], { stdio: ["pipe", "ignore", "ignore"] });
+            child.on("error", () => {});
+            child.stdin.on("error", () => {});
+            child.stdin.end(JSON.stringify({ session_id: ctx.sessionManager.getSessionId(), cwd: ctx.sessionManager.getCwd() }));
+          } catch {}
         }
 
         export default function (pi) {
@@ -474,8 +509,11 @@ public struct LifecycleHookInstaller {
         export const AtollLiveStatus = async ({ directory }) => {
           const terminalSessions = new Set();
           const emit = (kind, sessionID) => {
-            const child = Bun.spawn([bridge, "opencode", kind], { stdin: JSON.stringify({ session_id: sessionID, cwd: directory }), stdout: "ignore", stderr: "ignore" });
-            child.unref();
+            try {
+              const child = Bun.spawn([bridge, "opencode", kind], { stdin: JSON.stringify({ session_id: sessionID, cwd: directory }), stdout: "ignore", stderr: "ignore" });
+              child.exited.catch(() => {});
+              child.unref();
+            } catch {}
           };
           const finish = sessionID => {
             if (!sessionID || terminalSessions.has(sessionID)) return;
@@ -535,8 +573,12 @@ public struct LifecycleHookInstaller {
 
         const bridge = \(javaScriptString(bridgeURL.path));
         function emit(kind, threadID, prompt) {
-          const child = spawn(bridge, ["amp", kind], { stdio: ["pipe", "ignore", "ignore"] });
-          child.stdin.end(JSON.stringify({ session_id: threadID, cwd: process.cwd(), prompt }));
+          try {
+            const child = spawn(bridge, ["amp", kind], { stdio: ["pipe", "ignore", "ignore"] });
+            child.on("error", () => {});
+            child.stdin.on("error", () => {});
+            child.stdin.end(JSON.stringify({ session_id: threadID, cwd: process.cwd(), prompt }));
+          } catch {}
         }
 
         export default function (amp) {
@@ -577,6 +619,8 @@ public struct LifecycleHookInstaller {
         description: Reports Hermes agent activity to Atoll Live Status
         provides_hooks:
           - pre_llm_call
+          - pre_approval_request
+          - post_approval_response
           - on_session_end
         """
     }
@@ -615,12 +659,24 @@ public struct LifecycleHookInstaller {
         def _on_turn_start(session_id="", user_message="", model="", platform="", **kwargs):
             _emit("started", session_id=session_id, prompt=user_message, model=model, platform=platform)
 
+        def _on_approval_request(session_key="", surface="", session_id="", description="", **kwargs):
+            if surface == "smart":
+                return
+            _emit("needsPermission", session_id=session_id or session_key, prompt=description, platform=surface)
+
+        def _on_approval_response(session_key="", surface="", session_id="", **kwargs):
+            if surface == "smart":
+                return
+            _emit("started", session_id=session_id or session_key, platform=surface)
+
         def _on_turn_end(session_id="", completed=False, interrupted=False, model="", platform="", **kwargs):
             kind = "cancelled" if interrupted else "finished" if completed else "failed"
             _emit(kind, session_id=session_id, model=model, platform=platform)
 
         def register(ctx):
             ctx.register_hook("pre_llm_call", _on_turn_start)
+            ctx.register_hook("pre_approval_request", _on_approval_request)
+            ctx.register_hook("post_approval_response", _on_approval_response)
             ctx.register_hook("on_session_end", _on_turn_end)
         """
     }
@@ -628,6 +684,17 @@ public struct LifecycleHookInstaller {
     private struct HermesProfile {
         let name: String
         let home: URL
+        let commandHome: URL
+        let commandProfileName: String?
+    }
+
+    private struct CommandResult {
+        let terminationStatus: Int32
+        let output: String
+    }
+
+    private enum CommandExecutionError: Swift.Error {
+        case timedOut(output: String)
     }
 
     private func mergeFlatHooks(
@@ -682,14 +749,67 @@ public struct LifecycleHookInstaller {
     }
 
     private func hermesProfiles() -> [HermesProfile] {
-        let root = homeDirectory.appendingPathComponent(".hermes")
-        var profiles = [HermesProfile(name: "default", home: root)]
+        if let inheritedHermesHome {
+            let inheritedName = inheritedHermesHome.lastPathComponent
+            let isNamedProfile = inheritedHermesHome.deletingLastPathComponent().lastPathComponent == "profiles"
+                && isValidHermesProfileName(inheritedName)
+            return [HermesProfile(
+                name: isNamedProfile ? inheritedName : "default",
+                home: inheritedHermesHome,
+                commandHome: inheritedHermesHome,
+                commandProfileName: nil
+            )]
+        }
+
+        let root = hermesConfigurationDirectory
+        var profiles = [HermesProfile(
+            name: "default",
+            home: root,
+            commandHome: root,
+            commandProfileName: "default"
+        )]
         let profilesRoot = root.appendingPathComponent("profiles")
-        let urls = (try? fileManager.contentsOfDirectory(at: profilesRoot, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
-        profiles += urls.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+        let profileKeys: Set<URLResourceKey> = [.isDirectoryKey, .isSymbolicLinkKey]
+        let urls = (try? fileManager.contentsOfDirectory(at: profilesRoot, includingPropertiesForKeys: Array(profileKeys))) ?? []
+        profiles += urls.filter {
+            guard let values = try? $0.resourceValues(forKeys: profileKeys) else { return false }
+            return values.isDirectory == true && values.isSymbolicLink != true
+        }
+            .filter { isValidHermesProfileName($0.lastPathComponent) }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
-            .map { HermesProfile(name: $0.lastPathComponent, home: $0) }
+            .map {
+                HermesProfile(
+                    name: $0.lastPathComponent,
+                    home: $0,
+                    commandHome: root,
+                    commandProfileName: $0.lastPathComponent
+                )
+            }
         return profiles
+    }
+
+    /// Mirrors Hermes' public profile identifier contract and intentionally
+    /// excludes the reserved built-in `default` profile directory.
+    private func isValidHermesProfileName(_ name: String) -> Bool {
+        let reservedNames: Set<String> = ["default", "hermes", "test", "tmp", "root", "sudo"]
+        guard !reservedNames.contains(name) else { return false }
+        let bytes = Array(name.utf8)
+        guard (1...64).contains(bytes.count),
+              let first = bytes.first,
+              isLowercaseASCIILetter(first) || isASCIIDigit(first) else {
+            return false
+        }
+        return bytes.dropFirst().allSatisfy {
+            isLowercaseASCIILetter($0) || isASCIIDigit($0) || $0 == 45 || $0 == 95
+        }
+    }
+
+    private func isLowercaseASCIILetter(_ byte: UInt8) -> Bool {
+        (97...122).contains(byte)
+    }
+
+    private func isASCIIDigit(_ byte: UInt8) -> Bool {
+        (48...57).contains(byte)
     }
 
     private func hermesPluginEnabled(in profile: HermesProfile) -> Bool {
@@ -710,23 +830,41 @@ public struct LifecycleHookInstaller {
 
     private func enableHermesPlugin(profile: HermesProfile) throws {
         guard let executable = executableURL(named: "hermes") else { throw Error.commandUnavailable("hermes") }
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = executable
-        process.arguments = ["-p", profile.name, "plugins", "enable", "atoll-live-status"]
-        process.standardOutput = output
-        process.standardError = output
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            let detail = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw Error.commandFailed(detail?.isEmpty == false ? detail! : "Hermes could not enable the Atoll plugin for profile \(profile.name).")
+        let result: CommandResult
+        do {
+            var arguments = ["plugins", "enable", "atoll-live-status"]
+            if let commandProfileName = profile.commandProfileName {
+                arguments = ["-p", commandProfileName] + arguments
+            }
+            result = try runCommand(
+                executable: executable,
+                arguments: arguments,
+                environmentOverrides: ["HERMES_HOME": profile.commandHome.path]
+            )
+        } catch CommandExecutionError.timedOut(let output) {
+            throw Error.commandFailed(
+                commandTimeoutDetail(
+                    command: "hermes plugins enable",
+                    output: output,
+                    fallback: "Hermes did not finish enabling the Atoll plugin for profile \(profile.name)."
+                )
+            )
+        } catch {
+            throw Error.commandFailed("Hermes could not enable the Atoll plugin for profile \(profile.name): \(error.localizedDescription)")
+        }
+        guard result.terminationStatus == 0 else {
+            let detail = diagnosticOutput(result.output)
+            throw Error.commandFailed(
+                detail.isEmpty
+                    ? "Hermes could not enable the Atoll plugin for profile \(profile.name)."
+                    : detail
+            )
         }
     }
 
     private func executableURL(named command: String) -> URL? {
-        var directories = (ProcessInfo.processInfo.environment["PATH"]?.split(separator: ":").map(String.init) ?? [])
+        let searchPath = environment["PATH"] ?? ProcessInfo.processInfo.environment["PATH"]
+        var directories = (searchPath?.split(separator: ":").map(String.init) ?? [])
         directories += [homeDirectory.appendingPathComponent(".local/bin").path, "/opt/homebrew/bin", "/usr/local/bin"]
         for directory in directories {
             let url = URL(fileURLWithPath: directory).appendingPathComponent(command)
@@ -762,29 +900,121 @@ public struct LifecycleHookInstaller {
             throw Error.unreadablePiVersion(minimum: minimum, detail: "`pi` was not found on the executable search path.")
         }
 
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = executable
-        process.arguments = ["--version"]
-        process.standardOutput = output
-        process.standardError = output
+        let result: CommandResult
         do {
-            try process.run()
+            result = try runCommand(executable: executable, arguments: ["--version"])
+        } catch CommandExecutionError.timedOut(let output) {
+            throw Error.unreadablePiVersion(
+                minimum: minimum,
+                detail: commandTimeoutDetail(
+                    command: "pi --version",
+                    output: output,
+                    fallback: "`pi --version` did not finish."
+                )
+            )
         } catch {
             throw Error.unreadablePiVersion(minimum: minimum, detail: "`pi --version` could not run: \(error.localizedDescription)")
         }
-        process.waitUntilExit()
-
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        let text = String(data: data, encoding: .utf8) ?? ""
-        guard process.terminationStatus == 0 else {
-            let detail = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard result.terminationStatus == 0 else {
+            let detail = diagnosticOutput(result.output)
             throw Error.unreadablePiVersion(
                 minimum: minimum,
-                detail: detail.isEmpty ? "`pi --version` exited with status \(process.terminationStatus)." : "`pi --version` failed: \(detail)"
+                detail: detail.isEmpty ? "`pi --version` exited with status \(result.terminationStatus)." : "`pi --version` failed: \(detail)"
             )
         }
-        return text
+        return result.output
+    }
+
+    /// Captures output in a regular file so a verbose child cannot fill a pipe and block before it exits.
+    private func runCommand(
+        executable: URL,
+        arguments: [String],
+        environmentOverrides: [String: String] = [:]
+    ) throws -> CommandResult {
+        let outputRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("AtollLifecycleCommand-\(UUID().uuidString)")
+        let standardOutputURL = outputRoot.appendingPathExtension("stdout")
+        let standardErrorURL = outputRoot.appendingPathExtension("stderr")
+        defer {
+            try? fileManager.removeItem(at: standardOutputURL)
+            try? fileManager.removeItem(at: standardErrorURL)
+        }
+        _ = fileManager.createFile(
+            atPath: standardOutputURL.path,
+            contents: Data(),
+            attributes: [.posixPermissions: 0o600]
+        )
+        _ = fileManager.createFile(
+            atPath: standardErrorURL.path,
+            contents: Data(),
+            attributes: [.posixPermissions: 0o600]
+        )
+        let standardOutputHandle = try FileHandle(forWritingTo: standardOutputURL)
+        defer { try? standardOutputHandle.close() }
+        let standardErrorHandle = try FileHandle(forWritingTo: standardErrorURL)
+        defer { try? standardErrorHandle.close() }
+
+        let process = Process()
+        let completion = DispatchSemaphore(value: 0)
+        process.executableURL = executable
+        process.arguments = arguments
+        process.environment = ProcessInfo.processInfo.environment
+            .merging(environment) { _, override in override }
+            .merging(environmentOverrides) { _, override in override }
+        process.standardOutput = standardOutputHandle
+        process.standardError = standardErrorHandle
+        process.terminationHandler = { _ in completion.signal() }
+        try process.run()
+
+        guard completion.wait(timeout: .now() + commandTimeout) == .success else {
+            process.terminate()
+            if completion.wait(timeout: .now() + 0.5) == .timedOut {
+                _ = Darwin.kill(process.processIdentifier, SIGKILL)
+                _ = completion.wait(timeout: .now() + 0.5)
+            }
+            try? standardOutputHandle.synchronize()
+            try? standardErrorHandle.synchronize()
+            throw CommandExecutionError.timedOut(
+                output: capturedOutput(at: [standardOutputURL, standardErrorURL])
+            )
+        }
+
+        try? standardOutputHandle.synchronize()
+        try? standardErrorHandle.synchronize()
+        return CommandResult(
+            terminationStatus: process.terminationStatus,
+            output: capturedOutput(at: [standardOutputURL, standardErrorURL])
+        )
+    }
+
+    private func capturedOutput(at urls: [URL]) -> String {
+        urls.compactMap { url in
+            guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+            defer { try? handle.close() }
+            let data = (try? handle.read(upToCount: 32 * 1024)) ?? nil
+            return data.flatMap { String(data: $0, encoding: .utf8) }
+        }
+        .filter { !$0.isEmpty }
+        .joined(separator: "\n")
+    }
+
+    private func commandTimeoutDetail(command: String, output: String, fallback: String) -> String {
+        let timeout = commandTimeout < 1
+            ? String(format: "%.2f", commandTimeout)
+            : String(format: "%.0f", commandTimeout)
+        let detail = diagnosticOutput(output)
+        if detail.isEmpty {
+            return "\(fallback) `\(command)` timed out after \(timeout) seconds."
+        }
+        return "`\(command)` timed out after \(timeout) seconds: \(detail)"
+    }
+
+    private func diagnosticOutput(_ output: String) -> String {
+        let trimmed = output
+            .replacingOccurrences(of: "\0", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 1_000 else { return trimmed }
+        return String(trimmed.prefix(1_000)) + "…"
     }
 
     private func yamlList(_ source: String, section: String, key: String, contains value: String) -> Bool {
@@ -867,11 +1097,56 @@ public struct LifecycleHookInstaller {
     }
 
     private func mergeCodexHooks() throws {
+        try validateCodexHooksEnabled()
         let url = configurationURL(for: .codex)
         try mergeSettings(at: url, agent: .codex) { hooks in
             try addGroupedCommand(to: &hooks, event: "UserPromptSubmit", command: hookCommand(harness: "codex", kind: "started"), matcher: nil)
             try addGroupedCommand(to: &hooks, event: "Stop", command: hookCommand(harness: "codex", kind: "finished"), matcher: nil)
         }
+    }
+
+    private func validateCodexHooksEnabled() throws {
+        let url = codexConfigurationDirectory.appendingPathComponent("config.toml")
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        let source = try String(contentsOf: url, encoding: .utf8)
+        guard let setting = disabledCodexHooksSetting(in: source) else { return }
+        throw Error.hooksDisabled(url, setting: setting)
+    }
+
+    /// Recognizes only the documented feature assignments. It intentionally does not rewrite TOML.
+    private func disabledCodexHooksSetting(in source: String) -> String? {
+        enum Section {
+            case root
+            case features
+            case other
+        }
+        var section = Section.root
+        for rawLine in source.components(separatedBy: .newlines) {
+            let uncommented = rawLine.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+            let compact = uncommented.filter { !$0.isWhitespace }
+            guard !compact.isEmpty else { continue }
+
+            if compact.hasPrefix("[") {
+                section = compact == "[features]" ? .features : .other
+                continue
+            }
+            if section == .root, compact == "features.hooks=false" {
+                return "features.hooks"
+            }
+            if section == .root, compact == "features.codex_hooks=false" {
+                return "features.codex_hooks"
+            }
+            if section == .features, compact == "hooks=false" {
+                return "features.hooks"
+            }
+            if section == .features, compact == "codex_hooks=false" {
+                return "features.codex_hooks"
+            }
+            if section == .root, compact == "codex_hooks=false" {
+                return "codex_hooks"
+            }
+        }
+        return nil
     }
 
     private func mergeGeminiHooks() throws {

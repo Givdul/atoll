@@ -3,6 +3,12 @@ import AtollCore
 import Sparkle
 import SwiftUI
 
+private enum LifecycleOnboardingDecision: Sendable {
+    case noDetectedAgents
+    case alreadyConfigured
+    case needsSetup
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDelegate {
     private let state = AppState(settingsStore: SettingsStore())
@@ -20,9 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
     private var statusController: StatusMenuController?
     private var islandController: IslandWindowController?
     private let liveStatusSetupController = LiveStatusSetupWindowController()
-    private lazy var lifecycleServer = LifecycleSocketServer { [weak self] event in
+    private lazy var lifecycleServer = LifecycleSocketServer(queue: lifecycleQueue) { [weak self] receipt in
         Task { @MainActor [weak self] in
-            self?.apply(event)
+            self?.apply(receipt)
         }
     }
 
@@ -55,8 +61,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
     }
 
     func refreshNow() {
-        for event in lifecycleQueue.drain() {
-            _ = lifecycleRegistry.ingest(event)
+        for receipt in lifecycleQueue.pendingEvents() {
+            guard lifecycleRegistry.ingestPersisting(receipt.event) != nil else {
+                break
+            }
+            _ = lifecycleQueue.acknowledge(receipt)
         }
         state.allSessions = lifecycleRegistry.sessions()
         state.lastRefresh = Date()
@@ -64,8 +73,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
         statusController?.refreshMenu()
     }
 
-    private func apply(_ event: LifecycleEvent) {
-        state.allSessions = lifecycleRegistry.ingest(event)
+    private func apply(_ receipt: QueuedLifecycleEvent) {
+        guard let sessions = lifecycleRegistry.ingestPersisting(receipt.event) else {
+            return
+        }
+        _ = lifecycleQueue.acknowledge(receipt)
+        state.allSessions = sessions
         state.lastRefresh = Date()
         islandController?.syncVisibility()
         statusController?.refreshMenu()
@@ -140,11 +153,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
     private func presentOnboardingIfNeeded() {
         let key = "hasSeenLifecycleOnboarding"
         guard !UserDefaults.standard.bool(forKey: key) else { return }
-        UserDefaults.standard.set(true, forKey: key)
 
-        let installer = LifecycleHookInstaller()
-        guard installer.detectedAgents().contains(where: { installer.readiness(for: $0) != .configured }) else { return }
-        showLifecycleSetup()
+        Task { [weak self] in
+            let decision = await Task.detached(priority: .utility) {
+                let installer = LifecycleHookInstaller()
+                let detectedAgents = installer.detectedAgents()
+                guard !detectedAgents.isEmpty else {
+                    return LifecycleOnboardingDecision.noDetectedAgents
+                }
+                return detectedAgents.contains(where: { installer.readiness(for: $0) != .configured })
+                    ? .needsSetup
+                    : .alreadyConfigured
+            }.value
+
+            guard !UserDefaults.standard.bool(forKey: key) else { return }
+            switch decision {
+            case .noDetectedAgents:
+                return
+            case .alreadyConfigured:
+                UserDefaults.standard.set(true, forKey: key)
+            case .needsSetup:
+                UserDefaults.standard.set(true, forKey: key)
+                self?.showLifecycleSetup()
+            }
+        }
     }
 
     func checkForUpdates() {

@@ -5,7 +5,18 @@ import Foundation
 let arguments = Array(CommandLine.arguments.dropFirst())
 if arguments == ["--install-lifecycle-hooks"] {
     do {
-        try LifecycleHookInstaller().install()
+        let installer = LifecycleHookInstaller()
+        var failures: [String] = []
+        for agent in installer.detectedAgents() {
+            do {
+                try installer.install(agents: [agent])
+            } catch {
+                failures.append("\(agent.displayName): \(error.localizedDescription)")
+            }
+        }
+        if !failures.isEmpty {
+            throw LifecycleHookInstaller.Error.commandFailed(failures.joined(separator: "\n"))
+        }
         exit(EXIT_SUCCESS)
     } catch {
         fputs("\(error.localizedDescription)\n", stderr)
@@ -21,7 +32,9 @@ if arguments.count == 3,
     let json = String(data: payload, encoding: .utf8) ?? "{}"
     if let event = LifecycleEvent.fromHookPayload(harness: harness, kind: kind, json: json) {
         if !LifecycleSocketClient.send(event) {
-            LifecycleEventQueue().enqueue(event)
+            guard LifecycleEventQueue().enqueue(event) != nil else {
+                exit(EXIT_FAILURE)
+            }
         }
         exit(EXIT_SUCCESS)
     }

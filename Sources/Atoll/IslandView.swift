@@ -106,6 +106,7 @@ struct IslandView: View {
     @Namespace private var glassNamespace
 
     @State private var isListMounted = false
+    @State private var listUnmountGeneration = 0
 
     var body: some View {
         let metrics = IslandMetrics()
@@ -203,7 +204,7 @@ struct IslandView: View {
         .allowsHitTesting(false)
         .padding(.top, metrics.topGap)
         .animation(listRevealAnimation, value: state.islandHoverState)
-        .animation(rowAnimation, value: sessions.map(\.id))
+        .animation(rowAnimation, value: sessions.map { "\($0.id):\($0.state.rawValue)" })
     }
 
     private func rowListHeight(metrics: IslandMetrics, rowCount: Int, isVisible: Bool) -> CGFloat {
@@ -448,6 +449,7 @@ struct IslandView: View {
     }
 
     private func showList() {
+        listUnmountGeneration &+= 1
         guard !isListMounted else {
             return
         }
@@ -456,15 +458,24 @@ struct IslandView: View {
     }
 
     private func scheduleListUnmount() {
+        listUnmountGeneration &+= 1
+        let generation = listUnmountGeneration
+
+        let canUnmount = {
+            generation == listUnmountGeneration
+                && !state.islandHoverState.expandsList
+                && !state.visibleSessions.contains(where: { $0.state.isTerminal })
+        }
+
         guard !reduceMotion else {
-            isListMounted = false
+            if canUnmount() {
+                isListMounted = false
+            }
             return
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
-            guard !state.islandHoverState.expandsList else {
-                return
-            }
+            guard canUnmount() else { return }
 
             isListMounted = false
         }

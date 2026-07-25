@@ -69,9 +69,10 @@ public struct AgentSession: Identifiable, Hashable, Codable, Sendable {
     public var projectPath: String?
     public var model: String?
     public var state: SessionState
+    /// Provider transition time clamped no later than Atoll's receipt time for
+    /// stable presentation and sorting. The registry retains the raw source time.
     public var updatedAt: Date
-    /// Local time when Atoll observed the current lifecycle state. Provider
-    /// timestamps remain in `updatedAt` for source-faithful display and sorting.
+    /// Local time when Atoll observed the current lifecycle state.
     public var observedAt: Date?
     public var startedAt: Date?
     public var sourcePath: String

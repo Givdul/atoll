@@ -213,8 +213,14 @@ final class IslandWindowController {
 
         let rowWidth = metrics.rowWidth
         let attentionHeight = metrics.listHeight(forRowCount: attentionCount)
+        let terminalCount = state.visibleSessions.filter { $0.state.isTerminal }.count
+        let terminalSectionHeight = visibleSectionHeight(metrics: metrics, rowCount: terminalCount)
         let x = window.frame.minX + (hostSize.width - rowWidth) / 2
-        let y = window.frame.maxY - metrics.notchHeight - metrics.rowSpacing - attentionHeight
+        let y = window.frame.maxY
+            - metrics.notchHeight
+            - terminalSectionHeight
+            - metrics.rowSpacing
+            - attentionHeight
         return NSRect(x: x, y: y, width: rowWidth, height: attentionHeight)
     }
 

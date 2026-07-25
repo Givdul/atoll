@@ -69,6 +69,9 @@ final class LifecycleHookInstallerTests: XCTestCase {
         let pi = try String(contentsOf: home.appendingPathComponent(".pi/agent/extensions/atoll.ts"))
         XCTAssertTrue(pi.contains("agent_settled"))
         XCTAssertTrue(pi.contains("cwd: ctx.sessionManager.getCwd()"))
+        XCTAssertTrue(pi.contains("child.on(\"error\", () => {})"))
+        XCTAssertTrue(pi.contains("child.stdin.on(\"error\", () => {})"))
+        XCTAssertTrue(pi.contains("} catch {}"))
         XCTAssertFalse(pi.contains("cwd: process.cwd()"))
 
         let openCode = try String(contentsOf: home.appendingPathComponent(".config/opencode/plugins/atoll.js"))
@@ -85,6 +88,8 @@ final class LifecycleHookInstallerTests: XCTestCase {
         XCTAssertTrue(openCode.contains("if (!sessionID) return;"))
         XCTAssertTrue(openCode.contains("MessageAbortedError"))
         XCTAssertTrue(openCode.contains("!terminalSessions.has(sessionID)"))
+        XCTAssertTrue(openCode.contains("child.exited.catch(() => {})"))
+        XCTAssertTrue(openCode.contains("} catch {}"))
         XCTAssertTrue(openCode.contains("""
           const finish = sessionID => {
             if (!sessionID || terminalSessions.has(sessionID)) return;
@@ -109,11 +114,23 @@ final class LifecycleHookInstallerTests: XCTestCase {
         XCTAssertTrue(amp.contains("stateSubscriptions.get(event.thread.id)?.unsubscribe()"), amp)
         XCTAssertTrue(amp.contains("stateSubscriptions.delete(event.thread.id)"), amp)
         XCTAssertTrue(amp.contains("event.status === \"error\" ? \"failed\" : \"cancelled\""), amp)
+        XCTAssertTrue(amp.contains("child.on(\"error\", () => {})"), amp)
+        XCTAssertTrue(amp.contains("child.stdin.on(\"error\", () => {})"), amp)
+        XCTAssertTrue(amp.contains("} catch {}"), amp)
 
         for profile in [".hermes", ".hermes/profiles/work"] {
             let pluginRoot = home.appendingPathComponent(profile).appendingPathComponent("plugins/atoll-live-status")
-            XCTAssertTrue(try String(contentsOf: pluginRoot.appendingPathComponent("plugin.yaml")).contains("on_session_end"))
-            XCTAssertTrue(try String(contentsOf: pluginRoot.appendingPathComponent("__init__.py")).contains("pre_llm_call"))
+            let manifest = try String(contentsOf: pluginRoot.appendingPathComponent("plugin.yaml"))
+            let plugin = try String(contentsOf: pluginRoot.appendingPathComponent("__init__.py"))
+            XCTAssertTrue(manifest.contains("pre_approval_request"))
+            XCTAssertTrue(manifest.contains("post_approval_response"))
+            XCTAssertTrue(manifest.contains("on_session_end"))
+            XCTAssertTrue(plugin.contains("pre_llm_call"))
+            XCTAssertTrue(plugin.contains("ctx.register_hook(\"pre_approval_request\", _on_approval_request)"))
+            XCTAssertTrue(plugin.contains("ctx.register_hook(\"post_approval_response\", _on_approval_response)"))
+            XCTAssertEqual(plugin.components(separatedBy: "if surface == \"smart\":").count - 1, 2)
+            XCTAssertTrue(plugin.contains("session_id=session_id or session_key, prompt=description"))
+            XCTAssertTrue(plugin.contains("_emit(\"started\", session_id=session_id or session_key, platform=surface)"))
         }
 
         let cursor = try read(home.appendingPathComponent(".cursor/hooks.json"))
@@ -273,26 +290,188 @@ final class LifecycleHookInstallerTests: XCTestCase {
     }
 
     func testUsesDocumentedCustomUserConfigurationHomes() throws {
+        let codex = home.appendingPathComponent("custom-codex")
         let claude = home.appendingPathComponent("custom-claude")
         let copilot = home.appendingPathComponent("custom-copilot")
         let geminiRoot = home.appendingPathComponent("custom-gemini-root")
         let qwen = home.appendingPathComponent("custom-qwen")
+        let pi = home.appendingPathComponent("custom-pi-agent")
+        let openCode = home.appendingPathComponent("custom-opencode")
+        let hermes = home.appendingPathComponent("custom-hermes")
+        try FileManager.default.createDirectory(at: pi, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: openCode, withIntermediateDirectories: true)
+        try writeHermesConfig(at: hermes.appendingPathComponent("config.yaml"))
+        try writeHermesConfig(at: hermes.appendingPathComponent("profiles/work/config.yaml"))
         let installer = makeInstaller(environment: [
+            "CODEX_HOME": codex.path,
             "CLAUDE_CONFIG_DIR": claude.path,
             "COPILOT_HOME": copilot.path,
             "GEMINI_CLI_HOME": geminiRoot.path,
-            "QWEN_HOME": qwen.path
+            "QWEN_HOME": qwen.path,
+            "PI_CODING_AGENT_DIR": pi.path,
+            "OPENCODE_CONFIG_DIR": openCode.path,
+            "HERMES_HOME": hermes.path
         ])
 
-        try installer.install(agents: [.claude, .copilot, .gemini, .qwen])
+        let agents: [AgentHarness] = [
+            .codex, .claude, .copilot, .gemini, .qwen, .pi, .opencode, .hermes
+        ]
+        XCTAssertTrue(
+            Set([AgentHarness.pi, .opencode, .hermes])
+                .isSubset(of: Set(installer.detectedAgents()))
+        )
+        try installer.install(agents: agents)
 
+        XCTAssertTrue(FileManager.default.fileExists(atPath: codex.appendingPathComponent("hooks.json").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: claude.appendingPathComponent("settings.json").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: copilot.appendingPathComponent("hooks/atoll.json").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: geminiRoot.appendingPathComponent(".gemini/settings.json").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: qwen.appendingPathComponent("settings.json").path))
-        for agent in [AgentHarness.claude, .copilot, .gemini, .qwen] {
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pi.appendingPathComponent("extensions/atoll.ts").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: openCode.appendingPathComponent("plugins/atoll.js").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: hermes.appendingPathComponent("plugins/atoll-live-status/plugin.yaml").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: hermes.appendingPathComponent("profiles/work/plugins/atoll-live-status/plugin.yaml").path))
+        for agent in agents {
             XCTAssertEqual(installer.readiness(for: agent), .configured)
         }
+    }
+
+    func testHermesInheritedHomeActivatesThatProfileWithoutTouchingDefault() throws {
+        let root = home.appendingPathComponent(".hermes")
+        let defaultConfig = root.appendingPathComponent("config.yaml")
+        let activeHome = root.appendingPathComponent("profiles/work")
+        let activeConfig = activeHome.appendingPathComponent("config.yaml")
+        let disabledConfig = "plugins:\n  enabled:\n"
+        try FileManager.default.createDirectory(at: activeHome, withIntermediateDirectories: true)
+        try disabledConfig.write(to: defaultConfig, atomically: true, encoding: .utf8)
+        try disabledConfig.write(to: activeConfig, atomically: true, encoding: .utf8)
+
+        let bin = home.appendingPathComponent("bin")
+        let hermes = bin.appendingPathComponent("hermes")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        try """
+        #!/bin/sh
+        if [ "$1" = "-p" ]; then
+          printf 'unexpected profile redirect\n' >&2
+          exit 9
+        fi
+        printf 'plugins:\n  enabled:\n    - atoll-live-status\n' > "$HERMES_HOME/config.yaml"
+        """.write(to: hermes, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: hermes.path)
+
+        let installer = LifecycleHookInstaller(
+            homeDirectory: home,
+            executablePath: executable,
+            environment: [
+                "PATH": bin.path,
+                "HERMES_HOME": activeHome.path
+            ],
+            commandTimeout: 5
+        )
+
+        try installer.install(agents: [.hermes])
+
+        XCTAssertEqual(try String(contentsOf: defaultConfig, encoding: .utf8), disabledConfig)
+        XCTAssertTrue(try String(contentsOf: activeConfig, encoding: .utf8).contains("atoll-live-status"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: activeHome.appendingPathComponent("plugins/atoll-live-status/plugin.yaml").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("plugins/atoll-live-status/plugin.yaml").path))
+        XCTAssertEqual(installer.readiness(for: .hermes), .configured)
+    }
+
+    func testHermesDefaultRootSkipsInvalidProfileDirectories() throws {
+        let root = home.appendingPathComponent(".hermes")
+        try writeHermesConfig(at: root.appendingPathComponent("config.yaml"))
+        try writeHermesConfig(at: root.appendingPathComponent("profiles/work/config.yaml"))
+        let invalidNames = [
+            "default", "hermes", "test", "tmp", "root", "sudo",
+            "Uppercase", ".cache", "bad name", String(repeating: "a", count: 65)
+        ]
+        for name in invalidNames {
+            try writeHermesConfig(at: root.appendingPathComponent("profiles/\(name)/config.yaml"))
+        }
+        let unrelatedDirectory = home.appendingPathComponent("unrelated-hermes-directory")
+        try writeHermesConfig(at: unrelatedDirectory.appendingPathComponent("config.yaml"))
+        let linkedProfile = root.appendingPathComponent("profiles/linked")
+        try FileManager.default.createSymbolicLink(at: linkedProfile, withDestinationURL: unrelatedDirectory)
+
+        let installer = makeInstaller()
+        try installer.install(agents: [.hermes])
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("plugins/atoll-live-status/plugin.yaml").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("profiles/work/plugins/atoll-live-status/plugin.yaml").path))
+        for name in invalidNames {
+            XCTAssertFalse(
+                FileManager.default.fileExists(
+                    atPath: root.appendingPathComponent("profiles/\(name)/plugins/atoll-live-status/plugin.yaml").path
+                ),
+                "Unexpected Hermes plugin write for invalid profile directory \(name)"
+            )
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: unrelatedDirectory.appendingPathComponent("plugins/atoll-live-status/plugin.yaml").path
+            ),
+            "A profile-directory symlink must not redirect Atoll writes outside the Hermes profile root"
+        )
+    }
+
+    func testPreservesDocumentedCodexHookDisableSettings() throws {
+        let configurations = [
+            "[features]\nhooks = false # explicitly disabled\n",
+            "[features]\ncodex_hooks = false\n",
+            "features.hooks = false\n",
+            "features.codex_hooks = false\n",
+            "codex_hooks = false\n"
+        ]
+        let config = home.appendingPathComponent(".codex/config.toml")
+        let hooks = home.appendingPathComponent(".codex/hooks.json")
+        try FileManager.default.createDirectory(at: config.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        for source in configurations {
+            try? FileManager.default.removeItem(at: hooks)
+            try source.write(to: config, atomically: true, encoding: .utf8)
+            let installer = makeInstaller()
+
+            guard case .invalidConfiguration(let detail) = installer.readiness(for: .codex) else {
+                return XCTFail("Expected disabled Codex hooks to require user action for \(source)")
+            }
+            XCTAssertTrue(detail.contains("hooks are disabled"), detail)
+            XCTAssertThrowsError(try installer.install(agents: [.codex]))
+            XCTAssertEqual(try String(contentsOf: config, encoding: .utf8), source)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: hooks.path))
+        }
+    }
+
+    func testCodexHomeExpandsUserRelativePath() throws {
+        let installer = makeInstaller(environment: ["CODEX_HOME": "~/alternate-codex"])
+
+        try installer.install(agents: [.codex])
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: home.appendingPathComponent("alternate-codex/hooks.json").path
+            )
+        )
+        XCTAssertEqual(installer.readiness(for: .codex), .configured)
+    }
+
+    func testCodexDisableDetectionIgnoresCommentsAndOtherTables() throws {
+        let config = home.appendingPathComponent(".codex/config.toml")
+        try FileManager.default.createDirectory(at: config.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let source = """
+        # features.hooks = false
+        [other]
+        features.hooks = false
+        [features]
+        hooks = true
+        """
+        try source.write(to: config, atomically: true, encoding: .utf8)
+        let installer = makeInstaller()
+
+        try installer.install(agents: [.codex])
+
+        XCTAssertEqual(installer.readiness(for: .codex), .configured)
+        XCTAssertEqual(try String(contentsOf: config, encoding: .utf8), source)
     }
 
     func testFailureHooksAreRequiredForReadiness() throws {
@@ -485,6 +664,81 @@ final class LifecycleHookInstallerTests: XCTestCase {
 
         let detected = makeInstaller().detectedAgents()
         XCTAssertTrue(detected.contains(.pi))
+    }
+
+    func testPiVersionCommandDrainsLargeOutputWithoutDeadlocking() throws {
+        let bin = home.appendingPathComponent("bin")
+        let pi = bin.appendingPathComponent("pi")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        try """
+        #!/bin/sh
+        printf 'pi-coding-agent 0.80.4\\n'
+        index=0
+        while [ "$index" -lt 3072 ]; do
+          printf '0123456789abcdef0123456789abcdef\\n'
+          index=$((index + 1))
+        done
+        """.write(to: pi, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: pi.path)
+
+        let installer = LifecycleHookInstaller(
+            homeDirectory: home,
+            executablePath: executable,
+            environment: ["PATH": bin.path],
+            commandTimeout: 5
+        )
+
+        try installer.install(agents: [.pi])
+        XCTAssertEqual(installer.readiness(for: .pi), .configured)
+    }
+
+    func testPiVersionCommandTimesOutWithinBound() throws {
+        let bin = home.appendingPathComponent("bin")
+        let pi = bin.appendingPathComponent("pi")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        try """
+        #!/bin/sh
+        trap 'exit 0' TERM
+        while :; do :; done
+        """.write(to: pi, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: pi.path)
+        let installer = LifecycleHookInstaller(
+            homeDirectory: home,
+            executablePath: executable,
+            environment: ["PATH": bin.path],
+            commandTimeout: 0.10
+        )
+
+        let start = Date()
+        XCTAssertThrowsError(try installer.install(agents: [.pi])) { error in
+            XCTAssertTrue(error.localizedDescription.contains("timed out after 0.10 seconds"), error.localizedDescription)
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.5)
+    }
+
+    func testHermesEnableFailureCapturesStandardError() throws {
+        let bin = home.appendingPathComponent("bin")
+        let hermes = bin.appendingPathComponent("hermes")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        try """
+        #!/bin/sh
+        printf 'Hermes rejected the plugin activation\\n' >&2
+        exit 9
+        """.write(to: hermes, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: hermes.path)
+        let config = home.appendingPathComponent(".hermes/config.yaml")
+        try FileManager.default.createDirectory(at: config.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "plugins:\n  enabled:\n".write(to: config, atomically: true, encoding: .utf8)
+        let installer = LifecycleHookInstaller(
+            homeDirectory: home,
+            executablePath: executable,
+            environment: ["PATH": bin.path],
+            commandTimeout: 5
+        )
+
+        XCTAssertThrowsError(try installer.install(agents: [.hermes])) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Hermes rejected the plugin activation"), error.localizedDescription)
+        }
     }
 
     private func hook(_ harness: String, _ kind: String) -> String { "'\(home.path)/.atoll/bin/atoll-hook' \(harness) \(kind)" }

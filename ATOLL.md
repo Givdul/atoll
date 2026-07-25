@@ -63,8 +63,9 @@ Visibility rules:
 - Running, waiting-for-input, and waiting-for-permission sessions are visible unless confidence is historical.
 - Done, failed, and cancelled sessions are visible for `3s`.
 - Max visible sessions: `8`.
+- Recent terminal rows are prioritized ahead of running rows so completion remains perceptible under load.
 - Attention sessions are pinned after regular rows.
-- Waiting menu badge count uses the first `3` waiting sessions.
+- Waiting menu badge count includes every active waiting session; the island still caps visible rows at `8`.
 
 Animations:
 
@@ -249,11 +250,13 @@ Status item:
 
 Lifecycle behavior:
 
-- Hooks deliver `started`, terminal, and optional attention events directly to `~/.atoll/lifecycle.sock`.
-- The app refreshes immediately on each socket event.
-- A `1s` maintenance timer drains Atoll's own durable event queue and expires stale lifecycle state; it never scans agent transcripts, processes, or lock files.
-- Active sessions expire after `10m` without a newer event; done, failed, and cancelled sessions remain available to the UI for `5s`.
+- Hooks deliver `started`, terminal, and optional attention events through `~/.atoll/lifecycle.sock`.
+- The socket server persists a valid event before acknowledging it. The sender falls back to the same durable queue when delivery or acknowledgment fails.
+- The app refreshes immediately from a persisted receipt and removes that queue file only after the lifecycle registry is written successfully.
+- A `1s` maintenance timer retries pending receipts and expires stale lifecycle state; it never scans agent transcripts, processes, or lock files.
+- Active sessions expire after `10m` of local inactivity. Terminal records are visible to the registry for `5s`, receive a `3s` UI dwell from local observation, and remain as non-visible tombstones for `10m` to suppress late cleanup duplicates.
 - **Live Status Setup…** explicitly installs user-level bridges for Codex, Claude Code, Gemini CLI, GitHub Copilot CLI, Pi, OpenCode, Cursor Agent, Factory Droid, Qoder, Qwen Code, Hermes, and Amp.
+- Setup readiness verifies Atoll's static files and bridge permissions. Runtime hook trust, managed policy, plugin reload, and active-session reload remain external and are described in `LIVE_STATUS_SUPPORT.md`.
 
 Settings:
 
@@ -280,14 +283,15 @@ Any harness can use Atoll's normalized `--lifecycle-event <harness> <kind>` brid
 
 ## Icons
 
-The Atoll app icon is procedural, not an asset file:
+The release app icon is the checked-in bundle asset:
 
-- Source: `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/AtollIcon.swift`
-- Generated release icon path after build: `/Users/ludvighansen/Documents/Atoll/dist/Atoll.app/Contents/Resources/Atoll.icns`
+- Source: `/Users/ludvighansen/Documents/Atoll/Bundle/Atoll.icns`
+- Copied release path after build: `/Users/ludvighansen/Documents/Atoll/dist/Atoll.app/Contents/Resources/Atoll.icns`
 - Installed release icon path: `/Applications/Atoll.app/Contents/Resources/Atoll.icns`
-- App icon canvas: `1024x1024` by default.
-- App icon rounded rect radius: `size * 0.22`.
-- App icon glyph rect inset: `dx: size * 0.18`, `dy: size * 0.24`.
+
+`AtollIcon.swift` supplies the runtime application/status glyph used by AppKit; it does not generate the shipped `.icns` during release builds:
+
+- Runtime glyph source: `/Users/ludvighansen/Documents/Atoll/Sources/Atoll/AtollIcon.swift`
 - Status icon canvas: `22x22`.
 - Status icon glyph rect: `x: 3.5`, `y: 5.5`, `width: 15`, `height: 11`.
 

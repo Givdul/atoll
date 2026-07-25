@@ -8,31 +8,34 @@ It is event-driven: native agent hooks send lifecycle events to a user-only loca
 
 - `started` shows a running session immediately.
 - `finished`, `failed`, and `cancelled` end that session immediately.
-- `needsInput` and `needsPermission` are optional protocol states; the bundled adapters do not claim native coverage for them.
-- Events emitted while Atoll is closed are queued under `~/.atoll` and consumed at launch.
-- Active events expire after ten minutes if no newer lifecycle event arrives, so an orphan cannot remain visible indefinitely.
+- `needsInput` and `needsPermission` remain distinct attention states when an agent supplies a typed event.
+- Events are queued under `~/.atoll` before the sender is acknowledged and removed only after Atoll persists the resulting lifecycle state. Replay is safe and duplicate terminals do not extend their display time.
+- Active events expire after ten minutes of local inactivity. Terminal rows receive a perceptible local dwell, while retained tombstones suppress late cleanup events and repeated completion notifications.
+- Provider clocks are used for ordering only after future-skew clamping; they cannot keep a session alive or make a delayed terminal disappear instantly.
 
 ## Native hook integrations
 
-On first launch, Atoll offers to add live status for the supported agents it detects locally. You can also return to **Live Status Setup…** from the menu at any time to repair or install hooks. Atoll makes no configuration changes until you select **Add Live Status**; setup preserves existing settings and reports invalid existing configuration per agent.
+On first launch, Atoll offers to add live status only when it detects a supported agent that is not already configured. You can also return to **Live Status Setup…** from the menu at any time to repair or install hooks. Atoll makes no configuration changes until you select **Add Live Status**; setup preserves existing settings, disabled-hook choices, and malformed configuration for the user to repair.
 
 The setup installs user-level hooks for:
 
 - Codex: `UserPromptSubmit` and `Stop`
-- Claude Code: `UserPromptSubmit`, `Stop`, and `StopFailure`
-- Gemini CLI: `BeforeAgent` and `AfterAgent`
-- GitHub Copilot CLI: `userPromptSubmitted`, `agentStop`, and `sessionEnd`
+- Claude Code: `UserPromptSubmit`, `Stop`, `StopFailure`, and typed permission/input notifications
+- Gemini CLI: `BeforeAgent`, `AfterAgent`, and typed tool-permission notifications
+- GitHub Copilot CLI: `userPromptSubmitted`, `agentStop`, `sessionEnd`, and typed permission/input notifications
 - Pi 0.80.4 or newer: a global TypeScript extension using `agent_start` and `agent_settled`
-- OpenCode: a global plugin observing `session.status` and `session.error`
+- OpenCode: a global plugin observing session status/error plus current and legacy permission/question events
 - Cursor Agent: `beforeSubmitPrompt` and `stop`
 - Factory Droid: `UserPromptSubmit` and `Stop`
-- Qoder and Qwen Code: `UserPromptSubmit`, `Stop`, and `StopFailure`
-- Hermes: a managed plugin for the default home and each named profile, using `pre_llm_call` and `on_session_end`
-- Amp: a global plugin using `agent.start` and `agent.end`
+- Qoder and Qwen Code: prompt/stop/failure hooks plus documented typed attention events
+- Hermes: a managed plugin for the inherited active `HERMES_HOME`, or the default home and each valid named profile when unset, using per-turn lifecycle and prompted-approval observers
+- Amp: a global plugin using `agent.start`, `agent.end`, and the stable thread-state observable
 
-The installer preserves existing settings and hooks. It verifies the exact managed integration, bridge contents, and bridge permissions after writing. Codex and Factory Droid may still require a one-time review of newly changed hooks through their `/hooks` command before those hooks execute.
+The installer preserves existing settings and hooks. It verifies the exact managed integration, bridge contents, and bridge permissions after writing, but that is static readiness rather than proof of runtime activation. Codex and Factory Droid may still require `/hooks` review; managed plugins may need a reload or new session. Atoll honors inherited custom user homes documented by Codex, Claude Code, Gemini CLI, Copilot, Qwen Code, Pi, OpenCode, and Hermes, while leaving project and policy layers untouched.
 
 See [Live Status Support](LIVE_STATUS_SUPPORT.md) for the source-linked event contract, state fidelity, activation requirements, and release limitations for every shipped integration.
+
+See [Competitive Lifecycle Compatibility](COMPETITIVE_COMPATIBILITY.md) for the current evidence-backed comparison with Vibe Island, including explicit unknowns where its public material does not expose lifecycle internals.
 
 Other harnesses can send the same normalized protocol through the Atoll executable:
 
@@ -50,4 +53,4 @@ swift test
 ./Scripts/build-release.sh --install
 ```
 
-The release bundle is installed as `/Applications/Atoll.app`.
+The release script builds and verifies a universal `arm64` + `x86_64` bundle, signs embedded Sparkle components inside-out, and installs `/Applications/Atoll.app` with rollback on failure. The default signature is ad hoc for local builds. Distribution requires a Developer ID identity plus the external notarization and Sparkle feed credentials described by the script's environment variables.

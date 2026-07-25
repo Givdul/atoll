@@ -49,6 +49,7 @@ final class LifecycleEventTests: XCTestCase {
         XCTAssertEqual(event.sessionID, "abc")
         XCTAssertEqual(event.projectPath, "/tmp/example")
         XCTAssertEqual(event.prompt, "Fix auth")
+        XCTAssertNotNil(event.deliveryID)
         XCTAssertEqual(LifecycleEvent.parse(jsonLine: try XCTUnwrap(event.jsonLine()))?.kind, .started)
     }
 
@@ -60,6 +61,47 @@ final class LifecycleEventTests: XCTestCase {
         XCTAssertTrue(jsonLine.contains(".375Z"))
         let parsed = try XCTUnwrap(LifecycleEvent.parse(jsonLine: jsonLine))
         XCTAssertEqual(parsed.timestamp.timeIntervalSince1970, timestamp.timeIntervalSince1970, accuracy: 0.001)
+        XCTAssertEqual(parsed.deliveryID, event.deliveryID)
+        XCTAssertEqual(parsed.deliveryIdentity, event.deliveryIdentity)
+    }
+
+    func testTransportIdentityDistinguishesIdenticalInvocationsAndSurvivesRoundTrip() throws {
+        let timestamp = Date(timeIntervalSince1970: 1_000)
+        let first = LifecycleEvent(
+            sessionID: "identical",
+            harness: .codex,
+            kind: .started,
+            timestamp: timestamp
+        )
+        let second = LifecycleEvent(
+            sessionID: "identical",
+            harness: .codex,
+            kind: .started,
+            timestamp: timestamp
+        )
+
+        XCTAssertNotEqual(first.deliveryID, second.deliveryID)
+        XCTAssertNotEqual(first.deliveryIdentity, second.deliveryIdentity)
+
+        let reparsed = try XCTUnwrap(
+            LifecycleEvent.parse(jsonLine: try XCTUnwrap(first.jsonLine()))
+        )
+        XCTAssertEqual(reparsed.deliveryID, first.deliveryID)
+        XCTAssertEqual(reparsed.deliveryIdentity, first.deliveryIdentity)
+        XCTAssertEqual(
+            LifecycleEvent.migratedDeliveryIdentity(first.deliveryIdentity),
+            first.deliveryIdentity
+        )
+    }
+
+    func testLegacyWireEventWithoutTransportIdentityUsesStableCanonicalFallback() throws {
+        let line = "{\"harness\":\"codex\",\"session_id\":\"legacy-wire\",\"event\":\"started\",\"timestamp\":\"2026-07-10T12:00:00Z\"}"
+        let firstParse = try XCTUnwrap(LifecycleEvent.parse(jsonLine: line))
+        let secondParse = try XCTUnwrap(LifecycleEvent.parse(jsonLine: line))
+
+        XCTAssertNil(firstParse.deliveryID)
+        XCTAssertNil(secondParse.deliveryID)
+        XCTAssertEqual(firstParse.deliveryIdentity, secondParse.deliveryIdentity)
     }
 
     func testCursorTerminalStatusSelectsOfficialOutcome() throws {
@@ -142,6 +184,95 @@ final class LifecycleEventTests: XCTestCase {
         XCTAssertEqual(session.updatedAt, retryAt)
     }
 
+    func testExactActiveReplayDoesNotRefreshLocalLiveness() throws {
+        let store = directory.appendingPathComponent("registry.json")
+        let providerTime = Date(timeIntervalSince1970: 1_000)
+        let firstObservedAt = providerTime.addingTimeInterval(10)
+        let event = LifecycleEvent(
+            sessionID: "replayed",
+            harness: .codex,
+            kind: .started,
+            timestamp: providerTime,
+            prompt: "Keep this exact receipt stable"
+        )
+        let registry = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)
+        _ = registry.ingest(event, now: firstObservedAt)
+
+        let replayed = try XCTUnwrap(
+            registry.ingest(event, now: firstObservedAt.addingTimeInterval(50)).first
+        )
+        XCTAssertEqual(replayed.observedAt, firstObservedAt)
+
+        let reloaded = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)
+        XCTAssertTrue(reloaded.ingest(event, now: firstObservedAt.addingTimeInterval(61)).isEmpty)
+    }
+
+    func testQueuedActiveReplayAfterReloadKeepsOriginalObservationTime() throws {
+        let store = directory.appendingPathComponent("registry.json")
+        let queue = LifecycleEventQueue(homeDirectory: directory)
+        let providerTime = Date(timeIntervalSince1970: 1_000.123_456)
+        let firstObservedAt = providerTime.addingTimeInterval(10)
+        let receipt = try XCTUnwrap(queue.enqueue(LifecycleEvent(
+            sessionID: "crash-window",
+            harness: .codex,
+            kind: .started,
+            timestamp: providerTime,
+            prompt: "Survive registry save before queue acknowledgment"
+        )))
+        let registry = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)
+        _ = try XCTUnwrap(registry.ingestPersisting(receipt.event, now: firstObservedAt))
+
+        let reparsedReceipt = try XCTUnwrap(queue.pendingEvents().first)
+        let reloadedRegistry = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)
+        let replayed = try XCTUnwrap(
+            reloadedRegistry.ingestPersisting(
+                reparsedReceipt.event,
+                now: firstObservedAt.addingTimeInterval(50)
+            )?.first
+        )
+
+        XCTAssertEqual(replayed.observedAt, firstObservedAt)
+    }
+
+    func testLegacyLastEventKeyMigratesIntoDigestLedger() throws {
+        let store = directory.appendingPathComponent("registry.json")
+        let providerTime = Date(timeIntervalSince1970: 1_000)
+        let observedAt = providerTime.addingTimeInterval(10)
+        let event = LifecycleEvent(
+            sessionID: "legacy-delivery-key",
+            harness: .codex,
+            kind: .started,
+            timestamp: providerTime,
+            prompt: "Migrate this receipt"
+        )
+        let legacyRecord: [[String: Any]] = [[
+            "sessionID": event.sessionID,
+            "harness": event.harness.rawValue,
+            "state": SessionState.running.rawValue,
+            "updatedAt": providerTime.timeIntervalSinceReferenceDate,
+            "observedAt": observedAt.timeIntervalSinceReferenceDate,
+            "orderingAt": providerTime.timeIntervalSinceReferenceDate,
+            "startedAt": providerTime.timeIntervalSinceReferenceDate,
+            "prompt": "Migrate this receipt",
+            "lastEventKey": try XCTUnwrap(event.jsonLine())
+        ]]
+        try JSONSerialization.data(withJSONObject: legacyRecord).write(to: store)
+
+        let registry = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)
+        let replayed = try XCTUnwrap(
+            registry.ingest(event, now: observedAt.addingTimeInterval(20)).first
+        )
+        XCTAssertEqual(replayed.observedAt, observedAt)
+
+        let migrated = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: store)) as? [[String: Any]]
+        )
+        XCTAssertNil(migrated.first?["lastEventKey"])
+        let identities = try XCTUnwrap(migrated.first?["recentDeliveries"] as? [[String: Any]])
+        XCTAssertEqual(identities.count, 1)
+        XCTAssertTrue((identities.first?["identity"] as? String)?.hasPrefix("sha256:") == true)
+    }
+
     func testNewActiveCycleAfterTerminalResetsCycleStart() throws {
         let registry = LifecycleSessionRegistry(fileURL: directory.appendingPathComponent("registry.json"))
         let firstStart = Date(timeIntervalSince1970: 1_000)
@@ -186,10 +317,12 @@ final class LifecycleEventTests: XCTestCase {
         )
         let receivedAt = Date(timeIntervalSince1970: 1_000)
         let futureProviderTime = receivedAt.addingTimeInterval(3_600)
-        registry.ingest(
+        let started = try XCTUnwrap(registry.ingest(
             LifecycleEvent(sessionID: "skewed", harness: .codex, kind: .started, timestamp: futureProviderTime),
             now: receivedAt
-        )
+        ).first)
+        XCTAssertEqual(started.updatedAt, receivedAt)
+        XCTAssertEqual(started.startedAt, receivedAt)
 
         let correctedAt = receivedAt.addingTimeInterval(1)
         let corrected = try XCTUnwrap(registry.ingest(
@@ -200,6 +333,84 @@ final class LifecycleEventTests: XCTestCase {
         XCTAssertEqual(corrected.state, .done)
         XCTAssertEqual(corrected.updatedAt, correctedAt)
         XCTAssertTrue(registry.sessions(now: correctedAt.addingTimeInterval(5.01)).isEmpty)
+    }
+
+    func testNonAdjacentFutureSkewReplayCannotReopenTerminalState() throws {
+        let store = directory.appendingPathComponent("registry.json")
+        let queue = LifecycleEventQueue(homeDirectory: directory)
+        let receivedAt = Date(timeIntervalSince1970: 1_000)
+        let futureStart = LifecycleEvent(
+            sessionID: "future-replay",
+            harness: .codex,
+            kind: .started,
+            timestamp: receivedAt.addingTimeInterval(3_600)
+        )
+        let receipt = try XCTUnwrap(queue.enqueue(futureStart))
+        let registry = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)
+        _ = try XCTUnwrap(registry.ingestPersisting(receipt.event, now: receivedAt))
+
+        let terminalAt = receivedAt.addingTimeInterval(1)
+        _ = try XCTUnwrap(registry.ingestPersisting(
+            LifecycleEvent(
+                sessionID: "future-replay",
+                harness: .codex,
+                kind: .finished,
+                timestamp: terminalAt
+            ),
+            now: terminalAt
+        ))
+
+        let reparsedReceipt = try XCTUnwrap(queue.pendingEvents().first)
+        let reloaded = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)
+        let replayed = try XCTUnwrap(
+            reloaded.ingestPersisting(
+                reparsedReceipt.event,
+                now: receivedAt.addingTimeInterval(2)
+            )?.first
+        )
+
+        XCTAssertEqual(replayed.state, .done)
+        XCTAssertEqual(replayed.updatedAt, terminalAt)
+        XCTAssertEqual(replayed.observedAt, terminalAt)
+    }
+
+    func testNoOpActiveRetryCannotBecomeValidAfterTerminalDwell() throws {
+        let store = directory.appendingPathComponent("registry.json")
+        let terminalAt = Date(timeIntervalSince1970: 1_000)
+        let registry = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)
+        _ = try XCTUnwrap(registry.ingestPersisting(
+            LifecycleEvent(
+                sessionID: "no-op-replay",
+                harness: .codex,
+                kind: .finished,
+                timestamp: terminalAt
+            ),
+            now: terminalAt
+        ))
+
+        let equalTimeRetry = LifecycleEvent(
+            sessionID: "no-op-replay",
+            harness: .codex,
+            kind: .started,
+            timestamp: terminalAt,
+            prompt: "Do not reopen this completed turn"
+        )
+        let duringDwell = try XCTUnwrap(
+            registry.ingestPersisting(
+                equalTimeRetry,
+                now: terminalAt.addingTimeInterval(1)
+            )?.first
+        )
+        XCTAssertEqual(duringDwell.state, .done)
+
+        let reloaded = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)
+        let afterDwell = try XCTUnwrap(
+            reloaded.ingestPersisting(
+                equalTimeRetry,
+                now: terminalAt.addingTimeInterval(6)
+            )
+        )
+        XCTAssertTrue(afterDwell.isEmpty)
     }
 
     func testTerminalCorrectionResetsLocalObservationAndDwell() throws {
@@ -333,7 +544,7 @@ final class LifecycleEventTests: XCTestCase {
         XCTAssertEqual(session.observedAt, nextStart)
     }
 
-    func testEqualTimeActiveRetryCannotOverwriteTerminalButCanStartAfterDwell() throws {
+    func testEqualTimeActiveRetryCannotOverwriteTerminalButDistinctStartCanBeginAfterDwell() throws {
         let registry = LifecycleSessionRegistry(
             fileURL: directory.appendingPathComponent("registry.json"),
             activeTTL: 60,
@@ -345,14 +556,26 @@ final class LifecycleEventTests: XCTestCase {
             now: providerTime
         )
 
-        let duringDwell = try XCTUnwrap(registry.ingest(
-            LifecycleEvent(sessionID: "one", harness: .codex, kind: .started, timestamp: providerTime),
-            now: providerTime.addingTimeInterval(1)
-        ).first)
+        let ignoredRetry = LifecycleEvent(
+            sessionID: "one",
+            harness: .codex,
+            kind: .started,
+            timestamp: providerTime
+        )
+        let duringDwell = try XCTUnwrap(
+            registry.ingest(ignoredRetry, now: providerTime.addingTimeInterval(1)).first
+        )
         XCTAssertEqual(duringDwell.state, .done)
 
+        let distinctInvocation = LifecycleEvent(
+            sessionID: "one",
+            harness: .codex,
+            kind: .started,
+            timestamp: providerTime
+        )
+        XCTAssertNotEqual(distinctInvocation.deliveryIdentity, ignoredRetry.deliveryIdentity)
         let afterDwell = try XCTUnwrap(registry.ingest(
-            LifecycleEvent(sessionID: "one", harness: .codex, kind: .started, timestamp: providerTime),
+            distinctInvocation,
             now: providerTime.addingTimeInterval(5.01)
         ).first)
         XCTAssertEqual(afterDwell.state, .running)
@@ -417,11 +640,107 @@ final class LifecycleEventTests: XCTestCase {
         XCTAssertTrue(sessions.isEmpty)
     }
 
-    func testQueuePreservesEventsUntilTheAppDrainsThem() throws {
-        let queue = LifecycleEventQueue(homeDirectory: directory)
-        queue.enqueue(LifecycleEvent(sessionID: "one", harness: .copilot, kind: .started))
+    func testPersistingIngestRollsBackAndCanBeRetriedAfterWriteFailure() throws {
+        let store = directory.appendingPathComponent("registry.json", isDirectory: true)
+        try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+        let registry = LifecycleSessionRegistry(fileURL: store)
+        let queue = LifecycleEventQueue(
+            homeDirectory: directory.appendingPathComponent("queue-home", isDirectory: true)
+        )
+        let now = Date()
+        let event = LifecycleEvent(sessionID: "retry", harness: .codex, kind: .started, timestamp: now)
+        let receipt = try XCTUnwrap(queue.enqueue(event))
 
-        XCTAssertEqual(queue.drain().map(\.sessionID), ["one"])
-        XCTAssertTrue(queue.drain().isEmpty)
+        XCTAssertNil(registry.ingestPersisting(receipt.event, now: now))
+        XCTAssertTrue(registry.sessions(now: now).isEmpty)
+        XCTAssertEqual(queue.pendingEvents().map(\.event.sessionID), ["retry"])
+
+        try FileManager.default.removeItem(at: store)
+        let persisted = try XCTUnwrap(registry.ingestPersisting(receipt.event, now: now))
+        XCTAssertEqual(persisted.map(\.id), ["codex-retry"])
+        XCTAssertTrue(queue.acknowledge(receipt))
+        XCTAssertTrue(queue.pendingEvents().isEmpty)
+
+        let reloaded = LifecycleSessionRegistry(fileURL: store)
+        XCTAssertEqual(reloaded.sessions(now: now).map(\.id), ["codex-retry"])
+    }
+
+    func testQueuePreservesEventsUntilReceiptIsAcknowledged() throws {
+        let queue = LifecycleEventQueue(homeDirectory: directory)
+        let receipt = try XCTUnwrap(
+            queue.enqueue(LifecycleEvent(sessionID: "one", harness: .copilot, kind: .started))
+        )
+
+        XCTAssertEqual(queue.pendingEvents().map(\.event.sessionID), ["one"])
+        XCTAssertEqual(queue.pendingEvents().map(\.event.sessionID), ["one"])
+
+        XCTAssertTrue(queue.acknowledge(receipt))
+        XCTAssertTrue(queue.acknowledge(receipt))
+        XCTAssertTrue(queue.pendingEvents().isEmpty)
+    }
+
+    func testQueueAcknowledgesOnlyReceiptFromSameDirectory() throws {
+        let firstHome = directory.appendingPathComponent("first", isDirectory: true)
+        let secondHome = directory.appendingPathComponent("second", isDirectory: true)
+        let firstQueue = LifecycleEventQueue(homeDirectory: firstHome)
+        let secondQueue = LifecycleEventQueue(homeDirectory: secondHome)
+        let receipt = try XCTUnwrap(
+            firstQueue.enqueue(LifecycleEvent(sessionID: "one", harness: .codex, kind: .started))
+        )
+
+        XCTAssertFalse(secondQueue.acknowledge(receipt))
+        XCTAssertEqual(firstQueue.pendingEvents().map(\.event.sessionID), ["one"])
+    }
+
+    func testQueueRemovesMalformedFilesWithoutDroppingValidEvents() throws {
+        let queue = LifecycleEventQueue(homeDirectory: directory)
+        queue.enqueue(LifecycleEvent(sessionID: "valid", harness: .gemini, kind: .needsInput))
+
+        let queueDirectory = directory.appendingPathComponent(".atoll/lifecycle-events", isDirectory: true)
+        let malformedFile = queueDirectory.appendingPathComponent("malformed.json")
+        try "{not-json".write(to: malformedFile, atomically: true, encoding: .utf8)
+
+        XCTAssertEqual(queue.pendingEvents().map(\.event.sessionID), ["valid"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: malformedFile.path))
+        XCTAssertEqual(queue.pendingEvents().map(\.event.kind), [.needsInput])
+    }
+
+    func testDeliveryIdentityLedgerHasExplicitSizeAndTimeBounds() throws {
+        let store = directory.appendingPathComponent("registry.json")
+        let registry = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)
+        let start = Date(timeIntervalSince1970: 1_000)
+        let eventCount = LifecycleSessionRegistry.maximumRecentDeliveryIdentities + 1
+
+        for index in 0..<eventCount {
+            let timestamp = start.addingTimeInterval(TimeInterval(index))
+            XCTAssertNotNil(registry.ingestPersisting(
+                LifecycleEvent(
+                    sessionID: "bounded-ledger",
+                    harness: .codex,
+                    kind: .started,
+                    timestamp: timestamp,
+                    prompt: "Delivery \(index)"
+                ),
+                now: timestamp
+            ))
+        }
+
+        let persisted = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: store)) as? [[String: Any]]
+        )
+        let deliveries = try XCTUnwrap(persisted.first?["recentDeliveries"] as? [[String: Any]])
+        XCTAssertEqual(deliveries.count, LifecycleSessionRegistry.maximumRecentDeliveryIdentities)
+        XCTAssertTrue(deliveries.allSatisfy {
+            ($0["identity"] as? String)?.hasPrefix("sha256:") == true
+        })
+
+        let expiration = start.addingTimeInterval(
+            TimeInterval(eventCount) + LifecycleSessionRegistry.deliveryIdentityRetention + 1
+        )
+        XCTAssertTrue(registry.sessions(now: expiration).isEmpty)
+        let expired = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: store)) as? [[String: Any]]
+        )
+        XCTAssertTrue(expired.isEmpty)
     }
 }

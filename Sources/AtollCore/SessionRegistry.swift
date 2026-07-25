@@ -2,6 +2,11 @@ import Foundation
 
 /// Durable state derived solely from hook events; it never consults processes or locks.
 public final class LifecycleSessionRegistry: @unchecked Sendable {
+    private struct DeliveryReceipt: Codable {
+        var identity: String
+        var receivedAt: Date
+    }
+
     private struct Record: Codable {
         var sessionID: String
         var harness: AgentHarness
@@ -20,6 +25,13 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         var prompt: String?
         var projectPath: String?
         var model: String?
+        /// Legacy single-event key retained only to decode and migrate registry
+        /// files written before the bounded receipt ledger.
+        var lastEventKey: String?
+        /// Recently processed transport identities, including semantic no-ops.
+        /// These outlive UI visibility so a queue replay cannot become valid as
+        /// dwell or stale-state timing changes.
+        var recentDeliveries: [DeliveryReceipt]?
 
         var key: String { "\(harness.rawValue)-\(sessionID)" }
     }
@@ -35,8 +47,17 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
     private let fileURL: URL
     private let activeTTL: TimeInterval
     private let terminalTTL: TimeInterval
+    private let hardensParentDirectory: Bool
+    private let filePermissionSetter: PrivateStorage.FilePermissionSetter?
     private let lock = NSLock()
     private var records: [String: Record]
+
+    /// Delivery identities remain deduplicated for one day, independently of
+    /// the much shorter active/terminal presentation lifetimes.
+    static let deliveryIdentityRetention: TimeInterval = 24 * 60 * 60
+    /// Bounds persisted growth for a busy session while covering substantially
+    /// more transitions than a normal lifecycle turn emits.
+    static let maximumRecentDeliveryIdentities = 256
 
     public init(
         fileURL: URL,
@@ -46,6 +67,22 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         self.fileURL = fileURL
         self.activeTTL = activeTTL
         self.terminalTTL = terminalTTL
+        self.hardensParentDirectory = fileURL.deletingLastPathComponent().lastPathComponent == ".atoll"
+        self.filePermissionSetter = nil
+        self.records = Self.load(from: fileURL)
+    }
+
+    package init(
+        fileURL: URL,
+        activeTTL: TimeInterval = 10 * 60,
+        terminalTTL: TimeInterval = 5,
+        filePermissionSetter: @escaping PrivateStorage.FilePermissionSetter
+    ) {
+        self.fileURL = fileURL
+        self.activeTTL = activeTTL
+        self.terminalTTL = terminalTTL
+        self.hardensParentDirectory = fileURL.deletingLastPathComponent().lastPathComponent == ".atoll"
+        self.filePermissionSetter = filePermissionSetter
         self.records = Self.load(from: fileURL)
     }
 
@@ -53,28 +90,73 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
     public func ingest(_ event: LifecycleEvent, now: Date = Date()) -> [AgentSession] {
         lock.lock()
         defer { lock.unlock() }
+        let sessions = ingestLocked(event, now: now)
+        _ = save()
+        return sessions
+    }
+
+    /// Ingests an event only if the resulting registry can be written atomically.
+    ///
+    /// The in-memory mutation is rolled back when persistence fails so callers
+    /// can leave a queue receipt pending and safely replay it later.
+    @discardableResult
+    public func ingestPersisting(_ event: LifecycleEvent, now: Date = Date()) -> [AgentSession]? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let previousRecords = records
+        let sessions = ingestLocked(event, now: now)
+        guard save() else {
+            records = previousRecords
+            return nil
+        }
+        return sessions
+    }
+
+    private func ingestLocked(_ event: LifecycleEvent, now: Date) -> [AgentSession] {
         prune(now: now)
 
         let key = "\(event.harness.rawValue)-\(event.sessionID)"
+        let incomingEventKey = event.deliveryIdentity
         let incomingOrderingAt = min(event.timestamp, now)
-        let existingRecord = records[key]
+        let retainedRecord = records[key]
+
+        if retainedRecord?.recentDeliveries?.contains(where: { $0.identity == incomingEventKey }) == true {
+            // A receipt can replay after a crash between registry persistence
+            // and queue acknowledgment. Exact replay must not refresh local
+            // liveness or make a running/waiting state immortal.
+            return sessionsLocked(now: now)
+        }
+
+        let existingRecord = retainedRecord.flatMap {
+            stateIsSemanticallyRetained($0, now: now) ? $0 : nil
+        }
 
         if existingRecord == nil,
            event.kind.isActive,
            now.timeIntervalSince(incomingOrderingAt) > activeTTL {
+            // The event is too old to recreate active UI state, but its receipt
+            // must still be persisted so retrying it cannot become meaningful.
+            var deliveryRecord = retainedRecord ?? initialRecord(
+                for: event,
+                orderingAt: incomingOrderingAt,
+                observedAt: incomingOrderingAt
+            )
+            recordDelivery(incomingEventKey, receivedAt: now, in: &deliveryRecord)
+            records[key] = deliveryRecord
+            prune(now: now)
             return sessionsLocked(now: now)
         }
 
-        var record = existingRecord ?? Record(
-            sessionID: event.sessionID,
-            harness: event.harness,
-            state: event.kind.sessionState,
-            updatedAt: event.timestamp,
-            observedAt: now,
+        var record = existingRecord ?? initialRecord(
+            for: event,
             orderingAt: incomingOrderingAt,
-            startedAt: event.kind == .started ? event.timestamp : nil,
-            title: nil, detail: nil, prompt: nil, projectPath: nil, model: nil
+            observedAt: now
         )
+        if existingRecord == nil {
+            record.recentDeliveries = retainedRecord?.recentDeliveries
+        }
+        recordDelivery(incomingEventKey, receivedAt: now, in: &record)
 
         let currentOrderingAt = record.orderingAt
             ?? min(record.updatedAt, record.observedAt ?? record.updatedAt)
@@ -85,11 +167,11 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
             // Repeated cleanup/session-end notifications are exact duplicates,
             // not new ordering evidence. Keeping the original ordering point
             // lets a queued start for the next cycle pass the tombstone.
-            return sessionsLocked(now: now)
+            return persistNoOp(record, key: key, now: now)
         }
 
         guard incomingOrderingAt >= currentOrderingAt else {
-            return sessionsLocked(now: now)
+            return persistNoOp(record, key: key, now: now)
         }
 
         let nextState = event.kind.sessionState
@@ -100,14 +182,14 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
             // A terminal outcome wins over an equal-time active retry. Once its
             // visible dwell elapses, the retained tombstone can open a genuine
             // new cycle without letting a late retry erase the outcome early.
-            return sessionsLocked(now: now)
+            return persistNoOp(record, key: key, now: now)
         }
 
         if record.state == .failed || record.state == .cancelled,
            nextState == .done {
             // Generic cleanup/session-end hooks often arrive after the hook that
             // captured the actual outcome. They must not flatten it to Done.
-            return sessionsLocked(now: now)
+            return persistNoOp(record, key: key, now: now)
         }
 
         let stateChanged = record.state != nextState
@@ -117,9 +199,9 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         record.updatedAt = event.timestamp
         record.orderingAt = incomingOrderingAt
         if startsNewCycle {
-            record.startedAt = event.timestamp
+            record.startedAt = incomingOrderingAt
         } else if record.startedAt == nil, event.kind == .started {
-            record.startedAt = event.timestamp
+            record.startedAt = incomingOrderingAt
         }
         if !nextState.isTerminal || stateChanged {
             // Active retries refresh liveness without changing startedAt.
@@ -131,10 +213,63 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         record.prompt = event.prompt ?? record.prompt
         record.projectPath = event.projectPath ?? record.projectPath
         record.model = event.model ?? record.model
+        record.lastEventKey = nil
         records[key] = record
         prune(now: now)
-        save()
         return sessionsLocked(now: now)
+    }
+
+    private func initialRecord(
+        for event: LifecycleEvent,
+        orderingAt: Date,
+        observedAt: Date
+    ) -> Record {
+        Record(
+            sessionID: event.sessionID,
+            harness: event.harness,
+            state: event.kind.sessionState,
+            updatedAt: event.timestamp,
+            observedAt: observedAt,
+            orderingAt: orderingAt,
+            startedAt: event.kind == .started ? orderingAt : nil,
+            title: nil,
+            detail: nil,
+            prompt: nil,
+            projectPath: nil,
+            model: nil,
+            lastEventKey: nil,
+            recentDeliveries: nil
+        )
+    }
+
+    private func recordDelivery(
+        _ identity: String,
+        receivedAt: Date,
+        in record: inout Record
+    ) {
+        var deliveries = record.recentDeliveries ?? []
+        deliveries.removeAll {
+            receivedAt.timeIntervalSince($0.receivedAt) > Self.deliveryIdentityRetention
+        }
+        if !deliveries.contains(where: { $0.identity == identity }) {
+            deliveries.append(DeliveryReceipt(identity: identity, receivedAt: receivedAt))
+        }
+        if deliveries.count > Self.maximumRecentDeliveryIdentities {
+            deliveries.removeFirst(deliveries.count - Self.maximumRecentDeliveryIdentities)
+        }
+        record.lastEventKey = nil
+        record.recentDeliveries = deliveries
+    }
+
+    private func persistNoOp(_ record: Record, key: String, now: Date) -> [AgentSession] {
+        records[key] = record
+        prune(now: now)
+        return sessionsLocked(now: now)
+    }
+
+    private func stateIsSemanticallyRetained(_ record: Record, now: Date) -> Bool {
+        let ttl = record.state.isTerminal ? max(activeTTL, terminalTTL) : activeTTL
+        return now.timeIntervalSince(record.observedAt ?? record.updatedAt) <= ttl
     }
 
     /// Returns visible sessions and removes entries whose hook activity expired.
@@ -142,18 +277,20 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         let changed = prune(now: now)
-        if changed { save() }
+        if changed { _ = save() }
         return sessionsLocked(now: now)
     }
 
     private func sessionsLocked(now: Date) -> [AgentSession] {
         records.values
         .filter { record in
-            !record.state.isTerminal
-                || now.timeIntervalSince(record.observedAt ?? record.updatedAt) <= terminalTTL
+            let ttl = record.state.isTerminal ? terminalTTL : activeTTL
+            return now.timeIntervalSince(record.observedAt ?? record.updatedAt) <= ttl
         }
         .map { record in
-            AgentSession(
+            let presentationUpdatedAt = record.orderingAt
+                ?? min(record.updatedAt, record.observedAt ?? record.updatedAt)
+            return AgentSession(
                 id: record.key,
                 harness: record.harness,
                 title: record.title ?? "\(record.harness.displayName) session",
@@ -162,7 +299,7 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
                 projectPath: record.projectPath,
                 model: record.model,
                 state: record.state,
-                updatedAt: record.updatedAt,
+                updatedAt: presentationUpdatedAt,
                 observedAt: record.observedAt,
                 startedAt: record.startedAt,
                 sourcePath: "lifecycle://\(record.key)",
@@ -174,17 +311,46 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
 
     @discardableResult
     private func prune(now: Date) -> Bool {
-        let before = records.count
-        records = records.filter { _, record in
-            // Terminal records outlive their visible dwell as tombstones so a
-            // late cleanup cannot recreate a second, phantom Done notification.
-            let ttl = record.state.isTerminal ? max(activeTTL, terminalTTL) : activeTTL
-            return now.timeIntervalSince(record.observedAt ?? record.updatedAt) <= ttl
+        var changed = false
+        var retained: [String: Record] = [:]
+
+        for (key, originalRecord) in records {
+            var record = originalRecord
+            var deliveries = record.recentDeliveries ?? []
+            let previousDeliveryCount = deliveries.count
+            deliveries.removeAll {
+                now.timeIntervalSince($0.receivedAt) > Self.deliveryIdentityRetention
+            }
+            if deliveries.count > Self.maximumRecentDeliveryIdentities {
+                deliveries.removeFirst(deliveries.count - Self.maximumRecentDeliveryIdentities)
+            }
+            if deliveries.count != previousDeliveryCount || record.lastEventKey != nil {
+                changed = true
+            }
+            record.lastEventKey = nil
+            record.recentDeliveries = deliveries.isEmpty ? nil : deliveries
+
+            // State has a short semantic tombstone, while processed delivery
+            // identities remain hidden and deduplicated for the longer policy.
+            if stateIsSemanticallyRetained(record, now: now) || !deliveries.isEmpty {
+                retained[key] = record
+            } else {
+                changed = true
+            }
         }
-        return records.count != before
+        records = retained
+        return changed
     }
 
     private static func load(from fileURL: URL) -> [String: Record] {
+        let fileManager = FileManager.default
+        let directory = fileURL.deletingLastPathComponent()
+        if directory.lastPathComponent == ".atoll" {
+            try? PrivateStorage.ensureDirectory(at: directory, fileManager: fileManager)
+        }
+        if fileManager.fileExists(atPath: fileURL.path) {
+            try? PrivateStorage.hardenFile(at: fileURL, fileManager: fileManager)
+        }
         guard let data = try? Data(contentsOf: fileURL),
               let decoded = try? JSONDecoder().decode([LossyRecord].self, from: data) else {
             return [:]
@@ -195,16 +361,49 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
             let observedAt = record.observedAt ?? min(record.updatedAt, now)
             record.observedAt = observedAt
             record.orderingAt = record.orderingAt ?? min(record.updatedAt, observedAt)
+            var deliveries = record.recentDeliveries ?? []
+            if let lastEventKey = record.lastEventKey {
+                let migratedIdentity = LifecycleEvent.migratedDeliveryIdentity(lastEventKey)
+                if !deliveries.contains(where: { $0.identity == migratedIdentity }) {
+                    deliveries.append(DeliveryReceipt(identity: migratedIdentity, receivedAt: observedAt))
+                }
+            }
+            deliveries = deliveries.map {
+                DeliveryReceipt(
+                    identity: LifecycleEvent.migratedDeliveryIdentity($0.identity),
+                    receivedAt: $0.receivedAt
+                )
+            }
+            var seenIdentities: Set<String> = []
+            deliveries = deliveries.filter { seenIdentities.insert($0.identity).inserted }
+            if deliveries.count > Self.maximumRecentDeliveryIdentities {
+                deliveries.removeFirst(deliveries.count - Self.maximumRecentDeliveryIdentities)
+            }
+            record.lastEventKey = nil
+            record.recentDeliveries = deliveries.isEmpty ? nil : deliveries
             return record
         }
         return Dictionary(uniqueKeysWithValues: records.map { ($0.key, $0) })
     }
 
-    private func save() {
+    @discardableResult
+    private func save() -> Bool {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(records.values.sorted { $0.key < $1.key }) else { return }
-        try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: fileURL, options: .atomic)
+        guard let data = try? encoder.encode(records.values.sorted { $0.key < $1.key }) else {
+            return false
+        }
+
+        do {
+            try PrivateStorage.writeAtomically(
+                data,
+                to: fileURL,
+                hardenDirectory: hardensParentDirectory,
+                filePermissionSetter: filePermissionSetter
+            )
+            return true
+        } catch {
+            return false
+        }
     }
 }

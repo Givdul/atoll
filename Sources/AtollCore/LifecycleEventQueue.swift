@@ -1,37 +1,108 @@
 import Foundation
 
+/// A durable lifecycle event together with the receipt needed to remove it.
+///
+/// Callers must acknowledge a receipt only after the event has been ingested.
+public struct QueuedLifecycleEvent: Sendable {
+    public let event: LifecycleEvent
+
+    fileprivate let fileURL: URL
+
+    fileprivate init(event: LifecycleEvent, fileURL: URL) {
+        self.event = event
+        self.fileURL = fileURL
+    }
+}
+
 /// A durable handoff for hook events emitted while the menu-bar app is not running.
 public struct LifecycleEventQueue: Sendable {
+    private let rootDirectory: URL
     private let directory: URL
 
     public init(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) {
-        directory = homeDirectory.appendingPathComponent(".atoll/lifecycle-events", isDirectory: true)
+        rootDirectory = homeDirectory.appendingPathComponent(".atoll", isDirectory: true)
+        directory = rootDirectory.appendingPathComponent("lifecycle-events", isDirectory: true)
     }
 
-    public func enqueue(_ event: LifecycleEvent) {
-        guard let line = event.jsonLine() else { return }
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let file = directory.appendingPathComponent("\(UUID().uuidString).json")
-        try? line.write(to: file, atomically: true, encoding: .utf8)
+    /// Persists an event and returns the receipt that can remove it after ingestion.
+    @discardableResult
+    public func enqueue(_ event: LifecycleEvent) -> QueuedLifecycleEvent? {
+        guard let line = event.jsonLine() else { return nil }
+
+        do {
+            try prepareDirectory()
+            let file = directory.appendingPathComponent("\(UUID().uuidString).json")
+            try PrivateStorage.writeAtomically(Data(line.utf8), to: file)
+            return QueuedLifecycleEvent(event: event, fileURL: file)
+        } catch {
+            return nil
+        }
     }
 
-    public func drain() -> [LifecycleEvent] {
+    /// Returns durable events without deleting them.
+    ///
+    /// Unreadable files remain available for a later retry. Files that can be read
+    /// but are not valid lifecycle events are removed so they cannot poison every
+    /// subsequent refresh.
+    public func pendingEvents() -> [QueuedLifecycleEvent] {
+        guard (try? prepareDirectory()) != nil else { return [] }
+        let resourceKeys: Set<URLResourceKey> = [.creationDateKey, .isRegularFileKey]
         let files = (try? FileManager.default.contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: [.creationDateKey],
+            includingPropertiesForKeys: Array(resourceKeys),
             options: [.skipsHiddenFiles]
         )) ?? []
 
         return files
-            .sorted {
-                let left = (try? $0.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast
-                let right = (try? $1.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast
-                return left < right
+            .filter {
+                (try? $0.resourceValues(forKeys: resourceKeys).isRegularFile) == true
+            }
+            .sorted { left, right in
+                let leftDate = (try? left.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast
+                let rightDate = (try? right.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast
+                if leftDate == rightDate {
+                    return left.lastPathComponent < right.lastPathComponent
+                }
+                return leftDate < rightDate
             }
             .compactMap { file in
-                defer { try? FileManager.default.removeItem(at: file) }
-                guard let line = try? String(contentsOf: file) else { return nil }
-                return LifecycleEvent.parse(jsonLine: line)
+                do {
+                    try PrivateStorage.hardenFile(at: file)
+                } catch {
+                    return nil
+                }
+                guard let line = try? String(contentsOf: file, encoding: .utf8) else {
+                    return nil
+                }
+                guard let event = LifecycleEvent.parse(jsonLine: line) else {
+                    try? FileManager.default.removeItem(at: file)
+                    return nil
+                }
+                return QueuedLifecycleEvent(event: event, fileURL: file)
             }
     }
+
+    /// Removes one queued event after its receipt has been ingested successfully.
+    /// Acknowledgment is idempotent so replay and overlapping refreshes are safe.
+    @discardableResult
+    public func acknowledge(_ receipt: QueuedLifecycleEvent) -> Bool {
+        guard receipt.fileURL.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL else {
+            return false
+        }
+
+        do {
+            try FileManager.default.removeItem(at: receipt.fileURL)
+            return true
+        } catch let error as CocoaError where error.code == .fileNoSuchFile {
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func prepareDirectory() throws {
+        try PrivateStorage.ensureDirectory(at: rootDirectory)
+        try PrivateStorage.ensureDirectory(at: directory)
+    }
+
 }
