@@ -77,6 +77,8 @@ public struct AgentSession: Identifiable, Hashable, Codable, Sendable {
     public var startedAt: Date?
     public var sourcePath: String
     public var processID: Int32?
+    public var originProcessID: Int32?
+    public var originBundleIdentifier: String?
     public var confidence: SessionConfidence
 
     public init(
@@ -94,6 +96,8 @@ public struct AgentSession: Identifiable, Hashable, Codable, Sendable {
         startedAt: Date? = nil,
         sourcePath: String,
         processID: Int32? = nil,
+        originProcessID: Int32? = nil,
+        originBundleIdentifier: String? = nil,
         confidence: SessionConfidence
     ) {
         self.id = id
@@ -110,6 +114,8 @@ public struct AgentSession: Identifiable, Hashable, Codable, Sendable {
         self.startedAt = startedAt
         self.sourcePath = sourcePath
         self.processID = processID
+        self.originProcessID = originProcessID
+        self.originBundleIdentifier = originBundleIdentifier
         self.confidence = confidence
     }
 }

@@ -32,6 +32,7 @@ final class IslandWindowController {
         window.isOpaque = false
         window.hasShadow = false
         window.ignoresMouseEvents = true
+        window.acceptsMouseMovedEvents = true
         window.level = .statusBar
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         window.hidesOnDeactivate = false
@@ -63,6 +64,7 @@ final class IslandWindowController {
         guard state.settings.enabled else {
             pendingHideToken = UUID()
             state.islandHoverState = .inactive
+            window.ignoresMouseEvents = true
             window.orderOut(nil)
             return
         }
@@ -115,6 +117,7 @@ final class IslandWindowController {
     private func scheduleHideAfterExit() {
         guard window.isVisible else {
             state.islandHoverState = .inactive
+            window.ignoresMouseEvents = true
             window.orderOut(nil)
             return
         }
@@ -133,6 +136,7 @@ final class IslandWindowController {
                     return
                 }
                 self.state.islandHoverState = .inactive
+                self.window.ignoresMouseEvents = true
                 self.window.orderOut(nil)
             }
         }
@@ -161,11 +165,15 @@ final class IslandWindowController {
               state.hasIslandContent,
               window.isVisible else {
             state.islandHoverState = .inactive
+            window.ignoresMouseEvents = true
             return
         }
 
         let metrics = IslandMetrics()
         let nextState = hoverState(for: mouseLocation, metrics: metrics)
+        window.ignoresMouseEvents = !interactiveRowPaths(metrics: metrics).contains {
+            $0.contains(mouseLocation)
+        }
         guard nextState != state.islandHoverState else {
             return
         }
@@ -222,6 +230,42 @@ final class IslandWindowController {
             - metrics.rowSpacing
             - attentionHeight
         return NSRect(x: x, y: y, width: rowWidth, height: attentionHeight)
+    }
+
+    private func interactiveRowPaths(metrics: IslandMetrics) -> [NSBezierPath] {
+        let sessions = state.visibleSessions
+        let attentionSessions = sessions.filter {
+            $0.state == .waitingForInput || $0.state == .waitingForPermission
+        }
+        let regularSessions = sessions.filter {
+            $0.state != .waitingForInput && $0.state != .waitingForPermission
+        }
+        let visibleRegularSessions = state.islandHoverState.expandsList
+            ? regularSessions
+            : regularSessions.filter { $0.state.isTerminal }
+        let x = window.frame.minX + (hostSize.width - metrics.rowWidth) / 2
+        var top = window.frame.maxY - metrics.notchHeight
+        var paths: [NSBezierPath] = []
+
+        func appendFrames(for sessions: [AgentSession]) {
+            guard !sessions.isEmpty else { return }
+            top -= metrics.rowSpacing
+            for (index, session) in sessions.enumerated() {
+                top -= metrics.rowHeight
+                if session.originProcessID != nil, session.originBundleIdentifier != nil {
+                    let frame = NSRect(x: x, y: top, width: metrics.rowWidth, height: metrics.rowHeight)
+                    let radius = metrics.rowHeight * 0.28
+                    paths.append(NSBezierPath(roundedRect: frame, xRadius: radius, yRadius: radius))
+                }
+                if index < sessions.count - 1 {
+                    top -= metrics.rowSpacing
+                }
+            }
+        }
+
+        appendFrames(for: visibleRegularSessions)
+        appendFrames(for: attentionSessions)
+        return paths
     }
 
     private func expandedContentHeight(metrics: IslandMetrics) -> CGFloat {

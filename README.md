@@ -12,6 +12,7 @@ It is event-driven: native agent hooks send lifecycle events to a user-only loca
 - Events are queued under `~/.atoll` before the sender is acknowledged and removed only after Atoll persists the resulting lifecycle state. Replay is safe and duplicate terminals do not extend their display time.
 - Active events expire after ten minutes of local inactivity. Terminal rows receive a perceptible local dwell, while retained tombstones suppress late cleanup events and repeated completion notifications.
 - Provider clocks are used for ordering only after future-skew clamping; they cannot keep a session alive or make a delayed terminal disappear instantly.
+- When a hook originates inside a regular macOS application, its session row opens that application. Atoll reactivates the captured process when possible, falls back to the same bundle identifier after an app restart, and leaves genuinely headless sessions noninteractive; it does not navigate to a specific thread, window, tab, or pane.
 
 ## Native hook integrations
 

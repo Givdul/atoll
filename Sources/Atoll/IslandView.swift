@@ -165,6 +165,7 @@ struct IslandView: View {
                 metrics: metrics,
                 glassNamespace: glassNamespace
             )
+            .allowsHitTesting(false)
             .zIndex(10)
 
             if isListMounted, !rowSessions.isEmpty {
@@ -201,7 +202,6 @@ struct IslandView: View {
                 .animation(attentionFadeAnimation(dimmed: state.islandHoverState.dimsAttentionRows), value: state.islandHoverState.dimsAttentionRows)
             }
         }
-        .allowsHitTesting(false)
         .padding(.top, metrics.topGap)
         .animation(listRevealAnimation, value: state.islandHoverState)
         .animation(rowAnimation, value: sessions.map { "\($0.id):\($0.state.rawValue)" })
@@ -569,6 +569,20 @@ private struct SessionBubbleRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        if session.originProcessID != nil, session.originBundleIdentifier != nil {
+            Button(action: openOriginatingApplication) {
+                decoratedRow
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open application for \(displayTitle)")
+        } else {
+            decoratedRow
+                .allowsHitTesting(false)
+        }
+    }
+
+    @ViewBuilder
+    private var decoratedRow: some View {
         if #available(macOS 26.0, *) {
             rowContent
                 .padding(.leading, metrics.horizontalPadding)
@@ -606,6 +620,31 @@ private struct SessionBubbleRow: View {
                     )
                 }
         }
+    }
+
+    private func openOriginatingApplication() {
+        guard let processID = session.originProcessID,
+              let bundleIdentifier = session.originBundleIdentifier else {
+            return
+        }
+
+        if let application = NSRunningApplication(processIdentifier: processID),
+           application.bundleIdentifier == bundleIdentifier {
+            application.activate(options: [.activateAllWindows])
+            return
+        }
+
+        if let application = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).first {
+            application.activate(options: [.activateAllWindows])
+            return
+        }
+
+        guard let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) else {
+            return
+        }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.openApplication(at: applicationURL, configuration: configuration)
     }
 
     private var rowContent: some View {

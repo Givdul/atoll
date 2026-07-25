@@ -65,6 +65,22 @@ final class LifecycleEventTests: XCTestCase {
         XCTAssertEqual(parsed.deliveryIdentity, event.deliveryIdentity)
     }
 
+    func testJSONLinePreservesOriginApplication() throws {
+        let event = LifecycleEvent(
+            sessionID: "origin",
+            harness: .codex,
+            kind: .started,
+            originProcessID: 123,
+            originBundleIdentifier: "com.apple.Terminal"
+        )
+
+        let parsed = try XCTUnwrap(
+            LifecycleEvent.parse(jsonLine: try XCTUnwrap(event.jsonLine()))
+        )
+        XCTAssertEqual(parsed.originProcessID, 123)
+        XCTAssertEqual(parsed.originBundleIdentifier, "com.apple.Terminal")
+    }
+
     func testTransportIdentityDistinguishesIdenticalInvocationsAndSurvivesRoundTrip() throws {
         let timestamp = Date(timeIntervalSince1970: 1_000)
         let first = LifecycleEvent(
@@ -155,6 +171,101 @@ final class LifecycleEventTests: XCTestCase {
         let reloaded = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)
         XCTAssertEqual(reloaded.sessions(now: start).first?.title, "Fix auth")
         XCTAssertTrue(reloaded.sessions(now: start.addingTimeInterval(61)).isEmpty)
+    }
+
+    func testRegistryPersistsOriginApplicationAcrossRestart() throws {
+        let store = directory.appendingPathComponent("registry.json")
+        let now = Date()
+        let registry = LifecycleSessionRegistry(fileURL: store)
+        registry.ingest(
+            LifecycleEvent(
+                sessionID: "origin",
+                harness: .codex,
+                kind: .started,
+                timestamp: now,
+                originProcessID: 123,
+                originBundleIdentifier: "com.apple.Terminal"
+            ),
+            now: now
+        )
+
+        let session = try XCTUnwrap(
+            LifecycleSessionRegistry(fileURL: store).sessions(now: now).first
+        )
+        XCTAssertEqual(session.originProcessID, 123)
+        XCTAssertEqual(session.originBundleIdentifier, "com.apple.Terminal")
+    }
+
+    func testLaterEventWithoutOriginPreservesOriginApplication() throws {
+        let registry = LifecycleSessionRegistry(fileURL: directory.appendingPathComponent("registry.json"))
+        let now = Date()
+        registry.ingest(
+            LifecycleEvent(
+                sessionID: "origin",
+                harness: .codex,
+                kind: .started,
+                timestamp: now,
+                originProcessID: 123,
+                originBundleIdentifier: "com.apple.Terminal"
+            ),
+            now: now
+        )
+
+        let session = try XCTUnwrap(registry.ingest(
+            LifecycleEvent(
+                sessionID: "origin",
+                harness: .codex,
+                kind: .needsInput,
+                timestamp: now.addingTimeInterval(1)
+            ),
+            now: now.addingTimeInterval(1)
+        ).first)
+
+        XCTAssertEqual(session.originProcessID, 123)
+        XCTAssertEqual(session.originBundleIdentifier, "com.apple.Terminal")
+    }
+
+    func testLaterSameStateEventReplacesOriginOnlyWithCompleteVerifiedPair() throws {
+        let registry = LifecycleSessionRegistry(fileURL: directory.appendingPathComponent("registry.json"))
+        let now = Date()
+        registry.ingest(
+            LifecycleEvent(
+                sessionID: "origin",
+                harness: .codex,
+                kind: .finished,
+                timestamp: now,
+                originProcessID: 123,
+                originBundleIdentifier: "com.apple.Terminal"
+            ),
+            now: now
+        )
+
+        let incomplete = try XCTUnwrap(registry.ingest(
+            LifecycleEvent(
+                sessionID: "origin",
+                harness: .codex,
+                kind: .finished,
+                timestamp: now.addingTimeInterval(1),
+                originProcessID: 456
+            ),
+            now: now.addingTimeInterval(1)
+        ).first)
+        XCTAssertEqual(incomplete.originProcessID, 123)
+        XCTAssertEqual(incomplete.originBundleIdentifier, "com.apple.Terminal")
+
+        let replaced = try XCTUnwrap(registry.ingest(
+            LifecycleEvent(
+                sessionID: "origin",
+                harness: .codex,
+                kind: .finished,
+                timestamp: now.addingTimeInterval(2),
+                originProcessID: 456,
+                originBundleIdentifier: "com.example.Editor"
+            ),
+            now: now.addingTimeInterval(2)
+        ).first)
+        XCTAssertEqual(replaced.originProcessID, 456)
+        XCTAssertEqual(replaced.originBundleIdentifier, "com.example.Editor")
     }
 
     func testFinishReplacesRunningWithoutProcessEvidence() {
@@ -598,6 +709,8 @@ final class LifecycleEventTests: XCTestCase {
 
         XCTAssertEqual(session.id, "codex-legacy")
         XCTAssertEqual(session.observedAt, providerTime)
+        XCTAssertNil(session.originProcessID)
+        XCTAssertNil(session.originBundleIdentifier)
     }
 
     func testTerminalOutcomesRemainDistinctAndExpireTogether() {

@@ -34,7 +34,7 @@ Atoll runs as an accessory app:
 - Menu-bar only; no Dock-first app surface.
 - Transparent borderless `NSPanel`, level `.statusBar`.
 - Joins all Spaces and full-screen spaces.
-- Ignores mouse events, but global/local mouse monitors update hover state.
+- Ignores mouse events outside visible session rows, while global/local mouse monitors update hover state.
 
 Panel/window:
 
@@ -57,6 +57,12 @@ Hover state:
 - Hovering the notch trigger expands the regular session list.
 - Hovering attention rows dims them to `0.30` opacity.
 - Expanded hover region is the row width and full visible content height.
+
+Row click:
+
+- A row captured from a regular macOS application opens that application without activating Atoll.
+- Atoll first verifies the captured PID still has the same bundle identifier, then tries another running instance, then launches the installed application.
+- Headless sessions remain noninteractive. Rows never promise navigation to a specific thread, window, tab, or pane.
 
 Visibility rules:
 

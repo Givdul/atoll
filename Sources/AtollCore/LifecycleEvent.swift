@@ -52,6 +52,8 @@ public struct LifecycleEvent: Hashable, Sendable {
     public var prompt: String?
     public var projectPath: String?
     public var model: String?
+    public var originProcessID: Int32?
+    public var originBundleIdentifier: String?
     /// Atoll-generated transport identity. It remains stable through socket and
     /// queue retries while distinct hook invocations receive distinct values.
     public var deliveryID: String?
@@ -66,6 +68,8 @@ public struct LifecycleEvent: Hashable, Sendable {
         prompt: String? = nil,
         projectPath: String? = nil,
         model: String? = nil,
+        originProcessID: Int32? = nil,
+        originBundleIdentifier: String? = nil,
         deliveryID: String? = UUID().uuidString
     ) {
         self.sessionID = sessionID
@@ -77,6 +81,8 @@ public struct LifecycleEvent: Hashable, Sendable {
         self.prompt = prompt
         self.projectPath = projectPath
         self.model = model
+        self.originProcessID = originProcessID
+        self.originBundleIdentifier = originBundleIdentifier
         self.deliveryID = deliveryID
     }
 
@@ -103,6 +109,8 @@ public struct LifecycleEvent: Hashable, Sendable {
             prompt: JSONHelpers.directString(in: dictionary, keys: ["prompt"]),
             projectPath: JSONHelpers.directString(in: dictionary, keys: ["project_path", "projectPath", "cwd", "workspace"]),
             model: JSONHelpers.directString(in: dictionary, keys: ["model", "model_id", "modelId"]),
+            originProcessID: JSONHelpers.directString(in: dictionary, keys: ["origin_process_id", "originProcessID"]).flatMap(Int32.init),
+            originBundleIdentifier: JSONHelpers.directString(in: dictionary, keys: ["origin_bundle_identifier", "originBundleIdentifier"]),
             deliveryID: JSONHelpers.directString(in: dictionary, keys: ["delivery_id", "deliveryId"])
         )
     }
@@ -111,7 +119,9 @@ public struct LifecycleEvent: Hashable, Sendable {
     public static func fromHookPayload(
         harness: AgentHarness,
         kind: LifecycleEventKind,
-        json: String
+        json: String,
+        originProcessID: Int32? = nil,
+        originBundleIdentifier: String? = nil
     ) -> LifecycleEvent? {
         guard let data = json.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data),
@@ -141,7 +151,9 @@ public struct LifecycleEvent: Hashable, Sendable {
             detail: JSONHelpers.directString(in: dictionary, keys: ["reason", "message"]),
             prompt: JSONHelpers.directString(in: dictionary, keys: ["prompt"]),
             projectPath: JSONHelpers.directString(in: dictionary, keys: ["cwd", "project_path", "projectPath", "workspace"]),
-            model: JSONHelpers.directString(in: dictionary, keys: ["model", "model_id", "modelId"])
+            model: JSONHelpers.directString(in: dictionary, keys: ["model", "model_id", "modelId"]),
+            originProcessID: originProcessID,
+            originBundleIdentifier: originBundleIdentifier
         )
     }
 
@@ -186,6 +198,8 @@ public struct LifecycleEvent: Hashable, Sendable {
         object["prompt"] = prompt
         object["project_path"] = projectPath
         object["model"] = model
+        object["origin_process_id"] = originProcessID
+        object["origin_bundle_identifier"] = originBundleIdentifier
         object["delivery_id"] = deliveryID
 
         guard JSONSerialization.isValidJSONObject(object),
@@ -223,7 +237,9 @@ public struct LifecycleEvent: Hashable, Sendable {
             component(detail),
             component(prompt),
             component(projectPath),
-            component(model)
+            component(model),
+            component(originProcessID.map(String.init)),
+            component(originBundleIdentifier)
         ].joined(separator: "|")
         return Self.deliveryIdentity(forCanonicalRepresentation: representation)
     }

@@ -25,6 +25,8 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         var prompt: String?
         var projectPath: String?
         var model: String?
+        var originProcessID: Int32?
+        var originBundleIdentifier: String?
         /// Legacy single-event key retained only to decode and migrate registry
         /// files written before the bounded receipt ledger.
         var lastEventKey: String?
@@ -155,11 +157,28 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         )
         if existingRecord == nil {
             record.recentDeliveries = retainedRecord?.recentDeliveries
+            if let originProcessID = retainedRecord?.originProcessID,
+               let originBundleIdentifier = retainedRecord?.originBundleIdentifier {
+                record.originProcessID = originProcessID
+                record.originBundleIdentifier = originBundleIdentifier
+            }
         }
         recordDelivery(incomingEventKey, receivedAt: now, in: &record)
 
         let currentOrderingAt = record.orderingAt
             ?? min(record.updatedAt, record.observedAt ?? record.updatedAt)
+
+        guard incomingOrderingAt >= currentOrderingAt else {
+            return persistNoOp(record, key: key, now: now)
+        }
+
+        if let originProcessID = event.originProcessID,
+           originProcessID > 0,
+           let originBundleIdentifier = event.originBundleIdentifier,
+           !originBundleIdentifier.isEmpty {
+            record.originProcessID = originProcessID
+            record.originBundleIdentifier = originBundleIdentifier
+        }
 
         if existingRecord != nil,
            record.state.isTerminal,
@@ -167,10 +186,6 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
             // Repeated cleanup/session-end notifications are exact duplicates,
             // not new ordering evidence. Keeping the original ordering point
             // lets a queued start for the next cycle pass the tombstone.
-            return persistNoOp(record, key: key, now: now)
-        }
-
-        guard incomingOrderingAt >= currentOrderingAt else {
             return persistNoOp(record, key: key, now: now)
         }
 
@@ -224,7 +239,9 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         orderingAt: Date,
         observedAt: Date
     ) -> Record {
-        Record(
+        let hasOrigin = (event.originProcessID ?? 0) > 0
+            && !(event.originBundleIdentifier?.isEmpty ?? true)
+        return Record(
             sessionID: event.sessionID,
             harness: event.harness,
             state: event.kind.sessionState,
@@ -237,6 +254,8 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
             prompt: nil,
             projectPath: nil,
             model: nil,
+            originProcessID: hasOrigin ? event.originProcessID : nil,
+            originBundleIdentifier: hasOrigin ? event.originBundleIdentifier : nil,
             lastEventKey: nil,
             recentDeliveries: nil
         )
@@ -303,6 +322,8 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
                 observedAt: record.observedAt,
                 startedAt: record.startedAt,
                 sourcePath: "lifecycle://\(record.key)",
+                originProcessID: record.originProcessID,
+                originBundleIdentifier: record.originBundleIdentifier,
                 confidence: .live
             )
         }

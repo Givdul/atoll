@@ -130,7 +130,12 @@ public struct LifecycleHookInstaller {
                 return .invalidConfiguration(error.localizedDescription)
             }
         }
-        if agent == .opencode { return readiness(requiring: managedFileMatches(openCodePluginSource, at: openCodePluginURL)) }
+        if agent == .opencode {
+            return readiness(requiring:
+                managedFileMatches(openCodePluginSource, at: openCodePluginURL)
+                    && !fileManager.fileExists(atPath: legacyOpenCodePluginURL.path)
+            )
+        }
         if agent == .hermes { return readiness(requiring: hermesPluginsAreReady()) }
         if agent == .amp { return readiness(requiring: managedFileMatches(ampPluginSource, at: ampPluginURL)) }
         do {
@@ -428,6 +433,7 @@ public struct LifecycleHookInstaller {
 
     private var piExtensionURL: URL { piConfigurationDirectory.appendingPathComponent("extensions/atoll.ts") }
     private var openCodePluginURL: URL { openCodeConfigurationDirectory.appendingPathComponent("plugins/atoll.js") }
+    private var legacyOpenCodePluginURL: URL { openCodeConfigurationDirectory.appendingPathComponent("plugin/atoll.js") }
     private var ampPluginURL: URL { homeDirectory.appendingPathComponent(".config/amp/plugins/atoll.ts") }
     private var managedMarker: String { "Atoll Live Status managed integration" }
     private static let minimumPiVersion = PiVersion(major: 0, minor: 80, patch: 4, isPrerelease: false)
@@ -510,7 +516,9 @@ public struct LifecycleHookInstaller {
           const terminalSessions = new Set();
           const emit = (kind, sessionID) => {
             try {
-              const child = Bun.spawn([bridge, "opencode", kind], { stdin: JSON.stringify({ session_id: sessionID, cwd: directory }), stdout: "ignore", stderr: "ignore" });
+              const child = Bun.spawn([bridge, "opencode", kind], { stdin: "pipe", stdout: "ignore", stderr: "ignore" });
+              child.stdin.write(JSON.stringify({ session_id: sessionID, cwd: directory }));
+              child.stdin.end();
               child.exited.catch(() => {});
               child.unref();
             } catch {}
@@ -729,7 +737,17 @@ public struct LifecycleHookInstaller {
     }
 
     private func writeOpenCodePlugin() throws {
+        if fileManager.fileExists(atPath: legacyOpenCodePluginURL.path) {
+            let existing = try String(contentsOf: legacyOpenCodePluginURL, encoding: .utf8)
+            let firstLine = existing.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first
+            guard firstLine?.contains(managedMarker) == true else {
+                throw Error.managedFileConflict(legacyOpenCodePluginURL)
+            }
+        }
         try writeManagedFile(openCodePluginSource, to: openCodePluginURL)
+        if fileManager.fileExists(atPath: legacyOpenCodePluginURL.path) {
+            try fileManager.removeItem(at: legacyOpenCodePluginURL)
+        }
     }
 
     private func writeAmpPlugin() throws {

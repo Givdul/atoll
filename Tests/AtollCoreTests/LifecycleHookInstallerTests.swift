@@ -17,6 +17,9 @@ final class LifecycleHookInstallerTests: XCTestCase {
         try write(["theme": "dark", "hooks": ["Stop": [["matcher": "existing", "hooks": [["type": "command", "command": "keep-me"]]]]]], to: claude)
         try writeHermesConfig(at: home.appendingPathComponent(".hermes/config.yaml"))
         try writeHermesConfig(at: home.appendingPathComponent(".hermes/profiles/work/config.yaml"))
+        let legacyOpenCodePlugin = home.appendingPathComponent(".config/opencode/plugin/atoll.js")
+        try FileManager.default.createDirectory(at: legacyOpenCodePlugin.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "// Atoll Live Status managed integration\n// stale".write(to: legacyOpenCodePlugin, atomically: true, encoding: .utf8)
 
         let installer = makeInstaller()
         try installer.install()
@@ -77,6 +80,9 @@ final class LifecycleHookInstallerTests: XCTestCase {
         let openCode = try String(contentsOf: home.appendingPathComponent(".config/opencode/plugins/atoll.js"))
         XCTAssertTrue(openCode.contains("async ({ directory })"))
         XCTAssertTrue(openCode.contains("cwd: directory"))
+        XCTAssertTrue(openCode.contains("stdin: \"pipe\""))
+        XCTAssertTrue(openCode.contains("child.stdin.write(JSON.stringify"))
+        XCTAssertTrue(openCode.contains("child.stdin.end()"))
         XCTAssertTrue(openCode.contains("status.type === \"busy\" || status.type === \"retry\""))
         XCTAssertTrue(openCode.contains("event.type === \"session.error\""))
         XCTAssertTrue(openCode.contains("event.type === \"permission.asked\" || event.type === \"permission.updated\""))
@@ -102,7 +108,7 @@ final class LifecycleHookInstallerTests: XCTestCase {
                 return;
         """))
         XCTAssertTrue(openCode.contains("if (status.type === \"idle\") finish(sessionID);"))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".config/opencode/plugin/atoll.js").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyOpenCodePlugin.path))
 
         let amp = try String(contentsOf: home.appendingPathComponent(".config/amp/plugins/atoll.ts"))
         XCTAssertTrue(amp.contains("agent.start"), amp)
@@ -179,12 +185,17 @@ final class LifecycleHookInstallerTests: XCTestCase {
     }
 
     func testManagedPluginCollisionIsNotOverwritten() throws {
-        let plugin = home.appendingPathComponent(".config/amp/plugins/atoll.ts")
-        try FileManager.default.createDirectory(at: plugin.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try "// another plugin".write(to: plugin, atomically: true, encoding: .utf8)
+        for (agent, path) in [
+            (AgentHarness.amp, ".config/amp/plugins/atoll.ts"),
+            (.opencode, ".config/opencode/plugin/atoll.js")
+        ] {
+            let plugin = home.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: plugin.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try "// another plugin".write(to: plugin, atomically: true, encoding: .utf8)
 
-        XCTAssertThrowsError(try makeInstaller().install(agents: [.amp]))
-        XCTAssertEqual(try String(contentsOf: plugin), "// another plugin")
+            XCTAssertThrowsError(try makeInstaller().install(agents: [agent]))
+            XCTAssertEqual(try String(contentsOf: plugin), "// another plugin")
+        }
     }
 
     func testDoesNotOverwriteInvalidConfiguration() throws {
