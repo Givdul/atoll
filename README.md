@@ -22,23 +22,15 @@ The setup installs user-level hooks for:
 
 - Codex: `UserPromptSubmit` and `Stop`
 - Claude Code: `UserPromptSubmit`, `Stop`, `StopFailure`, and typed permission/input notifications
-- Gemini CLI: `BeforeAgent`, `AfterAgent`, and typed tool-permission notifications
-- GitHub Copilot CLI: `userPromptSubmitted`, `agentStop`, `sessionEnd`, and typed permission/input notifications
-- Pi 0.80.4 or newer: a global TypeScript extension using `agent_start` and `agent_settled`
+- Pi 0.80.4 or newer: a global TypeScript extension using `agent_start`, `agent_end`, and `agent_settled`
 - OpenCode: a global plugin observing session status/error plus current and legacy permission/question events
 - Cursor Agent: `beforeSubmitPrompt` and `stop`
-- Factory Droid: `UserPromptSubmit` and `Stop`
-- Qoder and Qwen Code: prompt/stop/failure hooks plus documented typed attention events
-- Hermes: a managed plugin for the inherited active `HERMES_HOME`, or the default home and each valid named profile when unset, using per-turn lifecycle and prompted-approval observers
-- Amp: a global plugin using `agent.start`, `agent.end`, and the stable thread-state observable
 
-The installer preserves existing settings and hooks. It verifies the exact managed integration, bridge contents, and bridge permissions after writing, but that is static readiness rather than proof of runtime activation. Codex and Factory Droid may still require `/hooks` review; managed plugins may need a reload or new session. Atoll honors inherited custom user homes documented by Codex, Claude Code, Gemini CLI, Copilot, Qwen Code, Pi, OpenCode, and Hermes, while leaving project and policy layers untouched.
+The installer preserves existing settings and hooks. It verifies the exact managed integration, bridge contents, and bridge permissions after writing, but that is static readiness rather than proof of runtime activation. Codex may still require `/hooks` review; extensions and plugins may need a reload or new session. Atoll honors inherited custom user homes documented by Codex, Claude Code, Pi, and OpenCode, while leaving project and policy layers untouched.
 
 See [Live Status Support](LIVE_STATUS_SUPPORT.md) for the source-linked event contract, state fidelity, activation requirements, and release limitations for every shipped integration.
 
-See [Competitive Lifecycle Compatibility](COMPETITIVE_COMPATIBILITY.md) for the current evidence-backed comparison with Vibe Island, including explicit unknowns where its public material does not expose lifecycle internals.
-
-Other harnesses can send the same normalized protocol through the Atoll executable:
+The supported harnesses can also send the same normalized protocol through the Atoll executable:
 
 ```sh
 printf '%s' '{"session_id":"session-123","cwd":"/path/to/project","prompt":"Fix auth"}' \

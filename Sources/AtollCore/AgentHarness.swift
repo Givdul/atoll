@@ -4,14 +4,7 @@ public enum AgentHarness: String, Codable, CaseIterable, Identifiable, Sendable 
     case opencode
     case codex
     case claude
-    case gemini
     case cursor
-    case droid
-    case qoder
-    case qwen
-    case copilot
-    case hermes
-    case amp
     case pi
     case atoll
 
@@ -31,28 +24,14 @@ public enum AgentHarness: String, Codable, CaseIterable, Identifiable, Sendable 
         }
 
         switch normalized {
-        case "opencode", "openCode", "oc":
+        case "opencode", "oc":
             return .opencode
         case "codex", "codexcli", "openaicodex", "openaicodexcli", "codexapp", "codexdesktop", "codexvscode":
             return .codex
         case "claude", "claudecode", "anthropic", "anthropicclaude":
             return .claude
-        case "gemini", "geminicli", "googlegemini", "googlegeminicli":
-            return .gemini
         case "cursor", "cursoragent", "cursorcli":
             return .cursor
-        case "droid", "factorydroid", "factory":
-            return .droid
-        case "qoder", "qodercli", "tongyilingma", "lingma":
-            return .qoder
-        case "qwen", "qwencode", "qwencodercli", "alibabaqwen", "alibabaqwencode":
-            return .qwen
-        case "copilot", "copilotcli", "githubcopilot", "githubcopilotcli", "ghcopilot":
-            return .copilot
-        case "hermes", "hermescli", "nousresearchhermes":
-            return .hermes
-        case "amp", "ampcli", "sourcegraphamp":
-            return .amp
         case "pi", "piagent", "piisland":
             return .pi
         case "atoll":
@@ -70,22 +49,8 @@ public enum AgentHarness: String, Codable, CaseIterable, Identifiable, Sendable 
             "Codex"
         case .claude:
             "Claude Code"
-        case .gemini:
-            "Gemini CLI"
         case .cursor:
             "Cursor Agent"
-        case .droid:
-            "Factory Droid"
-        case .qoder:
-            "Qoder"
-        case .qwen:
-            "Qwen Code"
-        case .copilot:
-            "GitHub Copilot"
-        case .hermes:
-            "Hermes"
-        case .amp:
-            "Amp"
         case .pi:
             "Pi"
         case .atoll:
@@ -101,22 +66,8 @@ public enum AgentHarness: String, Codable, CaseIterable, Identifiable, Sendable 
             "CX"
         case .claude:
             "CC"
-        case .gemini:
-            "GM"
         case .cursor:
             "CR"
-        case .droid:
-            "DR"
-        case .qoder:
-            "QD"
-        case .qwen:
-            "QW"
-        case .copilot:
-            "GH"
-        case .hermes:
-            "HM"
-        case .amp:
-            "AM"
         case .pi:
             "PI"
         case .atoll:

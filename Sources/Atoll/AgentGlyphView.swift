@@ -22,9 +22,7 @@ struct AgentGlyphView: View {
 
     private var iconPadding: CGFloat {
         switch harness {
-        case .droid, .hermes, .qoder:
-            1.8
-        case .opencode, .amp, .pi:
+        case .opencode, .pi:
             1.2
         default:
             1.5
@@ -46,14 +44,10 @@ struct AgentGlyphView: View {
             ClaudeCrabGlyph()
                 .fill(glyphColor)
                 .padding(4)
-        case .gemini, .cursor, .droid, .qoder, .qwen, .hermes, .amp:
+        case .cursor:
             Text(harness.shortName)
                 .font(.system(size: 8.5, weight: .black, design: .rounded))
                 .foregroundStyle(glyphColor)
-        case .copilot:
-            CopilotGlyph()
-                .stroke(glyphColor, style: StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
-                .padding(5)
         case .pi:
             PiGlyph()
                 .stroke(glyphColor, style: StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
@@ -133,22 +127,8 @@ private enum AgentIconLibrary {
             "codex"
         case .claude:
             "claude"
-        case .gemini:
-            "gemini"
         case .cursor:
             "cursor"
-        case .droid:
-            nil
-        case .qoder:
-            "qoder"
-        case .qwen:
-            "qwen"
-        case .copilot:
-            "copilot"
-        case .hermes:
-            "hermes"
-        case .amp:
-            "amp"
         case .pi:
             "pi"
         case .atoll:
@@ -217,21 +197,6 @@ private struct ClaudeCrabGlyph: Shape {
 
         path.addEllipse(in: CGRect(x: rect.minX + rect.width * 0.32, y: rect.minY + rect.height * 0.18, width: rect.width * 0.12, height: rect.height * 0.18))
         path.addEllipse(in: CGRect(x: rect.maxX - rect.width * 0.44, y: rect.minY + rect.height * 0.18, width: rect.width * 0.12, height: rect.height * 0.18))
-        return path
-    }
-}
-
-private struct CopilotGlyph: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let left = CGRect(x: rect.minX, y: rect.midY - rect.height * 0.20, width: rect.width * 0.42, height: rect.height * 0.40)
-        let right = CGRect(x: rect.maxX - rect.width * 0.42, y: left.minY, width: rect.width * 0.42, height: left.height)
-        path.addRoundedRect(in: left, cornerSize: CGSize(width: left.height * 0.4, height: left.height * 0.4))
-        path.addRoundedRect(in: right, cornerSize: CGSize(width: right.height * 0.4, height: right.height * 0.4))
-        path.move(to: CGPoint(x: left.maxX, y: rect.midY))
-        path.addLine(to: CGPoint(x: right.minX, y: rect.midY))
-        path.move(to: CGPoint(x: rect.minX + rect.width * 0.20, y: rect.minY + rect.height * 0.26))
-        path.addQuadCurve(to: CGPoint(x: rect.maxX - rect.width * 0.20, y: rect.minY + rect.height * 0.26), control: CGPoint(x: rect.midX, y: rect.minY))
         return path
     }
 }

@@ -57,10 +57,12 @@ if arguments == ["--install-lifecycle-hooks"] {
     }
 }
 
-if arguments.count == 3,
-   arguments[0] == "--lifecycle-event",
-   let harness = AgentHarness.parse(arguments[1]),
-   let kind = LifecycleEventKind.parse(arguments[2]) {
+if arguments.first == "--lifecycle-event" {
+    guard arguments.count == 3,
+          let harness = AgentHarness.parse(arguments[1]),
+          let kind = LifecycleEventKind.parse(arguments[2]) else {
+        exit(EXIT_FAILURE)
+    }
     let origin = originatingApplication()
     let payload = FileHandle.standardInput.readDataToEndOfFile()
     let json = String(data: payload, encoding: .utf8) ?? "{}"

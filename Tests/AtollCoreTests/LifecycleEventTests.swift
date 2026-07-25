@@ -139,33 +139,11 @@ final class LifecycleEventTests: XCTestCase {
         }
     }
 
-    func testCopilotSessionEndReasonSelectsOfficialOutcome() throws {
-        let outcomes: [(String, LifecycleEventKind)] = [
-            ("complete", .finished),
-            ("error", .failed),
-            ("abort", .cancelled),
-            ("timeout", .failed),
-            ("user_exit", .cancelled)
-        ]
-
-        for (reason, expectedKind) in outcomes {
-            let event = try XCTUnwrap(
-                LifecycleEvent.fromHookPayload(
-                    harness: .copilot,
-                    kind: .finished,
-                    json: "{\"sessionId\":\"copilot-\(reason)\",\"cwd\":\"/tmp/project\",\"reason\":\"\(reason)\"}"
-                )
-            )
-            XCTAssertEqual(event.kind, expectedKind)
-            XCTAssertEqual(event.projectPath, "/tmp/project")
-        }
-    }
-
     func testRegistryPersistsTerminalEventAndExpiresStaleActiveSession() throws {
         let store = directory.appendingPathComponent("registry.json")
         let start = Date(timeIntervalSince1970: 1_000)
         let registry = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)
-        registry.ingest(LifecycleEvent(sessionID: "one", harness: .copilot, kind: .started, timestamp: start, title: "Fix auth"), now: start)
+        registry.ingest(LifecycleEvent(sessionID: "one", harness: .codex, kind: .started, timestamp: start, title: "Fix auth"), now: start)
         XCTAssertEqual(registry.sessions(now: start).first?.state, .running)
 
         let reloaded = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)
@@ -749,7 +727,7 @@ final class LifecycleEventTests: XCTestCase {
     func testOldReplayedStartDoesNotRecreateRunningSession() {
         let registry = LifecycleSessionRegistry(fileURL: directory.appendingPathComponent("registry.json"), activeTTL: 60)
         let old = Date().addingTimeInterval(-61)
-        let sessions = registry.ingest(LifecycleEvent(sessionID: "old", harness: .copilot, kind: .started, timestamp: old))
+        let sessions = registry.ingest(LifecycleEvent(sessionID: "old", harness: .codex, kind: .started, timestamp: old))
         XCTAssertTrue(sessions.isEmpty)
     }
 
@@ -781,7 +759,7 @@ final class LifecycleEventTests: XCTestCase {
     func testQueuePreservesEventsUntilReceiptIsAcknowledged() throws {
         let queue = LifecycleEventQueue(homeDirectory: directory)
         let receipt = try XCTUnwrap(
-            queue.enqueue(LifecycleEvent(sessionID: "one", harness: .copilot, kind: .started))
+            queue.enqueue(LifecycleEvent(sessionID: "one", harness: .codex, kind: .started))
         )
 
         XCTAssertEqual(queue.pendingEvents().map(\.event.sessionID), ["one"])
@@ -807,7 +785,7 @@ final class LifecycleEventTests: XCTestCase {
 
     func testQueueRemovesMalformedFilesWithoutDroppingValidEvents() throws {
         let queue = LifecycleEventQueue(homeDirectory: directory)
-        queue.enqueue(LifecycleEvent(sessionID: "valid", harness: .gemini, kind: .needsInput))
+        queue.enqueue(LifecycleEvent(sessionID: "valid", harness: .claude, kind: .needsInput))
 
         let queueDirectory = directory.appendingPathComponent(".atoll/lifecycle-events", isDirectory: true)
         let malformedFile = queueDirectory.appendingPathComponent("malformed.json")

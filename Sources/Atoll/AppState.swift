@@ -117,7 +117,7 @@ final class AppState: ObservableObject {
     }
 
     private static func testModeSessions(now: Date = Date()) -> [AgentSession] {
-        let running = AgentHarness.allCases.enumerated().map { index, harness in
+        let running = LifecycleHookInstaller.supportedAgents.enumerated().map { index, harness in
             AgentSession(
                 id: "test-\(harness.rawValue)-running",
                 harness: harness,

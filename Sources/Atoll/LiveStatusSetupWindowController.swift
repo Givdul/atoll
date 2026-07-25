@@ -379,7 +379,7 @@ private struct LiveStatusUnavailableView: View {
                 Text("No supported agents found")
                     .font(.system(size: 25, weight: .semibold, design: .rounded))
 
-                Text("Install a supported coding agent, then return here. Atoll supports every agent shown in Live Status Setup, including Pi, Hermes, Amp, and OpenCode.")
+                Text("Install Codex, Claude Code, OpenCode, Cursor, or Pi, then return here.")
                     .font(.system(size: 14))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -517,26 +517,12 @@ private extension AgentHarness {
         switch self {
         case .codex:
             "In Codex, run /hooks and trust the Atoll UserPromptSubmit and Stop commands, then start a new turn."
-        case .droid:
-            "In Droid, run /hooks and trust the Atoll UserPromptSubmit and Stop commands, then start a new session if needed. Organization policy may still block user hooks."
         case .opencode:
             "Restart OpenCode or start a new session so it loads the Atoll plugin."
-        case .amp:
-            "In Amp, run plugins: reload after changes, then start a new thread if needed."
         case .claude:
             "Reload Claude Code settings or start a new session after changes."
-        case .gemini:
-            "Restart Gemini CLI or start a new session after changes; runtime policy may still disable hooks."
-        case .copilot:
-            "Start a new GitHub Copilot CLI session after changes; repository or policy hooks can affect activation."
         case .cursor:
             "Start a new Cursor Agent session if the current session does not reload the hook file."
-        case .qoder:
-            "Qoder documents immediate settings changes; if the current session does not pick them up, start a new session."
-        case .qwen:
-            "Start a new Qwen Code session if the current session does not reload the hook settings."
-        case .hermes:
-            "Confirm the Atoll plugin is enabled, then restart Hermes or start a new session after changes."
         case .pi:
             "Start a new Pi session after changes. The Atoll extension requires Pi 0.80.4 or newer."
         case .atoll:

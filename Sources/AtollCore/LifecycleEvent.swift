@@ -172,13 +172,6 @@ public struct LifecycleEvent: Hashable, Sendable {
             case "error": return .failed
             default: return fallback
             }
-        case .copilot:
-            switch JSONHelpers.directString(in: payload, keys: ["reason"])?.lowercased() {
-            case "complete": return .finished
-            case "abort", "user_exit": return .cancelled
-            case "error", "timeout": return .failed
-            default: return fallback
-            }
         default:
             return fallback
         }
