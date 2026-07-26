@@ -2,7 +2,7 @@ import AtollCore
 import AppKit
 import SwiftUI
 
-struct IslandMetrics {
+struct IslandMetrics: Equatable {
     var scale: CGFloat
     var rowWidth: CGFloat
     var rowHeight: CGFloat
@@ -10,14 +10,13 @@ struct IslandMetrics {
     var iconSize: CGFloat
     var titleFontSize: CGFloat
     var detailFontSize: CGFloat
-    var cornerRadius: CGFloat
     var topGap: CGFloat
     var rowSpacing: CGFloat
     var notchWidth: CGFloat
     var notchHeight: CGFloat
 
-    init() {
-        let baseNotchHeight = Self.screenTopReservedHeight()
+    init(notch: PhysicalNotchGeometry) {
+        let baseNotchHeight = notch.height
         let factor = min(1.08, max(0.88, baseNotchHeight / 32))
         scale = factor
         rowWidth = 392 * factor
@@ -26,35 +25,10 @@ struct IslandMetrics {
         iconSize = rowHeight - 8 * factor
         titleFontSize = min(12 * factor, rowHeight * 0.38)
         detailFontSize = min(11 * factor, rowHeight * 0.34)
-        cornerRadius = rowHeight * 0.50
         topGap = 0
         rowSpacing = 3 * factor
-        notchWidth = 188 * factor
-        notchHeight = max(32, min(38, baseNotchHeight + 2 * factor))
-    }
-
-    private static func screenTopReservedHeight() -> CGFloat {
-        guard let screen = NSScreen.screens.first else {
-            return 30
-        }
-
-        let safeTop = screen.safeAreaInsets.top
-        let visibleTopInset = max(0, screen.frame.maxY - screen.visibleFrame.maxY)
-        let measured = safeTop > 0 ? safeTop : visibleTopInset
-        return max(28, min(44, measured > 0 ? measured : 30))
-    }
-
-    func hoverFootprintHeight(forRowCount rowCount: Int) -> CGFloat {
-        let count = CGFloat(rowCount)
-        guard count > 0 else {
-            return notchHeight
-        }
-
-        let rowSpacingCount = max(0, count - 1)
-        return notchHeight
-            + rowSpacing
-            + count * rowHeight
-            + rowSpacingCount * rowSpacing
+        notchWidth = notch.width
+        notchHeight = notch.height
     }
 
     func listHeight(forRowCount rowCount: Int) -> CGFloat {
@@ -65,10 +39,6 @@ struct IslandMetrics {
 
         let rowSpacingCount = max(0, count - 1)
         return count * rowHeight + rowSpacingCount * rowSpacing
-    }
-
-    var openTriggerHeight: CGFloat {
-        notchHeight + rowSpacing + rowHeight * 0.5
     }
 }
 
@@ -102,40 +72,45 @@ private enum SessionStateColor {
 
 struct IslandView: View {
     @ObservedObject var state: AppState
+    let metrics: IslandMetrics?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var glassNamespace
 
     @State private var isListMounted = false
     @State private var listUnmountGeneration = 0
 
+    @ViewBuilder
     var body: some View {
-        let metrics = IslandMetrics()
-        let visibleSessions = state.visibleSessions
-        let hasFloatingTerminalRows = visibleSessions.contains { $0.state.isTerminal }
+        if let metrics {
+            let visibleSessions = state.visibleSessions
+            let hasFloatingTerminalRows = visibleSessions.contains { $0.state.isTerminal }
 
-        ZStack(alignment: .top) {
-            islandStack(metrics: metrics, sessions: visibleSessions)
-        }
-        .frame(width: 440, height: 340, alignment: .top)
-        .clipped()
-        .onAppear {
-            if state.islandHoverState.expandsList || hasFloatingTerminalRows {
-                isListMounted = true
+            ZStack(alignment: .top) {
+                islandStack(metrics: metrics, sessions: visibleSessions)
             }
-        }
-        .onChange(of: hasFloatingTerminalRows) { _, hasFloatingTerminalRows in
-            if hasFloatingTerminalRows {
-                showList()
-            } else if !state.islandHoverState.expandsList {
-                scheduleListUnmount()
+            .frame(width: 440, height: 340, alignment: .top)
+            .clipped()
+            .onAppear {
+                if state.islandHoverState.expandsList || hasFloatingTerminalRows {
+                    isListMounted = true
+                }
             }
-        }
-        .onChange(of: state.islandHoverState) { _, hoverState in
-            if hoverState.expandsList {
-                showList()
-            } else {
-                scheduleListUnmount()
+            .onChange(of: hasFloatingTerminalRows) { _, hasFloatingTerminalRows in
+                if hasFloatingTerminalRows {
+                    showList()
+                } else if !state.islandHoverState.expandsList {
+                    scheduleListUnmount()
+                }
             }
+            .onChange(of: state.islandHoverState) { _, hoverState in
+                if hoverState.expandsList {
+                    showList()
+                } else {
+                    scheduleListUnmount()
+                }
+            }
+        } else {
+            Color.clear.frame(width: 440, height: 340)
         }
     }
 

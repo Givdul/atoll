@@ -48,7 +48,7 @@ Panel/window:
 
 Default state:
 
-- Shows a black notch-shaped activity border at the top center only when there is island content.
+- Shows a black notch-shaped activity border at the top center only when the target display has a physical notch and there is island content.
 - Running sessions tint the notch with an animated orange dot trail.
 - Waiting states tint the notch edge as a thick colored outline.
 
@@ -90,8 +90,9 @@ All dimensions derive from `IslandMetrics` in `/Users/ludvighansen/Documents/Ato
 
 Scale:
 
-- `baseNotchHeight = screen safeAreaInsets.top`, else visible top inset, else `30`.
-- Clamp base notch height to `28...44`.
+- The target display is resolved once for placement, rendering, hover regions, and click-through paths.
+- A physical notch requires a nonzero `safeAreaInsets.top` plus both native auxiliary top areas.
+- Notch width is the gap between the auxiliary top areas; notch height is `safeAreaInsets.top`.
 - `scale = min(1.08, max(0.88, baseNotchHeight / 32))`.
 
 Typical values at `scale = 1`:
@@ -111,8 +112,8 @@ Typical values at `scale = 1`:
 | Timer text frame | `28 * scale` wide |
 | Status symbol frame | `14 * scale` wide |
 | Status segment width | `82 * scale` |
-| Notch width | `188 * scale` |
-| Notch height | `max(32, min(38, baseNotchHeight + 2 * scale))` |
+| Notch width | Native auxiliary-top gap |
+| Notch height | Native top safe-area inset |
 | Notch corner radius | `notchHeight * 0.46` |
 | Notch waiting border width | `max(4.8 * scale, notchHeight * 0.24)` |
 | Activity dot on notch | `10 * scale` |
@@ -246,6 +247,7 @@ Status item:
 - Variable length.
 - Image only by default.
 - When attention count is positive, title becomes the count and icon is tinted input-blue or permission-red.
+- When the target display has no physical notch, running work tints the icon orange; no replacement floating surface is drawn.
 
 ## Functionality
 

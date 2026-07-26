@@ -10,7 +10,18 @@ final class IslandPanel: NSPanel {
 
 @MainActor
 final class IslandWindowController {
+    private struct TargetDisplay: Equatable {
+        let id: UInt32?
+        let frame: NSRect
+        let notch: PhysicalNotchGeometry?
+
+        var metrics: IslandMetrics? {
+            notch.map { IslandMetrics(notch: $0) }
+        }
+    }
+
     private let state: AppState
+    private let availabilityDidChange: () -> Void
     private let window: IslandPanel
     private var hostingView: NSHostingView<IslandView>?
     private let hostSize = NSSize(width: 440, height: 340)
@@ -18,9 +29,11 @@ final class IslandWindowController {
     private let rowExitDuration: TimeInterval = 0.26
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
+    private var targetDisplay: TargetDisplay?
 
-    init(state: AppState) {
+    init(state: AppState, availabilityDidChange: @escaping () -> Void = {}) {
         self.state = state
+        self.availabilityDidChange = availabilityDidChange
         self.window = IslandPanel(
             contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -37,7 +50,7 @@ final class IslandWindowController {
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         window.hidesOnDeactivate = false
 
-        let view = IslandView(state: state)
+        let view = IslandView(state: state, metrics: nil)
         let hostingView = NSHostingView(rootView: view)
         hostingView.frame = .zero
         hostingView.wantsLayer = true
@@ -60,58 +73,83 @@ final class IslandWindowController {
         }
     }
 
-    func syncVisibility() {
-        guard state.settings.enabled else {
-            pendingHideToken = UUID()
-            state.islandHoverState = .inactive
-            window.ignoresMouseEvents = true
-            window.orderOut(nil)
+    func syncVisibility(mouseLocation: NSPoint = NSEvent.mouseLocation) {
+        updateTargetDisplay(for: mouseLocation)
+        let canShowIsland = state.settings.enabled && targetDisplay?.metrics != nil
+        if state.isIslandAvailable != canShowIsland {
+            state.isIslandAvailable = canShowIsland
+            availabilityDidChange()
+        }
+
+        guard canShowIsland else {
+            hideImmediately()
             return
         }
 
         if state.hasIslandContent {
             pendingHideToken = UUID()
-            resizeAndPosition()
             window.orderFrontRegardless()
-            updateHoverState(for: NSEvent.mouseLocation)
+            updateHoverState(for: mouseLocation)
             return
         }
 
         scheduleHideAfterExit()
     }
 
-    func resizeAndPosition() {
-        guard let screen = targetScreen() else {
-            return
-        }
-
-        let width = hostSize.width
-        let height = hostSize.height
-        let x = screen.frame.midX - width / 2
-        let y = screen.frame.maxY - height
-        window.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
-        hostingView?.frame = NSRect(origin: .zero, size: hostSize)
-        updateHoverState(for: NSEvent.mouseLocation)
-    }
-
-    private func targetScreen() -> NSScreen? {
+    private func targetScreen(for mouseLocation: NSPoint) -> NSScreen? {
         let screens = NSScreen.screens
-        guard !screens.isEmpty else {
+        guard let index = ScreenTargetResolver.index(
+            screenMode: state.settings.screenMode,
+            screenFrames: screens.map(\.frame),
+            pointerLocation: mouseLocation
+        ) else {
             return nil
         }
 
-        if state.settings.screenMode == "active" {
-            let mouse = NSEvent.mouseLocation
-            return screens.first { screen in
-                screen.frame.contains(mouse)
-            } ?? screens.first
+        return screens[index]
+    }
+
+    @discardableResult
+    private func updateTargetDisplay(for mouseLocation: NSPoint) -> Bool {
+        let screen = targetScreen(for: mouseLocation)
+        let nextDisplay = screen.map {
+            let notch = PhysicalNotchGeometry(
+                safeAreaTop: $0.safeAreaInsets.top,
+                auxiliaryLeftMaxX: $0.auxiliaryTopLeftArea?.maxX,
+                auxiliaryRightMinX: $0.auxiliaryTopRightArea?.minX
+            )
+            return TargetDisplay(
+                id: ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value,
+                frame: $0.frame,
+                notch: notch
+            )
+        }
+        guard nextDisplay != targetDisplay else {
+            return false
         }
 
-        if let index = Int(state.settings.screenMode), index >= 1, index <= screens.count {
-            return screens[index - 1]
+        targetDisplay = nextDisplay
+        state.islandHoverState = .inactive
+        window.ignoresMouseEvents = true
+        hostingView?.rootView = IslandView(state: state, metrics: nextDisplay?.metrics)
+        hostingView?.frame = NSRect(origin: .zero, size: hostSize)
+
+        if let frame = nextDisplay?.frame, let notch = nextDisplay?.notch {
+            let origin = NSPoint(
+                x: notch.centerX - hostSize.width / 2,
+                y: frame.maxY - hostSize.height
+            )
+            window.setFrame(NSRect(origin: origin, size: hostSize), display: true)
         }
 
-        return screens.first
+        return true
+    }
+
+    private func hideImmediately() {
+        pendingHideToken = UUID()
+        state.islandHoverState = .inactive
+        window.ignoresMouseEvents = true
+        window.orderOut(nil)
     }
 
     private func scheduleHideAfterExit() {
@@ -148,16 +186,26 @@ final class IslandWindowController {
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
             Task { @MainActor [weak self] in
                 _ = event
-                self?.updateHoverState(for: NSEvent.mouseLocation)
+                self?.handlePointerMovement(to: NSEvent.mouseLocation)
             }
         }
 
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
             Task { @MainActor [weak self] in
-                self?.updateHoverState(for: NSEvent.mouseLocation)
+                self?.handlePointerMovement(to: NSEvent.mouseLocation)
             }
             return event
         }
+    }
+
+    private func handlePointerMovement(to mouseLocation: NSPoint) {
+        if state.settings.screenMode == "active",
+           updateTargetDisplay(for: mouseLocation) {
+            syncVisibility(mouseLocation: mouseLocation)
+            return
+        }
+
+        updateHoverState(for: mouseLocation)
     }
 
     private func updateHoverState(for mouseLocation: NSPoint) {
@@ -169,7 +217,11 @@ final class IslandWindowController {
             return
         }
 
-        let metrics = IslandMetrics()
+        guard let metrics = targetDisplay?.metrics else {
+            state.islandHoverState = .inactive
+            window.ignoresMouseEvents = true
+            return
+        }
         let nextState = hoverState(for: mouseLocation, metrics: metrics)
         window.ignoresMouseEvents = !interactiveRowPaths(metrics: metrics).contains {
             $0.contains(mouseLocation)

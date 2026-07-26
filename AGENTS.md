@@ -9,6 +9,8 @@
 - When a subagent is no longer needed, clean it up promptly.
 - After each fix, rebuild the release app into `/Applications` with `./Scripts/build-release.sh --install`, then restart Atoll from `/Applications/Atoll.app`.
 - Always verify UI changes in the installed app with screenshots as well; capture and inspect the relevant states before considering the change complete.
+- Add screenshots or recordings that confirm user-visible fixes to the pull request and share them in the active chat.
+- Prefer video when motion, transitions, or a multi-step flow shows the fix better than still screenshots.
 
 ## Commit and Publish Workflow
 
