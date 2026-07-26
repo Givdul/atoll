@@ -27,6 +27,7 @@ final class AppState: ObservableObject {
     @Published var settings: AtollSettings
     @Published var lastRefresh: Date?
     @Published var islandHoverState: IslandHoverState = .inactive
+    @Published var isIslandAvailable = false
 
     private static let maxVisibleSessions = 8
 

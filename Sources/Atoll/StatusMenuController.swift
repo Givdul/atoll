@@ -88,9 +88,15 @@ final class StatusMenuController {
         if attention > 0 {
             button.title = "\(attention)"
             button.image = AtollIcon.statusBarImage(attentionColor: attentionColor)
+            button.toolTip = "Atoll — \(attention) need attention"
+        } else if !state.isIslandAvailable, !state.runningSessions.isEmpty {
+            button.title = ""
+            button.image = AtollIcon.statusBarImage(attentionColor: AtollIcon.stateColor(for: .running))
+            button.toolTip = "Atoll — \(state.runningSessions.count) running"
         } else {
             button.title = ""
             button.image = AtollIcon.statusBarImage()
+            button.toolTip = "Atoll"
         }
     }
 

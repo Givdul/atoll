@@ -61,6 +61,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
         islandController?.shutdown()
     }
 
+    func applicationDidChangeScreenParameters(_ notification: Notification) {
+        islandController?.syncVisibility()
+        statusController?.refreshMenu()
+    }
+
     func refreshNow() {
         for receipt in lifecycleQueue.pendingEvents() {
             guard accept(receipt) != nil else { break }
