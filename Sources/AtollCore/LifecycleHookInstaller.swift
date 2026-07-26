@@ -10,6 +10,98 @@ public struct LifecycleHookInstaller {
         case invalidConfiguration(String)
     }
 
+    public struct Diagnostic: Equatable, Sendable {
+        public enum Integration: Equatable, Sendable {
+            case missing
+            case current
+            case outdated
+            case invalid(String)
+            case disabled(String)
+            case unowned(String)
+        }
+
+        public enum Bridge: Equatable, Sendable {
+            case missing
+            case current
+            case outdated
+            case incorrectPermissions
+        }
+
+        public enum Shadowing: Equatable, Sendable {
+            case notDetected
+            case blocked(String)
+        }
+
+        public enum Health: Equatable, Sendable {
+            case agentNotFound
+            case integrationMissing
+            case integrationOutdated
+            case externalConfiguration(String)
+            case shadowed(String)
+            case bridgeUnavailable
+            case socketUnavailable
+            case runtimeUnverified
+            case ready(Date)
+        }
+
+        public let agent: AgentHarness
+        public let agentFound: Bool
+        public let integration: Integration
+        public let bridge: Bridge
+        public let shadowing: Shadowing
+        public let socketAvailable: Bool
+        public let lastValidEventAt: Date?
+        public let canRemove: Bool
+
+        public init(
+            agent: AgentHarness,
+            agentFound: Bool,
+            integration: Integration,
+            bridge: Bridge,
+            shadowing: Shadowing,
+            socketAvailable: Bool,
+            lastValidEventAt: Date?,
+            canRemove: Bool = false
+        ) {
+            self.agent = agent
+            self.agentFound = agentFound
+            self.integration = integration
+            self.bridge = bridge
+            self.shadowing = shadowing
+            self.socketAvailable = socketAvailable
+            self.lastValidEventAt = lastValidEventAt
+            self.canRemove = canRemove
+        }
+
+        public var health: Health {
+            guard agentFound else { return .agentNotFound }
+            if case .blocked(let detail) = shadowing { return .shadowed(detail) }
+            switch integration {
+            case .missing: return .integrationMissing
+            case .outdated: return .integrationOutdated
+            case .invalid(let detail), .disabled(let detail), .unowned(let detail):
+                return .externalConfiguration(detail)
+            case .current: break
+            }
+            guard bridge == .current else { return .bridgeUnavailable }
+            guard socketAvailable else { return .socketUnavailable }
+            guard let lastValidEventAt else { return .runtimeUnverified }
+            return .ready(lastValidEventAt)
+        }
+
+        public var canRepair: Bool {
+            guard agentFound, shadowing == .notDetected else { return false }
+            switch integration {
+            case .missing, .outdated:
+                return true
+            case .current:
+                return bridge != .current
+            case .invalid, .disabled, .unowned:
+                return false
+            }
+        }
+    }
+
     public enum RemovalOutcome: Equatable, Sendable {
         case removed
         case notInstalled
@@ -58,6 +150,7 @@ public struct LifecycleHookInstaller {
     private let piVersionOutput: (() throws -> String)?
     private let environment: [String: String]
     private let commandTimeout: TimeInterval
+    private let codexRequirementsURL: URL
 
     public init(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -65,7 +158,8 @@ public struct LifecycleHookInstaller {
         fileManager: FileManager = .default,
         piVersionOutput: (() throws -> String)? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        commandTimeout: TimeInterval = 10
+        commandTimeout: TimeInterval = 10,
+        codexRequirementsURL: URL = URL(fileURLWithPath: "/etc/codex/requirements.toml")
     ) {
         self.homeDirectory = homeDirectory
         self.executablePath = executablePath
@@ -73,6 +167,7 @@ public struct LifecycleHookInstaller {
         self.piVersionOutput = piVersionOutput
         self.environment = environment
         self.commandTimeout = max(0.01, commandTimeout)
+        self.codexRequirementsURL = codexRequirementsURL
     }
 
     public func install() throws {
@@ -199,6 +294,23 @@ public struct LifecycleHookInstaller {
         } catch {
             return .invalidConfiguration(error.localizedDescription)
         }
+    }
+
+    public func diagnostic(
+        for agent: AgentHarness,
+        socketAvailable: Bool,
+        lastValidEventAt: Date?
+    ) -> Diagnostic {
+        Diagnostic(
+            agent: agent,
+            agentFound: detectedAgents().contains(agent),
+            integration: integrationState(for: agent),
+            bridge: bridgeState,
+            shadowing: shadowingState(for: agent),
+            socketAvailable: socketAvailable,
+            lastValidEventAt: lastValidEventAt,
+            canRemove: hasIntegration(for: agent)
+        )
     }
 
     private var bridgeURL: URL { homeDirectory.appendingPathComponent(".atoll/bin/atoll-hook") }
@@ -760,6 +872,105 @@ public struct LifecycleHookInstaller {
         integrationIsCurrent && bridgeIsReady ? .configured : .notConfigured
     }
 
+    private func integrationState(for agent: AgentHarness) -> Diagnostic.Integration {
+        guard Self.supportedAgents.contains(agent) else { return .missing }
+        do {
+            switch agent {
+            case .pi:
+                try requireSupportedPiVersion()
+                return managedIntegrationState(expected: piExtensionSource, at: piExtensionURL)
+            case .opencode:
+                if fileManager.fileExists(atPath: openCodePluginURL.path) {
+                    guard managedFileBelongsToAtoll(at: openCodePluginURL) else {
+                        return .unowned("The OpenCode plugin path belongs to another file. Atoll left it untouched.")
+                    }
+                    if fileManager.fileExists(atPath: legacyOpenCodePluginURL.path) {
+                        guard managedFileBelongsToAtoll(at: legacyOpenCodePluginURL) else {
+                            return .unowned("A legacy OpenCode plugin path belongs to another file. Atoll left it untouched.")
+                        }
+                        return .outdated
+                    }
+                    return managedFileMatches(openCodePluginSource, at: openCodePluginURL) ? .current : .outdated
+                }
+                if fileManager.fileExists(atPath: legacyOpenCodePluginURL.path) {
+                    return managedFileBelongsToAtoll(at: legacyOpenCodePluginURL)
+                        ? .outdated
+                        : .unowned("A legacy OpenCode plugin path belongs to another file. Atoll left it untouched.")
+                }
+                return .missing
+            case .claude, .codex, .cursor:
+                if agent == .codex { try validateCodexHooksEnabled() }
+                if agent == .claude, managedClaudeSetting("disableAllHooks") == true {
+                    return .disabled("Managed Claude Code settings disable hooks. Ask your administrator to enable them.")
+                }
+                let url = configurationURL(for: agent)
+                let root = try jsonObject(at: url)
+                try validateHookConfiguration(root, for: agent, at: url)
+                if hasAllCommands(in: root, for: agent) { return .current }
+                return hasIntegration(for: agent) ? .outdated : .missing
+            default:
+                return .missing
+            }
+        } catch let error as Error {
+            if case .hooksDisabled = error { return .disabled(error.localizedDescription) }
+            return .invalid(error.localizedDescription)
+        } catch {
+            return .invalid(error.localizedDescription)
+        }
+    }
+
+    private func managedIntegrationState(expected: String, at url: URL) -> Diagnostic.Integration {
+        guard fileManager.fileExists(atPath: url.path) else { return .missing }
+        guard managedFileBelongsToAtoll(at: url) else {
+            return .unowned("\(url.path) belongs to another extension. Atoll left it untouched.")
+        }
+        return managedFileMatches(expected, at: url) ? .current : .outdated
+    }
+
+    private var bridgeState: Diagnostic.Bridge {
+        guard fileManager.fileExists(atPath: bridgeURL.path) else { return .missing }
+        guard managedFileMatches(bridgeSource, at: bridgeURL) else { return .outdated }
+        guard let attributes = try? fileManager.attributesOfItem(atPath: bridgeURL.path),
+              let permissions = attributes[.posixPermissions] as? NSNumber,
+              permissions.intValue & 0o777 == 0o700 else {
+            return .incorrectPermissions
+        }
+        return .current
+    }
+
+    private func shadowingState(for agent: AgentHarness) -> Diagnostic.Shadowing {
+        if agent == .claude, managedClaudeSetting("allowManagedHooksOnly") == true {
+            return .blocked("Managed Claude Code policy allows only administrator hooks, so it blocks Atoll's user hook.")
+        }
+        if agent == .codex,
+           let source = try? String(contentsOf: codexRequirementsURL, encoding: .utf8),
+           managedCodexHooksOnly(in: source) {
+            return .blocked("Managed Codex policy allows only administrator hooks, so it blocks Atoll's user hook.")
+        }
+        return .notDetected
+    }
+
+    private func managedClaudeSetting(_ key: String) -> Bool? {
+        for url in managedClaudeSettingsURLs().reversed() {
+            guard let value = (try? jsonObject(at: url))?[key] as? Bool else { continue }
+            return value
+        }
+        return nil
+    }
+
+    private func managedClaudeSettingsURLs() -> [URL] {
+        let directory = URL(fileURLWithPath: "/Library/Application Support/ClaudeCode", isDirectory: true)
+        let dropIns = directory.appendingPathComponent("managed-settings.d", isDirectory: true)
+        let files = fileManager.fileExists(atPath: dropIns.path)
+            ? (try? fileManager.contentsOfDirectory(
+                at: dropIns,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ))?.filter { $0.pathExtension == "json" }.sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
+            : []
+        return [directory.appendingPathComponent("managed-settings.json")] + files
+    }
+
     private var bridgeIsReady: Bool {
         guard managedFileMatches(bridgeSource, at: bridgeURL),
               let attributes = try? fileManager.attributesOfItem(atPath: bridgeURL.path),
@@ -930,11 +1141,30 @@ public struct LifecycleHookInstaller {
     }
 
     private func validateCodexHooksEnabled() throws {
-        let url = codexConfigurationDirectory.appendingPathComponent("config.toml")
-        guard fileManager.fileExists(atPath: url.path) else { return }
-        let source = try String(contentsOf: url, encoding: .utf8)
-        guard let setting = disabledCodexHooksSetting(in: source) else { return }
-        throw Error.hooksDisabled(url, setting: setting)
+        let userConfigurationURL = codexConfigurationDirectory.appendingPathComponent("config.toml")
+        for url in [codexRequirementsURL, userConfigurationURL] where fileManager.fileExists(atPath: url.path) {
+            let source = try String(contentsOf: url, encoding: .utf8)
+            if let setting = disabledCodexHooksSetting(in: source) {
+                throw Error.hooksDisabled(url, setting: setting)
+            }
+            if url == codexRequirementsURL, managedCodexHooksOnly(in: source) {
+                throw Error.hooksDisabled(url, setting: "allow_managed_hooks_only")
+            }
+        }
+    }
+
+    private func managedCodexHooksOnly(in source: String) -> Bool {
+        var isRoot = true
+        for rawLine in source.components(separatedBy: .newlines) {
+            let uncommented = rawLine.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+            let compact = uncommented.filter { !$0.isWhitespace }
+            if compact.hasPrefix("[") {
+                isRoot = false
+            } else if isRoot, compact == "allow_managed_hooks_only=true" {
+                return true
+            }
+        }
+        return false
     }
 
     /// Recognizes only the documented feature assignments. It intentionally does not rewrite TOML.

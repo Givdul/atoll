@@ -62,7 +62,7 @@ final class StatusMenuController {
         refresh.target = self
         menu.addItem(refresh)
 
-        let installHooks = NSMenuItem(title: "Live Status Setup…", action: #selector(showLifecycleSetup(_:)), keyEquivalent: "")
+        let installHooks = NSMenuItem(title: "Live Status Doctor…", action: #selector(showLifecycleSetup(_:)), keyEquivalent: "")
         installHooks.target = self
         menu.addItem(installHooks)
 

@@ -541,6 +541,114 @@ final class LifecycleHookInstallerTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 1.5)
     }
 
+    func testDoctorHealthFixturesCoverEveryState() {
+        typealias Diagnostic = LifecycleHookInstaller.Diagnostic
+        let eventTime = Date(timeIntervalSince1970: 123)
+        let fixtures: [(Diagnostic, Diagnostic.Health)] = [
+            (Diagnostic(agent: .codex, agentFound: false, integration: .missing, bridge: .missing, shadowing: .notDetected, socketAvailable: false, lastValidEventAt: nil), .agentNotFound),
+            (Diagnostic(agent: .codex, agentFound: true, integration: .missing, bridge: .current, shadowing: .notDetected, socketAvailable: true, lastValidEventAt: eventTime), .integrationMissing),
+            (Diagnostic(agent: .codex, agentFound: true, integration: .outdated, bridge: .current, shadowing: .notDetected, socketAvailable: true, lastValidEventAt: eventTime), .integrationOutdated),
+            (Diagnostic(agent: .codex, agentFound: true, integration: .invalid("invalid"), bridge: .current, shadowing: .notDetected, socketAvailable: true, lastValidEventAt: eventTime), .externalConfiguration("invalid")),
+            (Diagnostic(agent: .claude, agentFound: true, integration: .current, bridge: .current, shadowing: .blocked("managed"), socketAvailable: true, lastValidEventAt: eventTime), .shadowed("managed")),
+            (Diagnostic(agent: .codex, agentFound: true, integration: .current, bridge: .incorrectPermissions, shadowing: .notDetected, socketAvailable: true, lastValidEventAt: eventTime), .bridgeUnavailable),
+            (Diagnostic(agent: .codex, agentFound: true, integration: .current, bridge: .current, shadowing: .notDetected, socketAvailable: false, lastValidEventAt: eventTime), .socketUnavailable),
+            (Diagnostic(agent: .codex, agentFound: true, integration: .current, bridge: .current, shadowing: .notDetected, socketAvailable: true, lastValidEventAt: nil), .runtimeUnverified),
+            (Diagnostic(agent: .codex, agentFound: true, integration: .current, bridge: .current, shadowing: .notDetected, socketAvailable: true, lastValidEventAt: eventTime), .ready(eventTime))
+        ]
+
+        for (diagnostic, expected) in fixtures {
+            XCTAssertEqual(diagnostic.health, expected)
+        }
+    }
+
+    func testDoctorRepairsEverySupportedProviderAndRerunsCleanly() throws {
+        let bin = home.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        for command in ["codex", "claude", "cursor", "opencode", "pi"] {
+            let executable = bin.appendingPathComponent(command)
+            try "#!/bin/sh\n".write(to: executable, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        }
+        let installer = makeInstaller(
+            environment: ["PATH": bin.path],
+            fileManager: HomeScopedFileManager(home: home)
+        )
+
+        for agent in LifecycleHookInstaller.supportedAgents {
+            let before = installer.diagnostic(for: agent, socketAvailable: true, lastValidEventAt: nil)
+            XCTAssertEqual(before.health, .integrationMissing, agent.rawValue)
+            XCTAssertTrue(before.canRepair, agent.rawValue)
+
+            try installer.install(agents: [agent])
+            let after = installer.diagnostic(for: agent, socketAvailable: true, lastValidEventAt: nil)
+            XCTAssertEqual(after.integration, .current, agent.rawValue)
+            XCTAssertEqual(after.bridge, .current, agent.rawValue)
+            XCTAssertEqual(after.health, .runtimeUnverified, agent.rawValue)
+            XCTAssertFalse(after.canRepair, agent.rawValue)
+
+            try installer.install(agents: [agent])
+            XCTAssertEqual(
+                installer.diagnostic(for: agent, socketAvailable: true, lastValidEventAt: nil),
+                after,
+                agent.rawValue
+            )
+        }
+    }
+
+    func testDoctorDoesNotOfferRepairForUnownedManagedFile() throws {
+        let plugin = home.appendingPathComponent(".config/opencode/plugins/atoll.js")
+        try FileManager.default.createDirectory(at: plugin.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "// another plugin".write(to: plugin, atomically: true, encoding: .utf8)
+        let bin = home.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let command = bin.appendingPathComponent("opencode")
+        try "#!/bin/sh\n".write(to: command, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: command.path)
+        let installer = makeInstaller(environment: ["PATH": bin.path])
+
+        let diagnostic = installer.diagnostic(for: .opencode, socketAvailable: true, lastValidEventAt: nil)
+        guard case .unowned = diagnostic.integration else {
+            return XCTFail("Expected an unowned integration")
+        }
+        XCTAssertFalse(diagnostic.canRepair)
+    }
+
+    func testDoctorReportsLocallyVisibleCodexManagedPolicies() throws {
+        let requirements = home.appendingPathComponent("requirements.toml")
+        let bin = home.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let codex = bin.appendingPathComponent("codex")
+        try "#!/bin/sh\n".write(to: codex, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: codex.path)
+
+        try "[features]\nhooks = false\n".write(to: requirements, atomically: true, encoding: .utf8)
+        var diagnostic = makeInstaller(
+            environment: ["PATH": bin.path],
+            codexRequirementsURL: requirements
+        ).diagnostic(for: .codex, socketAvailable: true, lastValidEventAt: Date())
+        guard case .disabled = diagnostic.integration else {
+            return XCTFail("Expected managed hooks=false to be reported")
+        }
+        XCTAssertFalse(diagnostic.canRepair)
+
+        try "allow_managed_hooks_only = true\n".write(to: requirements, atomically: true, encoding: .utf8)
+        diagnostic = makeInstaller(
+            environment: ["PATH": bin.path],
+            codexRequirementsURL: requirements
+        ).diagnostic(for: .codex, socketAvailable: true, lastValidEventAt: Date())
+        guard case .shadowed = diagnostic.health else {
+            return XCTFail("Expected managed-only hooks to shadow the user integration")
+        }
+        XCTAssertFalse(diagnostic.canRepair)
+
+        try "[profile]\nallow_managed_hooks_only = true\n".write(to: requirements, atomically: true, encoding: .utf8)
+        diagnostic = makeInstaller(
+            environment: ["PATH": bin.path],
+            codexRequirementsURL: requirements
+        ).diagnostic(for: .codex, socketAvailable: true, lastValidEventAt: Date())
+        XCTAssertEqual(diagnostic.shadowing, .notDetected)
+    }
+
     private func hook(_ harness: String, _ kind: String) -> String {
         "'\(home.path)/.atoll/bin/atoll-hook' \(harness) \(kind)"
     }
@@ -548,14 +656,16 @@ final class LifecycleHookInstallerTests: XCTestCase {
     private func makeInstaller(
         piVersionOutput: String = "pi-coding-agent 0.80.4",
         environment: [String: String] = [:],
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        codexRequirementsURL: URL = URL(fileURLWithPath: "/etc/codex/requirements.toml")
     ) -> LifecycleHookInstaller {
         LifecycleHookInstaller(
             homeDirectory: home,
             executablePath: executable,
             fileManager: fileManager,
             piVersionOutput: { piVersionOutput },
-            environment: environment
+            environment: environment,
+            codexRequirementsURL: codexRequirementsURL
         )
     }
 

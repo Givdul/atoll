@@ -1007,6 +1007,20 @@ final class LifecycleEventTests: XCTestCase {
         XCTAssertEqual(queue.pendingEvents().map(\.event.kind), [.needsInput])
     }
 
+    func testQueueRejectsInternalHarnessAndRemovesLegacyRecord() throws {
+        let queue = LifecycleEventQueue(homeDirectory: directory)
+        XCTAssertNil(queue.enqueue(LifecycleEvent(sessionID: "internal", harness: .atoll, kind: .started)))
+
+        let queueDirectory = directory.appendingPathComponent(".atoll/lifecycle-events", isDirectory: true)
+        try FileManager.default.createDirectory(at: queueDirectory, withIntermediateDirectories: true)
+        let legacyFile = queueDirectory.appendingPathComponent("internal.json")
+        let event = LifecycleEvent(sessionID: "internal", harness: .atoll, kind: .started)
+        try XCTUnwrap(event.jsonLine()).write(to: legacyFile, atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(queue.pendingEvents().isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyFile.path))
+    }
+
     func testDeliveryIdentityLedgerHasExplicitSizeAndTimeBounds() throws {
         let store = directory.appendingPathComponent("registry.json")
         let registry = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)

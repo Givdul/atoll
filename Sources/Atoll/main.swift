@@ -60,6 +60,7 @@ if arguments == ["--install-lifecycle-hooks"] {
 if arguments.first == "--lifecycle-event" {
     guard arguments.count == 3,
           let harness = AgentHarness.parse(arguments[1]),
+          LifecycleHookInstaller.supportedAgents.contains(harness),
           let kind = LifecycleEventKind.parse(arguments[2]) else {
         exit(EXIT_FAILURE)
     }
