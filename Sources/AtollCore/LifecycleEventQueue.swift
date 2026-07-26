@@ -5,11 +5,13 @@ import Foundation
 /// Callers must acknowledge a receipt only after the event has been ingested.
 public struct QueuedLifecycleEvent: Sendable {
     public let event: LifecycleEvent
+    public let receivedAt: Date
 
     fileprivate let fileURL: URL
 
-    fileprivate init(event: LifecycleEvent, fileURL: URL) {
+    fileprivate init(event: LifecycleEvent, receivedAt: Date, fileURL: URL) {
         self.event = event
+        self.receivedAt = receivedAt
         self.fileURL = fileURL
     }
 }
@@ -27,13 +29,14 @@ public struct LifecycleEventQueue: Sendable {
     /// Persists an event and returns the receipt that can remove it after ingestion.
     @discardableResult
     public func enqueue(_ event: LifecycleEvent) -> QueuedLifecycleEvent? {
-        guard let line = event.jsonLine() else { return nil }
+        guard LifecycleHookInstaller.supportedAgents.contains(event.harness),
+              let line = event.jsonLine() else { return nil }
 
         do {
             try prepareDirectory()
             let file = directory.appendingPathComponent("\(UUID().uuidString).json")
             try PrivateStorage.writeAtomically(Data(line.utf8), to: file)
-            return QueuedLifecycleEvent(event: event, fileURL: file)
+            return QueuedLifecycleEvent(event: event, receivedAt: Date(), fileURL: file)
         } catch {
             return nil
         }
@@ -78,6 +81,11 @@ public struct LifecycleEventQueue: Sendable {
                     try? FileManager.default.removeItem(at: file)
                     return nil
                 }
+                guard LifecycleHookInstaller.supportedAgents.contains(event.harness) else {
+                    try? FileManager.default.removeItem(at: file)
+                    return nil
+                }
+                let receivedAt = (try? file.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
                 guard let sanitizedLine = event.jsonLine() else { return nil }
                 if sanitizedLine != line {
                     do {
@@ -86,7 +94,7 @@ public struct LifecycleEventQueue: Sendable {
                         return nil
                     }
                 }
-                return QueuedLifecycleEvent(event: event, fileURL: file)
+                return QueuedLifecycleEvent(event: event, receivedAt: receivedAt, fileURL: file)
             }
     }
 

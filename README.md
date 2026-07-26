@@ -16,13 +16,15 @@ It is event-driven: native agent hooks send minimal lifecycle events to a user-o
 
 ## Lifecycle privacy
 
-Atoll retains only the agent provider, provider session ID, normalized state, provider and local ordering/delivery timestamps, a project-folder label (or `"<Provider> session"`), and the complete origin process-ID/bundle-ID pair used by click-to-return. Delivery identities are Atoll-generated IDs or SHA-256 digests used for replay deduplication.
+Atoll retains only the agent provider, provider session ID, normalized state, provider and local ordering/delivery timestamps, a project-folder label (or `"<Provider> session"`), and the complete origin process-ID/bundle-ID pair used by click-to-return. Delivery identities are Atoll-generated IDs or SHA-256 digests used for replay deduplication. Separately, the runtime doctor retains only each provider identity and its latest valid local event time; that evidence survives ordinary session expiry.
 
 Provider hook payloads may include prompts or other content on standard input. Atoll discards that content while normalizing the event, so it never enters Atoll's socket protocol, durable queue, registry, UI, logs, or uploads. This includes provider messages and reasons, responses, commands, transcripts, diffs, environment values, model identifiers, and full working-directory paths; the project label is derived locally from only the working directory's final component.
 
 ## Native hook integrations
 
-On first launch, Atoll offers to add live status only when it detects a supported agent that is not already configured. You can also return to **Live Status Setup…** from the menu at any time to repair or install hooks. Atoll makes no configuration changes until you select **Add Live Status**; setup preserves existing settings, disabled-hook choices, and malformed configuration for the user to repair.
+On first launch, Atoll offers setup only when it detects a supported agent that is not already configured. **Live Status Doctor…** in the menu always shows all five supported providers and checks agent detection, integration content, the private bridge, managed-policy blocking where locally visible, the app socket, and the last valid event separately. `Ready` requires runtime evidence; a matching file alone is never enough.
+
+The doctor changes nothing until you select a provider-specific **Repair** action. Repair rewrites only missing, stale, or partial Atoll-owned content, reruns diagnostics in the same panel, and preserves malformed, disabled, project-level, policy-managed, or unowned configuration.
 
 The setup installs user-level hooks for:
 

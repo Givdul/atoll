@@ -117,12 +117,15 @@ final class LifecycleEventTests: XCTestCase {
         let queueDirectory = directory.appendingPathComponent(".atoll/lifecycle-events", isDirectory: true)
         try FileManager.default.createDirectory(at: queueDirectory, withIntermediateDirectories: true)
         let legacyFile = queueDirectory.appendingPathComponent("legacy.json")
+        let receivedAt = Date().addingTimeInterval(-3_600)
         try "{\"harness\":\"claude\",\"session_id\":\"legacy-queue\",\"event\":\"started\",\"cwd\":\"\(fullPath)\",\"prompt\":\"\(sensitive)\",\"message\":\"\(sensitive)\",\"model\":\"\(sensitive)\"}"
             .write(to: legacyFile, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.creationDate: receivedAt], ofItemAtPath: legacyFile.path)
 
         let queue = LifecycleEventQueue(homeDirectory: directory)
         let receipt = try XCTUnwrap(queue.pendingEvents().first)
         XCTAssertEqual(receipt.event.label, "Legacy-Queue")
+        XCTAssertEqual(receipt.receivedAt.timeIntervalSince1970, receivedAt.timeIntervalSince1970, accuracy: 0.01)
         let migratedQueueData = try XCTUnwrap(String(data: Data(contentsOf: legacyFile), encoding: .utf8))
         XCTAssertFalse(migratedQueueData.contains(sensitive))
         XCTAssertFalse(migratedQueueData.contains(fullPath))
@@ -1005,6 +1008,20 @@ final class LifecycleEventTests: XCTestCase {
         XCTAssertEqual(queue.pendingEvents().map(\.event.sessionID), ["valid"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: malformedFile.path))
         XCTAssertEqual(queue.pendingEvents().map(\.event.kind), [.needsInput])
+    }
+
+    func testQueueRejectsInternalHarnessAndRemovesLegacyRecord() throws {
+        let queue = LifecycleEventQueue(homeDirectory: directory)
+        XCTAssertNil(queue.enqueue(LifecycleEvent(sessionID: "internal", harness: .atoll, kind: .started)))
+
+        let queueDirectory = directory.appendingPathComponent(".atoll/lifecycle-events", isDirectory: true)
+        try FileManager.default.createDirectory(at: queueDirectory, withIntermediateDirectories: true)
+        let legacyFile = queueDirectory.appendingPathComponent("internal.json")
+        let event = LifecycleEvent(sessionID: "internal", harness: .atoll, kind: .started)
+        try XCTUnwrap(event.jsonLine()).write(to: legacyFile, atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(queue.pendingEvents().isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyFile.path))
     }
 
     func testDeliveryIdentityLedgerHasExplicitSizeAndTimeBounds() throws {

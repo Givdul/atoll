@@ -253,12 +253,12 @@ Lifecycle behavior:
 
 - Hooks deliver `started`, terminal, and optional attention events through `~/.atoll/lifecycle.sock`.
 - The socket server persists a valid event before acknowledging it. The sender falls back to the same durable queue when delivery or acknowledgment fails.
-- The app refreshes immediately from a persisted receipt and removes that queue file only after the lifecycle registry is written successfully.
+- The app refreshes immediately from a persisted receipt and removes that queue file only after the lifecycle registry and provider-only runtime evidence are written successfully.
 - A `1s` maintenance timer retries pending receipts and expires stale lifecycle state; it never scans agent transcripts, processes, or lock files.
 - Lifecycle wire, queue, and registry data retains only provider, session ID, normalized state, ordering/delivery timestamps, a final-component project label or provider fallback, replay identities, and the complete origin PID/bundle pair. Prompt, message, reason, response, command, transcript, diff, environment, model, and full working-directory content is discarded before serialization.
 - Active sessions expire after `10m` of local inactivity. Terminal records are visible to the registry for `5s`, receive a `3s` UI dwell from local observation, and remain as non-visible tombstones for `10m` to suppress late cleanup duplicates.
-- **Live Status Setup…** explicitly installs user-level bridges for Codex, Claude Code, Cursor Agent, OpenCode, and Pi.
-- Setup readiness verifies Atoll's static files and bridge permissions. Runtime hook trust, managed policy, plugin reload, and active-session reload remain external and are described in `LIVE_STATUS_SUPPORT.md`.
+- **Live Status Doctor…** shows all five providers and checks detection, integration content, bridge health, locally visible policy blocking, socket reachability, and last valid receipt separately.
+- Provider-specific repair changes only missing, stale, or partial Atoll-owned content, reruns checks in the same panel, and never treats static readiness alone as `Ready`.
 
 Settings:
 

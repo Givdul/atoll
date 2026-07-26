@@ -10,6 +10,98 @@ public struct LifecycleHookInstaller {
         case invalidConfiguration(String)
     }
 
+    public struct Diagnostic: Equatable, Sendable {
+        public enum Integration: Equatable, Sendable {
+            case missing
+            case current
+            case outdated
+            case invalid(String)
+            case disabled(String)
+            case unowned(String)
+        }
+
+        public enum Bridge: Equatable, Sendable {
+            case missing
+            case current
+            case outdated
+            case incorrectPermissions
+        }
+
+        public enum Shadowing: Equatable, Sendable {
+            case notDetected
+            case blocked(String)
+        }
+
+        public enum Health: Equatable, Sendable {
+            case agentNotFound
+            case integrationMissing
+            case integrationOutdated
+            case externalConfiguration(String)
+            case shadowed(String)
+            case bridgeUnavailable
+            case socketUnavailable
+            case runtimeUnverified
+            case ready(Date)
+        }
+
+        public let agent: AgentHarness
+        public let agentFound: Bool
+        public let integration: Integration
+        public let bridge: Bridge
+        public let shadowing: Shadowing
+        public let socketAvailable: Bool
+        public let lastValidEventAt: Date?
+        public let canRemove: Bool
+
+        public init(
+            agent: AgentHarness,
+            agentFound: Bool,
+            integration: Integration,
+            bridge: Bridge,
+            shadowing: Shadowing,
+            socketAvailable: Bool,
+            lastValidEventAt: Date?,
+            canRemove: Bool = false
+        ) {
+            self.agent = agent
+            self.agentFound = agentFound
+            self.integration = integration
+            self.bridge = bridge
+            self.shadowing = shadowing
+            self.socketAvailable = socketAvailable
+            self.lastValidEventAt = lastValidEventAt
+            self.canRemove = canRemove
+        }
+
+        public var health: Health {
+            guard agentFound else { return .agentNotFound }
+            if case .blocked(let detail) = shadowing { return .shadowed(detail) }
+            switch integration {
+            case .missing: return .integrationMissing
+            case .outdated: return .integrationOutdated
+            case .invalid(let detail), .disabled(let detail), .unowned(let detail):
+                return .externalConfiguration(detail)
+            case .current: break
+            }
+            guard bridge == .current else { return .bridgeUnavailable }
+            guard socketAvailable else { return .socketUnavailable }
+            guard let lastValidEventAt else { return .runtimeUnverified }
+            return .ready(lastValidEventAt)
+        }
+
+        public var canRepair: Bool {
+            guard agentFound, shadowing == .notDetected else { return false }
+            switch integration {
+            case .missing, .outdated:
+                return true
+            case .current:
+                return bridge != .current
+            case .invalid, .disabled, .unowned:
+                return false
+            }
+        }
+    }
+
     public enum RemovalOutcome: Equatable, Sendable {
         case removed
         case notInstalled
@@ -58,6 +150,7 @@ public struct LifecycleHookInstaller {
     private let piVersionOutput: (() throws -> String)?
     private let environment: [String: String]
     private let commandTimeout: TimeInterval
+    private let codexRequirementsURL: URL
 
     public init(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -65,7 +158,8 @@ public struct LifecycleHookInstaller {
         fileManager: FileManager = .default,
         piVersionOutput: (() throws -> String)? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        commandTimeout: TimeInterval = 10
+        commandTimeout: TimeInterval = 10,
+        codexRequirementsURL: URL = URL(fileURLWithPath: "/etc/codex/requirements.toml")
     ) {
         self.homeDirectory = homeDirectory
         self.executablePath = executablePath
@@ -73,6 +167,7 @@ public struct LifecycleHookInstaller {
         self.piVersionOutput = piVersionOutput
         self.environment = environment
         self.commandTimeout = max(0.01, commandTimeout)
+        self.codexRequirementsURL = codexRequirementsURL
     }
 
     public func install() throws {
@@ -199,6 +294,23 @@ public struct LifecycleHookInstaller {
         } catch {
             return .invalidConfiguration(error.localizedDescription)
         }
+    }
+
+    public func diagnostic(
+        for agent: AgentHarness,
+        socketAvailable: Bool,
+        lastValidEventAt: Date?
+    ) -> Diagnostic {
+        Diagnostic(
+            agent: agent,
+            agentFound: detectedAgents().contains(agent),
+            integration: integrationState(for: agent),
+            bridge: bridgeState,
+            shadowing: shadowingState(for: agent),
+            socketAvailable: socketAvailable,
+            lastValidEventAt: lastValidEventAt,
+            canRemove: hasIntegration(for: agent)
+        )
     }
 
     private var bridgeURL: URL { homeDirectory.appendingPathComponent(".atoll/bin/atoll-hook") }
@@ -593,15 +705,17 @@ public struct LifecycleHookInstaller {
     }
 
     private func writeOpenCodePlugin() throws {
-        if fileManager.fileExists(atPath: legacyOpenCodePluginURL.path) {
-            let existing = try String(contentsOf: legacyOpenCodePluginURL, encoding: .utf8)
-            let firstLine = existing.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first
-            guard firstLine?.contains(managedMarker) == true else {
-                throw Error.managedFileConflict(legacyOpenCodePluginURL)
-            }
+        let legacyDestination = legacyOpenCodePluginURL.resolvingSymlinksInPath().standardizedFileURL
+        let legacyContents = try currentContents(at: legacyOpenCodePluginURL)
+        if let legacyContents, !managedFileBelongsToAtoll(legacyContents) {
+            throw Error.managedFileConflict(legacyOpenCodePluginURL)
         }
         try writeManagedFile(openCodePluginSource, to: openCodePluginURL)
-        if fileManager.fileExists(atPath: legacyOpenCodePluginURL.path) {
+        if let legacyContents {
+            guard legacyOpenCodePluginURL.resolvingSymlinksInPath().standardizedFileURL == legacyDestination,
+                  try currentContents(at: legacyOpenCodePluginURL) == legacyContents else {
+                throw Error.configurationChanged(legacyOpenCodePluginURL)
+            }
             try fileManager.removeItem(at: legacyOpenCodePluginURL)
         }
     }
@@ -760,6 +874,105 @@ public struct LifecycleHookInstaller {
         integrationIsCurrent && bridgeIsReady ? .configured : .notConfigured
     }
 
+    private func integrationState(for agent: AgentHarness) -> Diagnostic.Integration {
+        guard Self.supportedAgents.contains(agent) else { return .missing }
+        do {
+            switch agent {
+            case .pi:
+                try requireSupportedPiVersion()
+                return managedIntegrationState(expected: piExtensionSource, at: piExtensionURL)
+            case .opencode:
+                if fileManager.fileExists(atPath: openCodePluginURL.path) {
+                    guard managedFileBelongsToAtoll(at: openCodePluginURL) else {
+                        return .unowned("The OpenCode plugin path belongs to another file. Atoll left it untouched.")
+                    }
+                    if fileManager.fileExists(atPath: legacyOpenCodePluginURL.path) {
+                        guard managedFileBelongsToAtoll(at: legacyOpenCodePluginURL) else {
+                            return .unowned("A legacy OpenCode plugin path belongs to another file. Atoll left it untouched.")
+                        }
+                        return .outdated
+                    }
+                    return managedFileMatches(openCodePluginSource, at: openCodePluginURL) ? .current : .outdated
+                }
+                if fileManager.fileExists(atPath: legacyOpenCodePluginURL.path) {
+                    return managedFileBelongsToAtoll(at: legacyOpenCodePluginURL)
+                        ? .outdated
+                        : .unowned("A legacy OpenCode plugin path belongs to another file. Atoll left it untouched.")
+                }
+                return .missing
+            case .claude, .codex, .cursor:
+                if agent == .codex { try validateCodexHooksEnabled() }
+                if agent == .claude, managedClaudeSetting("disableAllHooks") == true {
+                    return .disabled("Managed Claude Code settings disable hooks. Ask your administrator to enable them.")
+                }
+                let url = configurationURL(for: agent)
+                let root = try jsonObject(at: url)
+                try validateHookConfiguration(root, for: agent, at: url)
+                if hasAllCommands(in: root, for: agent) { return .current }
+                return hasIntegration(for: agent) ? .outdated : .missing
+            default:
+                return .missing
+            }
+        } catch let error as Error {
+            if case .hooksDisabled = error { return .disabled(error.localizedDescription) }
+            return .invalid(error.localizedDescription)
+        } catch {
+            return .invalid(error.localizedDescription)
+        }
+    }
+
+    private func managedIntegrationState(expected: String, at url: URL) -> Diagnostic.Integration {
+        guard fileManager.fileExists(atPath: url.path) else { return .missing }
+        guard managedFileBelongsToAtoll(at: url) else {
+            return .unowned("\(url.path) belongs to another extension. Atoll left it untouched.")
+        }
+        return managedFileMatches(expected, at: url) ? .current : .outdated
+    }
+
+    private var bridgeState: Diagnostic.Bridge {
+        guard fileManager.fileExists(atPath: bridgeURL.path) else { return .missing }
+        guard managedFileMatches(bridgeSource, at: bridgeURL) else { return .outdated }
+        guard let attributes = try? fileManager.attributesOfItem(atPath: bridgeURL.path),
+              let permissions = attributes[.posixPermissions] as? NSNumber,
+              permissions.intValue & 0o777 == 0o700 else {
+            return .incorrectPermissions
+        }
+        return .current
+    }
+
+    private func shadowingState(for agent: AgentHarness) -> Diagnostic.Shadowing {
+        if agent == .claude, managedClaudeSetting("allowManagedHooksOnly") == true {
+            return .blocked("Managed Claude Code policy allows only administrator hooks, so it blocks Atoll's user hook.")
+        }
+        if agent == .codex,
+           let source = try? String(contentsOf: codexRequirementsURL, encoding: .utf8),
+           managedCodexHooksOnly(in: source) {
+            return .blocked("Managed Codex policy allows only administrator hooks, so it blocks Atoll's user hook.")
+        }
+        return .notDetected
+    }
+
+    private func managedClaudeSetting(_ key: String) -> Bool? {
+        for url in managedClaudeSettingsURLs().reversed() {
+            guard let value = (try? jsonObject(at: url))?[key] as? Bool else { continue }
+            return value
+        }
+        return nil
+    }
+
+    private func managedClaudeSettingsURLs() -> [URL] {
+        let directory = URL(fileURLWithPath: "/Library/Application Support/ClaudeCode", isDirectory: true)
+        let dropIns = directory.appendingPathComponent("managed-settings.d", isDirectory: true)
+        let files = fileManager.fileExists(atPath: dropIns.path)
+            ? (try? fileManager.contentsOfDirectory(
+                at: dropIns,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ))?.filter { $0.pathExtension == "json" }.sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
+            : []
+        return [directory.appendingPathComponent("managed-settings.json")] + files
+    }
+
     private var bridgeIsReady: Bool {
         guard managedFileMatches(bridgeSource, at: bridgeURL),
               let attributes = try? fileManager.attributesOfItem(atPath: bridgeURL.path),
@@ -773,13 +986,23 @@ public struct LifecycleHookInstaller {
     }
 
     private func writeManagedFile(_ source: String, to url: URL) throws {
-        if fileManager.fileExists(atPath: url.path) {
-            let existing = try String(contentsOf: url, encoding: .utf8)
-            let firstLine = existing.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first
-            guard firstLine?.contains(managedMarker) == true else { throw Error.managedFileConflict(url) }
+        let destination = url.resolvingSymlinksInPath().standardizedFileURL
+        let existing = try currentContents(at: url)
+        if let existing, !managedFileBelongsToAtoll(existing) {
+            throw Error.managedFileConflict(url)
         }
-        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try source.write(to: url, atomically: true, encoding: .utf8)
+        let directory = destination.deletingLastPathComponent()
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let temporaryURL = directory.appendingPathComponent(".\(UUID().uuidString).tmp")
+        defer { try? fileManager.removeItem(at: temporaryURL) }
+        try Data(source.utf8).write(to: temporaryURL)
+        guard url.resolvingSymlinksInPath().standardizedFileURL == destination,
+              try currentContents(at: url) == existing else {
+            throw Error.configurationChanged(url)
+        }
+        guard Darwin.rename(temporaryURL.path, destination.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 
     private func removeIntegration(for agent: AgentHarness) throws -> Bool {
@@ -823,19 +1046,33 @@ public struct LifecycleHookInstaller {
     }
 
     private func removeManagedFiles(at urls: [URL]) throws -> Bool {
-        let existing = urls.filter { fileManager.fileExists(atPath: $0.path) }
-        guard !existing.isEmpty else { return false }
-        for url in existing where !managedFileBelongsToAtoll(at: url) {
-            throw Error.managedFileConflict(url)
+        let snapshots = try urls.compactMap { url -> (url: URL, destination: URL, contents: Data)? in
+            guard let contents = try currentContents(at: url) else { return nil }
+            return (url, url.resolvingSymlinksInPath().standardizedFileURL, contents)
         }
-        for url in existing {
-            try fileManager.removeItem(at: url)
+        guard !snapshots.isEmpty else { return false }
+        for snapshot in snapshots where !managedFileBelongsToAtoll(snapshot.contents) {
+            throw Error.managedFileConflict(snapshot.url)
+        }
+        for snapshot in snapshots {
+            guard snapshot.url.resolvingSymlinksInPath().standardizedFileURL == snapshot.destination,
+                  try currentContents(at: snapshot.url) == snapshot.contents else {
+                throw Error.configurationChanged(snapshot.url)
+            }
+        }
+        for snapshot in snapshots {
+            try fileManager.removeItem(at: snapshot.url)
         }
         return true
     }
 
     private func managedFileBelongsToAtoll(at url: URL) -> Bool {
-        guard let source = try? String(contentsOf: url, encoding: .utf8) else { return false }
+        guard let contents = try? Data(contentsOf: url) else { return false }
+        return managedFileBelongsToAtoll(contents)
+    }
+
+    private func managedFileBelongsToAtoll(_ contents: Data) -> Bool {
+        guard let source = String(data: contents, encoding: .utf8) else { return false }
         return source
             .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
             .first?
@@ -930,15 +1167,43 @@ public struct LifecycleHookInstaller {
     }
 
     private func validateCodexHooksEnabled() throws {
-        let url = codexConfigurationDirectory.appendingPathComponent("config.toml")
-        guard fileManager.fileExists(atPath: url.path) else { return }
-        let source = try String(contentsOf: url, encoding: .utf8)
-        guard let setting = disabledCodexHooksSetting(in: source) else { return }
-        throw Error.hooksDisabled(url, setting: setting)
+        let userConfigurationURL = codexConfigurationDirectory.appendingPathComponent("config.toml")
+        var managedHooksEnabled = false
+        if fileManager.fileExists(atPath: codexRequirementsURL.path) {
+            let source = try String(contentsOf: codexRequirementsURL, encoding: .utf8)
+            if let setting = codexHooksSetting(in: source) {
+                guard setting.enabled else {
+                    throw Error.hooksDisabled(codexRequirementsURL, setting: setting.name)
+                }
+                managedHooksEnabled = true
+            }
+            if managedCodexHooksOnly(in: source) {
+                throw Error.hooksDisabled(codexRequirementsURL, setting: "allow_managed_hooks_only")
+            }
+        }
+        guard !managedHooksEnabled, fileManager.fileExists(atPath: userConfigurationURL.path) else { return }
+        let source = try String(contentsOf: userConfigurationURL, encoding: .utf8)
+        if let setting = codexHooksSetting(in: source), !setting.enabled {
+            throw Error.hooksDisabled(userConfigurationURL, setting: setting.name)
+        }
+    }
+
+    private func managedCodexHooksOnly(in source: String) -> Bool {
+        var isRoot = true
+        for rawLine in source.components(separatedBy: .newlines) {
+            let uncommented = rawLine.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+            let compact = uncommented.filter { !$0.isWhitespace }
+            if compact.hasPrefix("[") {
+                isRoot = false
+            } else if isRoot, compact == "allow_managed_hooks_only=true" {
+                return true
+            }
+        }
+        return false
     }
 
     /// Recognizes only the documented feature assignments. It intentionally does not rewrite TOML.
-    private func disabledCodexHooksSetting(in source: String) -> String? {
+    private func codexHooksSetting(in source: String) -> (name: String, enabled: Bool)? {
         enum Section {
             case root
             case features
@@ -954,20 +1219,28 @@ public struct LifecycleHookInstaller {
                 section = compact == "[features]" ? .features : .other
                 continue
             }
-            if section == .root, compact == "features.hooks=false" {
-                return "features.hooks"
+            let assignments: [(prefix: String, name: String)]
+            switch section {
+            case .root:
+                assignments = [
+                    ("features.hooks=", "features.hooks"),
+                    ("features.codex_hooks=", "features.codex_hooks"),
+                    ("codex_hooks=", "codex_hooks")
+                ]
+            case .features:
+                assignments = [
+                    ("hooks=", "features.hooks"),
+                    ("codex_hooks=", "features.codex_hooks")
+                ]
+            case .other:
+                assignments = []
             }
-            if section == .root, compact == "features.codex_hooks=false" {
-                return "features.codex_hooks"
-            }
-            if section == .features, compact == "hooks=false" {
-                return "features.hooks"
-            }
-            if section == .features, compact == "codex_hooks=false" {
-                return "features.codex_hooks"
-            }
-            if section == .root, compact == "codex_hooks=false" {
-                return "codex_hooks"
+            for assignment in assignments where compact.hasPrefix(assignment.prefix) {
+                switch compact.dropFirst(assignment.prefix.count) {
+                case "true": return (assignment.name, true)
+                case "false": return (assignment.name, false)
+                default: break
+                }
             }
         }
         return nil

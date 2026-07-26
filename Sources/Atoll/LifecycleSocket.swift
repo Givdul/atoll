@@ -242,18 +242,34 @@ enum LifecycleSocketClient {
         return response == Data("ok\n".utf8)
     }
 
-    fileprivate static func canConnect(path: String) -> Bool {
-        guard let socketFD = connectedSocket(path: path) else { return false }
+    static func canConnect(
+        path: String = LifecycleSocketServer.path,
+        timeoutMilliseconds: Int32 = 250
+    ) -> Bool {
+        guard let socketFD = connectedSocket(
+            path: path,
+            timeoutMilliseconds: max(1, timeoutMilliseconds)
+        ) else { return false }
         close(socketFD)
         return true
     }
 
-    private static func connectedSocket(path: String) -> Int32? {
+    private static func connectedSocket(
+        path: String,
+        timeoutMilliseconds: Int32? = nil
+    ) -> Int32? {
         let socketFD = socket(AF_UNIX, SOCK_STREAM, 0)
         guard socketFD >= 0 else { return nil }
         LifecycleSocketServer.preventSIGPIPE(on: socketFD)
 
         do {
+            if timeoutMilliseconds != nil {
+                let flags = fcntl(socketFD, F_GETFL, 0)
+                guard flags >= 0, fcntl(socketFD, F_SETFL, flags | O_NONBLOCK) == 0 else {
+                    close(socketFD)
+                    return nil
+                }
+            }
             var address = try socketAddress(path: path)
             let length = socketAddressLength(path: path)
             let connected = withUnsafePointer(to: &address) {
@@ -261,9 +277,26 @@ enum LifecycleSocketClient {
                     connect(socketFD, $0, length)
                 }
             }
-            guard connected == 0 else {
-                close(socketFD)
-                return nil
+            if connected != 0 {
+                guard errno == EINPROGRESS, let timeoutMilliseconds else {
+                    close(socketFD)
+                    return nil
+                }
+                var descriptor = pollfd(fd: socketFD, events: Int16(POLLOUT), revents: 0)
+                var socketError: Int32 = 0
+                var socketErrorLength = socklen_t(MemoryLayout.size(ofValue: socketError))
+                guard poll(&descriptor, 1, timeoutMilliseconds) > 0,
+                      getsockopt(
+                          socketFD,
+                          SOL_SOCKET,
+                          SO_ERROR,
+                          &socketError,
+                          &socketErrorLength
+                      ) == 0,
+                      socketError == 0 else {
+                    close(socketFD)
+                    return nil
+                }
             }
             return socketFD
         } catch {

@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
             .appendingPathComponent(".atoll/lifecycle-sessions.json")
     )
     private let lifecycleQueue = LifecycleEventQueue()
+    private let runtimeEvidence = LifecycleRuntimeEvidenceStore()
     private let updaterController = SPUStandardUpdaterController(
         startingUpdater: false,
         updaterDelegate: nil,
@@ -62,10 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
 
     func refreshNow() {
         for receipt in lifecycleQueue.pendingEvents() {
-            guard lifecycleRegistry.ingestPersisting(receipt.event) != nil else {
-                break
-            }
-            _ = lifecycleQueue.acknowledge(receipt)
+            guard accept(receipt) != nil else { break }
         }
         state.allSessions = lifecycleRegistry.sessions()
         state.lastRefresh = Date()
@@ -74,14 +72,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
     }
 
     private func apply(_ receipt: QueuedLifecycleEvent) {
-        guard let sessions = lifecycleRegistry.ingestPersisting(receipt.event) else {
-            return
-        }
-        _ = lifecycleQueue.acknowledge(receipt)
+        guard let sessions = accept(receipt) else { return }
         state.allSessions = sessions
         state.lastRefresh = Date()
         islandController?.syncVisibility()
         statusController?.refreshMenu()
+    }
+
+    private func accept(_ receipt: QueuedLifecycleEvent) -> [AgentSession]? {
+        guard let sessions = lifecycleRegistry.ingestPersisting(receipt.event),
+              runtimeEvidence.record(provider: receipt.event.harness, receivedAt: receipt.receivedAt) else {
+            return nil
+        }
+        _ = lifecycleQueue.acknowledge(receipt)
+        return sessions
     }
 
     func setEnabled(_ enabled: Bool) {
@@ -101,51 +105,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
     }
 
     func showLifecycleSetup() {
-        let agents = LifecycleHookInstaller().detectedAgents()
-        guard !agents.isEmpty else {
-            liveStatusSetupController.presentUnavailable()
-            return
-        }
-
-        liveStatusSetupController.presentSetup(for: agents) { agents in
+        let runtimeEvidence = runtimeEvidence
+        liveStatusSetupController.presentSetup(for: LifecycleHookInstaller.supportedAgents) { agents in
             let installer = LifecycleHookInstaller()
-            return agents.map { agent in
-                HookInstallationResult(
-                    agent: agent,
-                    installerReadiness: installer.readiness(for: agent),
-                    canRemove: installer.canUninstall(for: agent)
+            let socketAvailable = LifecycleSocketClient.canConnect()
+            return agents.map {
+                installer.diagnostic(
+                    for: $0,
+                    socketAvailable: socketAvailable,
+                    lastValidEventAt: runtimeEvidence.lastValidEvent(for: $0)
                 )
             }
-        } install: { agents in
+        } repair: { agent in
             let installer = LifecycleHookInstaller()
-            return agents.map { agent in
-                do {
-                    try installer.install(agents: [agent])
-                    switch installer.readiness(for: agent) {
-                    case .configured:
-                        return HookInstallationResult(agent: agent, readiness: .configured)
-                    case .notConfigured:
-                        return HookInstallationResult(
-                            agent: agent,
-                            readiness: .invalidConfiguration(
-                                "Atoll could not verify the installed Live Status integration. Try setup again."
-                            ),
-                            canRemove: installer.canUninstall(for: agent)
-                        )
-                    case .invalidConfiguration(let detail):
-                        return HookInstallationResult(
-                            agent: agent,
-                            readiness: .invalidConfiguration(detail),
-                            canRemove: installer.canUninstall(for: agent)
-                        )
-                    }
-                } catch {
-                    return HookInstallationResult(
-                        agent: agent,
-                        readiness: .invalidConfiguration(error.localizedDescription),
-                        canRemove: installer.canUninstall(for: agent)
-                    )
-                }
+            do {
+                let repairsSharedBridge = installer.diagnostic(
+                    for: agent,
+                    socketAvailable: true,
+                    lastValidEventAt: nil
+                ).bridge != .current
+                try installer.install(agents: [agent])
+                let invalidated = runtimeEvidence.invalidate(
+                    providers: repairsSharedBridge ? LifecycleHookInstaller.supportedAgents : [agent]
+                )
+                guard invalidated else { return "The repair succeeded, but Atoll could not invalidate old runtime evidence." }
+                return nil
+            } catch {
+                return error.localizedDescription
             }
         } remove: { agents in
             LifecycleHookInstaller().uninstall(agents: agents)
