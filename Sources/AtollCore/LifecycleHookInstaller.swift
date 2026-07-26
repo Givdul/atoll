@@ -705,15 +705,17 @@ public struct LifecycleHookInstaller {
     }
 
     private func writeOpenCodePlugin() throws {
-        if fileManager.fileExists(atPath: legacyOpenCodePluginURL.path) {
-            let existing = try String(contentsOf: legacyOpenCodePluginURL, encoding: .utf8)
-            let firstLine = existing.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first
-            guard firstLine?.contains(managedMarker) == true else {
-                throw Error.managedFileConflict(legacyOpenCodePluginURL)
-            }
+        let legacyDestination = legacyOpenCodePluginURL.resolvingSymlinksInPath().standardizedFileURL
+        let legacyContents = try currentContents(at: legacyOpenCodePluginURL)
+        if let legacyContents, !managedFileBelongsToAtoll(legacyContents) {
+            throw Error.managedFileConflict(legacyOpenCodePluginURL)
         }
         try writeManagedFile(openCodePluginSource, to: openCodePluginURL)
-        if fileManager.fileExists(atPath: legacyOpenCodePluginURL.path) {
+        if let legacyContents {
+            guard legacyOpenCodePluginURL.resolvingSymlinksInPath().standardizedFileURL == legacyDestination,
+                  try currentContents(at: legacyOpenCodePluginURL) == legacyContents else {
+                throw Error.configurationChanged(legacyOpenCodePluginURL)
+            }
             try fileManager.removeItem(at: legacyOpenCodePluginURL)
         }
     }
@@ -984,13 +986,23 @@ public struct LifecycleHookInstaller {
     }
 
     private func writeManagedFile(_ source: String, to url: URL) throws {
-        if fileManager.fileExists(atPath: url.path) {
-            let existing = try String(contentsOf: url, encoding: .utf8)
-            let firstLine = existing.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first
-            guard firstLine?.contains(managedMarker) == true else { throw Error.managedFileConflict(url) }
+        let destination = url.resolvingSymlinksInPath().standardizedFileURL
+        let existing = try currentContents(at: url)
+        if let existing, !managedFileBelongsToAtoll(existing) {
+            throw Error.managedFileConflict(url)
         }
-        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try source.write(to: url, atomically: true, encoding: .utf8)
+        let directory = destination.deletingLastPathComponent()
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let temporaryURL = directory.appendingPathComponent(".\(UUID().uuidString).tmp")
+        defer { try? fileManager.removeItem(at: temporaryURL) }
+        try Data(source.utf8).write(to: temporaryURL)
+        guard url.resolvingSymlinksInPath().standardizedFileURL == destination,
+              try currentContents(at: url) == existing else {
+            throw Error.configurationChanged(url)
+        }
+        guard Darwin.rename(temporaryURL.path, destination.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 
     private func removeIntegration(for agent: AgentHarness) throws -> Bool {
@@ -1034,19 +1046,33 @@ public struct LifecycleHookInstaller {
     }
 
     private func removeManagedFiles(at urls: [URL]) throws -> Bool {
-        let existing = urls.filter { fileManager.fileExists(atPath: $0.path) }
-        guard !existing.isEmpty else { return false }
-        for url in existing where !managedFileBelongsToAtoll(at: url) {
-            throw Error.managedFileConflict(url)
+        let snapshots = try urls.compactMap { url -> (url: URL, destination: URL, contents: Data)? in
+            guard let contents = try currentContents(at: url) else { return nil }
+            return (url, url.resolvingSymlinksInPath().standardizedFileURL, contents)
         }
-        for url in existing {
-            try fileManager.removeItem(at: url)
+        guard !snapshots.isEmpty else { return false }
+        for snapshot in snapshots where !managedFileBelongsToAtoll(snapshot.contents) {
+            throw Error.managedFileConflict(snapshot.url)
+        }
+        for snapshot in snapshots {
+            guard snapshot.url.resolvingSymlinksInPath().standardizedFileURL == snapshot.destination,
+                  try currentContents(at: snapshot.url) == snapshot.contents else {
+                throw Error.configurationChanged(snapshot.url)
+            }
+        }
+        for snapshot in snapshots {
+            try fileManager.removeItem(at: snapshot.url)
         }
         return true
     }
 
     private func managedFileBelongsToAtoll(at url: URL) -> Bool {
-        guard let source = try? String(contentsOf: url, encoding: .utf8) else { return false }
+        guard let contents = try? Data(contentsOf: url) else { return false }
+        return managedFileBelongsToAtoll(contents)
+    }
+
+    private func managedFileBelongsToAtoll(_ contents: Data) -> Bool {
+        guard let source = String(data: contents, encoding: .utf8) else { return false }
         return source
             .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
             .first?
@@ -1142,14 +1168,23 @@ public struct LifecycleHookInstaller {
 
     private func validateCodexHooksEnabled() throws {
         let userConfigurationURL = codexConfigurationDirectory.appendingPathComponent("config.toml")
-        for url in [codexRequirementsURL, userConfigurationURL] where fileManager.fileExists(atPath: url.path) {
-            let source = try String(contentsOf: url, encoding: .utf8)
-            if let setting = disabledCodexHooksSetting(in: source) {
-                throw Error.hooksDisabled(url, setting: setting)
+        var managedHooksEnabled = false
+        if fileManager.fileExists(atPath: codexRequirementsURL.path) {
+            let source = try String(contentsOf: codexRequirementsURL, encoding: .utf8)
+            if let setting = codexHooksSetting(in: source) {
+                guard setting.enabled else {
+                    throw Error.hooksDisabled(codexRequirementsURL, setting: setting.name)
+                }
+                managedHooksEnabled = true
             }
-            if url == codexRequirementsURL, managedCodexHooksOnly(in: source) {
-                throw Error.hooksDisabled(url, setting: "allow_managed_hooks_only")
+            if managedCodexHooksOnly(in: source) {
+                throw Error.hooksDisabled(codexRequirementsURL, setting: "allow_managed_hooks_only")
             }
+        }
+        guard !managedHooksEnabled, fileManager.fileExists(atPath: userConfigurationURL.path) else { return }
+        let source = try String(contentsOf: userConfigurationURL, encoding: .utf8)
+        if let setting = codexHooksSetting(in: source), !setting.enabled {
+            throw Error.hooksDisabled(userConfigurationURL, setting: setting.name)
         }
     }
 
@@ -1168,7 +1203,7 @@ public struct LifecycleHookInstaller {
     }
 
     /// Recognizes only the documented feature assignments. It intentionally does not rewrite TOML.
-    private func disabledCodexHooksSetting(in source: String) -> String? {
+    private func codexHooksSetting(in source: String) -> (name: String, enabled: Bool)? {
         enum Section {
             case root
             case features
@@ -1184,20 +1219,28 @@ public struct LifecycleHookInstaller {
                 section = compact == "[features]" ? .features : .other
                 continue
             }
-            if section == .root, compact == "features.hooks=false" {
-                return "features.hooks"
+            let assignments: [(prefix: String, name: String)]
+            switch section {
+            case .root:
+                assignments = [
+                    ("features.hooks=", "features.hooks"),
+                    ("features.codex_hooks=", "features.codex_hooks"),
+                    ("codex_hooks=", "codex_hooks")
+                ]
+            case .features:
+                assignments = [
+                    ("hooks=", "features.hooks"),
+                    ("codex_hooks=", "features.codex_hooks")
+                ]
+            case .other:
+                assignments = []
             }
-            if section == .root, compact == "features.codex_hooks=false" {
-                return "features.codex_hooks"
-            }
-            if section == .features, compact == "hooks=false" {
-                return "features.hooks"
-            }
-            if section == .features, compact == "codex_hooks=false" {
-                return "features.codex_hooks"
-            }
-            if section == .root, compact == "codex_hooks=false" {
-                return "codex_hooks"
+            for assignment in assignments where compact.hasPrefix(assignment.prefix) {
+                switch compact.dropFirst(assignment.prefix.count) {
+                case "true": return (assignment.name, true)
+                case "false": return (assignment.name, false)
+                default: break
+                }
             }
         }
         return nil

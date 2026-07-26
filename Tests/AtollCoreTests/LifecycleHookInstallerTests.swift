@@ -517,6 +517,28 @@ final class LifecycleHookInstallerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: bridge.path))
     }
 
+    func testManagedFileRepairAndRemovalPreserveConcurrentReplacement() throws {
+        let plugin = home.appendingPathComponent(".config/opencode/plugins/atoll.js")
+        let seedInstaller = makeInstaller()
+        try seedInstaller.install(agents: [.opencode])
+        let owned = try String(contentsOf: plugin, encoding: .utf8) + "\n// stale\n"
+        try owned.write(to: plugin, atomically: true, encoding: .utf8)
+        let replacement = Data("// user plugin\n".utf8)
+
+        let repairFileManager = ManagedFileMutationFileManager(target: plugin, replacement: replacement)
+        XCTAssertThrowsError(try makeInstaller(fileManager: repairFileManager).install(agents: [.opencode]))
+        XCTAssertEqual(try Data(contentsOf: plugin), replacement)
+
+        try FileManager.default.removeItem(at: plugin)
+        try seedInstaller.install(agents: [.opencode])
+        let removalFileManager = ManagedFileMutationFileManager(target: plugin, replacement: replacement)
+        let removal = makeInstaller(fileManager: removalFileManager).uninstall(agents: [.opencode])
+        guard case .failed = removal.first?.outcome else {
+            return XCTFail("Expected concurrent replacement to stop removal")
+        }
+        XCTAssertEqual(try Data(contentsOf: plugin), replacement)
+    }
+
     func testPiVersionCommandTimesOutWithinBound() throws {
         let bin = home.appendingPathComponent("bin")
         let pi = bin.appendingPathComponent("pi")
@@ -647,6 +669,22 @@ final class LifecycleHookInstallerTests: XCTestCase {
             codexRequirementsURL: requirements
         ).diagnostic(for: .codex, socketAvailable: true, lastValidEventAt: Date())
         XCTAssertEqual(diagnostic.shadowing, .notDetected)
+
+        let userConfig = home.appendingPathComponent(".codex/config.toml")
+        try FileManager.default.createDirectory(at: userConfig.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "[features]\nhooks = false\n".write(to: userConfig, atomically: true, encoding: .utf8)
+        try "[features]\nhooks = true\n".write(to: requirements, atomically: true, encoding: .utf8)
+        let managedInstaller = makeInstaller(
+            environment: ["PATH": bin.path],
+            codexRequirementsURL: requirements
+        )
+        diagnostic = managedInstaller.diagnostic(
+            for: .codex,
+            socketAvailable: true,
+            lastValidEventAt: Date()
+        )
+        XCTAssertEqual(diagnostic.integration, .missing)
+        XCTAssertTrue(diagnostic.canRepair)
     }
 
     private func hook(_ harness: String, _ kind: String) -> String {
@@ -723,6 +761,28 @@ private final class BackupMutationFileManager: FileManager {
             didMutate = true
             try replacement.write(to: configurationURL, options: .atomic)
         }
+    }
+}
+
+private final class ManagedFileMutationFileManager: FileManager {
+    private let target: URL
+    private let replacement: Data
+    private var targetChecks = 0
+
+    init(target: URL, replacement: Data) {
+        self.target = target
+        self.replacement = replacement
+        super.init()
+    }
+
+    override func fileExists(atPath path: String) -> Bool {
+        if path == target.path {
+            targetChecks += 1
+            if targetChecks == 2 {
+                try? replacement.write(to: target, options: .atomic)
+            }
+        }
+        return super.fileExists(atPath: path)
     }
 }
 

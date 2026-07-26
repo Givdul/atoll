@@ -85,6 +85,7 @@ public struct LifecycleEventQueue: Sendable {
                     try? FileManager.default.removeItem(at: file)
                     return nil
                 }
+                let receivedAt = (try? file.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
                 guard let sanitizedLine = event.jsonLine() else { return nil }
                 if sanitizedLine != line {
                     do {
@@ -93,7 +94,6 @@ public struct LifecycleEventQueue: Sendable {
                         return nil
                     }
                 }
-                let receivedAt = (try? file.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
                 return QueuedLifecycleEvent(event: event, receivedAt: receivedAt, fileURL: file)
             }
     }
