@@ -112,6 +112,7 @@ final class PrivateStorageTests: XCTestCase {
         let settings = SettingsStore(homeDirectory: homeDirectory).load()
 
         XCTAssertTrue(settings.enabled)
+        XCTAssertFalse(settings.notificationsEnabled)
         XCTAssertEqual(try Data(contentsOf: config), malformed)
         XCTAssertEqual(try permissions(of: root), 0o700)
         XCTAssertEqual(try permissions(of: config), 0o600)
@@ -119,13 +120,29 @@ final class PrivateStorageTests: XCTestCase {
 
     func testSettingsSaveUsesUserOnlyModes() throws {
         let store = SettingsStore(homeDirectory: homeDirectory)
-        store.save(AtollSettings(enabled: false, screenMode: "primary", testMode: true))
+        store.save(AtollSettings(
+            enabled: false,
+            notificationsEnabled: true,
+            screenMode: "primary",
+            testMode: true
+        ))
 
         let root = homeDirectory.appendingPathComponent(".atoll", isDirectory: true)
         let config = root.appendingPathComponent("config.json")
         XCTAssertEqual(try permissions(of: root), 0o700)
         XCTAssertEqual(try permissions(of: config), 0o600)
-        XCTAssertFalse(store.load().enabled)
+        let settings = store.load()
+        XCTAssertFalse(settings.enabled)
+        XCTAssertTrue(settings.notificationsEnabled)
+    }
+
+    func testLegacySettingsDefaultNotificationsOff() throws {
+        let root = homeDirectory.appendingPathComponent(".atoll", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data(#"{"enabled":false,"screenMode":"primary","testMode":true}"#.utf8)
+            .write(to: root.appendingPathComponent("config.json"))
+
+        XCTAssertFalse(SettingsStore(homeDirectory: homeDirectory).load().notificationsEnabled)
     }
 
     func testAtomicWriteSupportsAnExistingPrivateParentDirectory() throws {

@@ -7,6 +7,7 @@ protocol StatusMenuControllerDelegate: AnyObject {
     func refreshNow()
     func showLifecycleSetup()
     func setEnabled(_ enabled: Bool)
+    func setNotificationsEnabled(_ enabled: Bool)
     func setTestMode(_ testMode: Bool)
     var canCheckForUpdates: Bool { get }
     func checkForUpdates()
@@ -48,6 +49,15 @@ final class StatusMenuController {
         enabled.target = self
         enabled.state = state.settings.enabled ? .on : .off
         menu.addItem(enabled)
+
+        let notifications = NSMenuItem(
+            title: "Notifications",
+            action: #selector(toggleNotifications(_:)),
+            keyEquivalent: ""
+        )
+        notifications.target = self
+        notifications.state = state.settings.notificationsEnabled ? .on : .off
+        menu.addItem(notifications)
 
         let testMode = NSMenuItem(
             title: "Test Mode",
@@ -110,6 +120,10 @@ final class StatusMenuController {
 
     @objc private func toggleEnabled(_ sender: NSMenuItem) {
         delegate?.setEnabled(!state.settings.enabled)
+    }
+
+    @objc private func toggleNotifications(_ sender: NSMenuItem) {
+        delegate?.setNotificationsEnabled(!state.settings.notificationsEnabled)
     }
 
     @objc private func toggleTestMode(_ sender: NSMenuItem) {
