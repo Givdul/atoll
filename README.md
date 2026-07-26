@@ -2,7 +2,7 @@
 
 Atoll is a native macOS menu-bar app that shows a Dynamic-Island-style capsule for local coding agents.
 
-It is event-driven: native agent hooks send lifecycle events to a user-only local Unix socket. Atoll persists only the resulting session state; it never infers a live run from transcript age, process names, or lock files.
+It is event-driven: native agent hooks send minimal lifecycle events to a user-only local Unix socket. Atoll never infers a live run from transcript age, process names, or lock files.
 
 ## Lifecycle model
 
@@ -13,6 +13,12 @@ It is event-driven: native agent hooks send lifecycle events to a user-only loca
 - Active events expire after ten minutes of local inactivity. Terminal rows receive a perceptible local dwell, while retained tombstones suppress late cleanup events and repeated completion notifications.
 - Provider clocks are used for ordering only after future-skew clamping; they cannot keep a session alive or make a delayed terminal disappear instantly.
 - When a hook originates inside a regular macOS application, its session row opens that application. Atoll reactivates the captured process when possible, falls back to the same bundle identifier after an app restart, and leaves genuinely headless sessions noninteractive; it does not navigate to a specific thread, window, tab, or pane.
+
+## Lifecycle privacy
+
+Atoll retains only the agent provider, provider session ID, normalized state, provider and local ordering/delivery timestamps, a project-folder label (or `"<Provider> session"`), and the complete origin process-ID/bundle-ID pair used by click-to-return. Delivery identities are Atoll-generated IDs or SHA-256 digests used for replay deduplication.
+
+Provider hook payloads may include prompts or other content on standard input. Atoll discards that content while normalizing the event, so it never enters Atoll's socket protocol, durable queue, registry, UI, logs, or uploads. This includes provider messages and reasons, responses, commands, transcripts, diffs, environment values, model identifiers, and full working-directory paths; the project label is derived locally from only the working directory's final component.
 
 ## Native hook integrations
 
@@ -33,7 +39,7 @@ See [Live Status Support](LIVE_STATUS_SUPPORT.md) for the source-linked event co
 The supported harnesses can also send the same normalized protocol through the Atoll executable:
 
 ```sh
-printf '%s' '{"session_id":"session-123","cwd":"/path/to/project","prompt":"Fix auth"}' \
+printf '%s' '{"session_id":"session-123","cwd":"/path/to/project"}' \
   | /Applications/Atoll.app/Contents/MacOS/Atoll --lifecycle-event codex started
 ```
 

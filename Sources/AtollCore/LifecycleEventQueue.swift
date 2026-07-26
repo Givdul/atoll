@@ -78,6 +78,14 @@ public struct LifecycleEventQueue: Sendable {
                     try? FileManager.default.removeItem(at: file)
                     return nil
                 }
+                guard let sanitizedLine = event.jsonLine() else { return nil }
+                if sanitizedLine != line {
+                    do {
+                        try PrivateStorage.writeAtomically(Data(sanitizedLine.utf8), to: file)
+                    } catch {
+                        return nil
+                    }
+                }
                 return QueuedLifecycleEvent(event: event, fileURL: file)
             }
     }

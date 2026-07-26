@@ -574,7 +574,7 @@ private struct SessionBubbleRow: View {
                 decoratedRow
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Open application for \(displayTitle)")
+            .accessibilityLabel("Open application for \(session.label)")
         } else {
             decoratedRow
                 .allowsHitTesting(false)
@@ -652,7 +652,7 @@ private struct SessionBubbleRow: View {
             HStack(spacing: 9 * metrics.scale) {
                 iconWell
 
-                Text(displayTitle)
+                Text(session.label)
                     .font(.system(size: metrics.titleFontSize, weight: appearance.titleWeight, design: .rounded))
                     .foregroundStyle(titleForeground)
                     .lineLimit(1)
@@ -842,10 +842,6 @@ private struct SessionBubbleRow: View {
 
     private var appearance: SessionRowAppearance {
         SessionRowAppearance(state: session.state)
-    }
-
-    private var displayTitle: String {
-        session.prompt ?? session.title
     }
 
     private var statusSymbolName: String {
