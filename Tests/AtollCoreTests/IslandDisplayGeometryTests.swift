@@ -42,6 +42,7 @@ final class IslandDisplayGeometryTests: XCTestCase {
         XCTAssertEqual(ScreenTargetResolver.index(screenMode: "primary", screenFrames: frames, pointerLocation: .zero), 0)
         XCTAssertEqual(ScreenTargetResolver.index(screenMode: "2", screenFrames: frames, pointerLocation: .zero), 1)
         XCTAssertEqual(ScreenTargetResolver.index(screenMode: "3", screenFrames: frames, pointerLocation: .zero), 0)
+        XCTAssertEqual(ScreenTargetResolver.index(screenMode: String(Int.min), screenFrames: frames, pointerLocation: .zero), 0)
     }
 
     func testActiveScreenTargetFollowsPointerAndSurvivesDisconnect() {

@@ -37,7 +37,7 @@ public enum ScreenTargetResolver {
             return screenFrames.firstIndex { $0.contains(pointerLocation) } ?? 0
         }
 
-        if let selectedIndex = Int(screenMode),
+        if let selectedIndex = Int(screenMode), selectedIndex > 0,
            screenFrames.indices.contains(selectedIndex - 1) {
             return selectedIndex - 1
         }

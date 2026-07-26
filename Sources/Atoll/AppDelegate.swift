@@ -38,7 +38,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
         NSApp.applicationIconImage = AtollIcon.appIconImage()
 
         statusController = StatusMenuController(state: state, delegate: self)
-        islandController = IslandWindowController(state: state)
+        islandController = IslandWindowController(state: state) { [weak self] in
+            self?.statusController?.refreshMenu()
+        }
         if canCheckForUpdates {
             updaterController.startUpdater()
         }

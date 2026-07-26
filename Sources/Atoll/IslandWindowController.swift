@@ -21,6 +21,7 @@ final class IslandWindowController {
     }
 
     private let state: AppState
+    private let availabilityDidChange: () -> Void
     private let window: IslandPanel
     private var hostingView: NSHostingView<IslandView>?
     private let hostSize = NSSize(width: 440, height: 340)
@@ -30,8 +31,9 @@ final class IslandWindowController {
     private var localMouseMonitor: Any?
     private var targetDisplay: TargetDisplay?
 
-    init(state: AppState) {
+    init(state: AppState, availabilityDidChange: @escaping () -> Void = {}) {
         self.state = state
+        self.availabilityDidChange = availabilityDidChange
         self.window = IslandPanel(
             contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -74,7 +76,10 @@ final class IslandWindowController {
     func syncVisibility(mouseLocation: NSPoint = NSEvent.mouseLocation) {
         updateTargetDisplay(for: mouseLocation)
         let canShowIsland = state.settings.enabled && targetDisplay?.metrics != nil
-        state.isIslandAvailable = canShowIsland
+        if state.isIslandAvailable != canShowIsland {
+            state.isIslandAvailable = canShowIsland
+            availabilityDidChange()
+        }
 
         guard canShowIsland else {
             hideImmediately()
