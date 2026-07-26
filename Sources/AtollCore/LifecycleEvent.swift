@@ -70,8 +70,18 @@ public struct LifecycleEvent: Hashable, Sendable {
         self.kind = kind
         self.timestamp = timestamp
         self.label = Self.sanitizedLabel(label) ?? "\(harness.displayName) session"
-        self.originProcessID = originProcessID
-        self.originBundleIdentifier = originBundleIdentifier
+        let normalizedBundleIdentifier = originBundleIdentifier?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let originProcessID,
+           originProcessID > 0,
+           let normalizedBundleIdentifier,
+           !normalizedBundleIdentifier.isEmpty {
+            self.originProcessID = originProcessID
+            self.originBundleIdentifier = normalizedBundleIdentifier
+        } else {
+            self.originProcessID = nil
+            self.originBundleIdentifier = nil
+        }
         self.deliveryID = deliveryID
         self.legacyDeliveryIdentity = nil
     }
@@ -266,8 +276,8 @@ public struct LifecycleEvent: Hashable, Sendable {
     /// key. This also migrates `lastEventKey` values written before the receipt
     /// ledger used digests.
     static func deliveryIdentity(forCanonicalRepresentation representation: String) -> String {
-        if representation.hasPrefix("sha256:"), representation.count == 71 {
-            return representation
+        if let identity = validatedDeliveryIdentity(representation) {
+            return identity
         }
         let digest = SHA256.hash(data: Data(representation.utf8))
         return "sha256:" + digest.map { String(format: "%02x", $0) }.joined()
@@ -276,8 +286,8 @@ public struct LifecycleEvent: Hashable, Sendable {
     /// Migrates either the former canonical JSON key or an already-digested key
     /// without hashing a digest a second time.
     static func migratedDeliveryIdentity(_ legacyKey: String) -> String {
-        if legacyKey.hasPrefix("sha256:"), legacyKey.count == 71 {
-            return legacyKey
+        if let identity = validatedDeliveryIdentity(legacyKey) {
+            return identity
         }
         if let legacyEvent = LifecycleEvent.parse(jsonLine: legacyKey) {
             return legacyEvent.deliveryIdentity

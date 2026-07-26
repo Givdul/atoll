@@ -168,6 +168,56 @@ final class LifecycleEventTests: XCTestCase {
         XCTAssertEqual(parsed.originBundleIdentifier, "com.apple.Terminal")
     }
 
+    func testIncompleteOriginMetadataIsDroppedFromQueueAndLegacyRegistry() throws {
+        let queue = LifecycleEventQueue(homeDirectory: directory)
+        XCTAssertNotNil(queue.enqueue(LifecycleEvent(
+            sessionID: "pid-only",
+            harness: .codex,
+            kind: .started,
+            originProcessID: 123
+        )))
+        XCTAssertNotNil(queue.enqueue(LifecycleEvent(
+            sessionID: "bundle-only",
+            harness: .codex,
+            kind: .started,
+            originBundleIdentifier: "com.apple.Terminal"
+        )))
+        let queuedEvents = queue.pendingEvents().map(\.event)
+        XCTAssertEqual(queuedEvents.count, 2)
+        XCTAssertTrue(queuedEvents.allSatisfy {
+            $0.originProcessID == nil && $0.originBundleIdentifier == nil
+        })
+
+        let now = Date()
+        let store = directory.appendingPathComponent("legacy-registry.json")
+        let legacyRecords: [[String: Any]] = [
+            [
+                "sessionID": "pid-only",
+                "harness": "codex",
+                "state": "running",
+                "updatedAt": now.timeIntervalSinceReferenceDate,
+                "originProcessID": 123
+            ],
+            [
+                "sessionID": "bundle-only",
+                "harness": "codex",
+                "state": "running",
+                "updatedAt": now.timeIntervalSinceReferenceDate,
+                "originBundleIdentifier": "com.apple.Terminal"
+            ]
+        ]
+        try JSONSerialization.data(withJSONObject: legacyRecords).write(to: store)
+
+        let sessions = LifecycleSessionRegistry(fileURL: store).sessions(now: now)
+        XCTAssertEqual(sessions.count, 2)
+        XCTAssertTrue(sessions.allSatisfy {
+            $0.originProcessID == nil && $0.originBundleIdentifier == nil
+        })
+        let migrated = try XCTUnwrap(String(data: Data(contentsOf: store), encoding: .utf8))
+        XCTAssertFalse(migrated.contains("originProcessID"))
+        XCTAssertFalse(migrated.contains("originBundleIdentifier"))
+    }
+
     func testTransportIdentityDistinguishesIdenticalInvocationsAndSurvivesRoundTrip() throws {
         let timestamp = Date(timeIntervalSince1970: 1_000)
         let first = LifecycleEvent(
@@ -205,6 +255,16 @@ final class LifecycleEventTests: XCTestCase {
         XCTAssertNil(firstParse.deliveryID)
         XCTAssertNil(secondParse.deliveryID)
         XCTAssertEqual(firstParse.deliveryIdentity, secondParse.deliveryIdentity)
+    }
+
+    func testMalformedLegacyDeliveryDigestIsRehashed() {
+        let malformed = "sha256:" + String(repeating: "x", count: 64)
+        let migrated = LifecycleEvent.migratedDeliveryIdentity(malformed)
+
+        XCTAssertNotEqual(migrated, malformed)
+        XCTAssertEqual(migrated.count, 71)
+        XCTAssertTrue(migrated.hasPrefix("sha256:"))
+        XCTAssertTrue(migrated.dropFirst(7).allSatisfy(\.isHexDigit))
     }
 
     func testCursorTerminalStatusSelectsOfficialOutcome() throws {

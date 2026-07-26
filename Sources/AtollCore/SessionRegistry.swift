@@ -366,21 +366,6 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
               let decoded = try? JSONDecoder().decode([LossyRecord].self, from: data) else {
             return ([:], false)
         }
-        let rawRecords = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] ?? []
-        let legacyContentKeys: Set<String> = [
-            "title", "detail", "prompt", "projectPath", "project_path", "model",
-            "lastToolCall", "message", "reason", "response", "command", "transcript",
-            "diff", "environment"
-        ]
-        let needsRewrite = rawRecords.contains { record in
-            !legacyContentKeys.isDisjoint(with: record.keys)
-                || record["label"] == nil
-                || record["lastEventKey"] != nil
-                || ((record["recentDeliveries"] as? [[String: Any]])?.contains { receipt in
-                    guard let identity = receipt["identity"] as? String else { return true }
-                    return !identity.hasPrefix("sha256:") || identity.count != 71
-                } ?? false)
-        }
         let now = Date()
         let records = decoded.compactMap(\.value).map { decodedRecord in
             var record = decodedRecord
@@ -408,9 +393,17 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
             record.lastEventKey = nil
             record.recentDeliveries = deliveries.isEmpty ? nil : deliveries
             record.label = record.label ?? "\(record.harness.displayName) session"
+            let bundleIdentifier = record.originBundleIdentifier?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if (record.originProcessID ?? 0) <= 0 || bundleIdentifier?.isEmpty != false {
+                record.originProcessID = nil
+                record.originBundleIdentifier = nil
+            } else {
+                record.originBundleIdentifier = bundleIdentifier
+            }
             return record
         }
-        return (Dictionary(uniqueKeysWithValues: records.map { ($0.key, $0) }), needsRewrite)
+        return (Dictionary(uniqueKeysWithValues: records.map { ($0.key, $0) }), true)
     }
 
     @discardableResult
