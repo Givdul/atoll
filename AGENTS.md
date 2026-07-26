@@ -8,6 +8,7 @@
 - Do not delegate trivial tasks, work on the immediate critical path, or tightly coupled tasks that require continuous local judgment.
 - When a subagent is no longer needed, clean it up promptly.
 - After each fix, rebuild the release app into `/Applications` with `./Scripts/build-release.sh --install`, then restart Atoll from `/Applications/Atoll.app`.
+- Always verify UI changes in the installed app with screenshots as well; capture and inspect the relevant states before considering the change complete.
 
 ## Commit and Publish Workflow
 
