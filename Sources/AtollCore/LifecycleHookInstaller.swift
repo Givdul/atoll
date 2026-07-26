@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -7,6 +8,17 @@ public struct LifecycleHookInstaller {
         case notConfigured
         case configured
         case invalidConfiguration(String)
+    }
+
+    public enum RemovalOutcome: Equatable, Sendable {
+        case removed
+        case notInstalled
+        case failed(String)
+    }
+
+    public struct RemovalResult: Equatable, Sendable {
+        public let agent: AgentHarness
+        public let outcome: RemovalOutcome
     }
 
     public static let supportedAgents: [AgentHarness] = [
@@ -20,6 +32,9 @@ public struct LifecycleHookInstaller {
         case commandFailed(String)
         case unsupportedPiVersion(installed: String, minimum: String)
         case unreadablePiVersion(minimum: String, detail: String)
+        case invalidBackup(URL)
+        case unsupportedAgent(AgentHarness)
+        case configurationChanged(URL)
 
         public var errorDescription: String? {
             switch self {
@@ -30,6 +45,9 @@ public struct LifecycleHookInstaller {
             case .commandFailed(let detail): "Cannot finish setup: \(detail)"
             case .unsupportedPiVersion(let installed, let minimum): "Pi \(minimum) or newer is required for Live Status; found \(installed)."
             case .unreadablePiVersion(let minimum, let detail): "Pi \(minimum) or newer is required for Live Status, but Atoll could not verify it: \(detail)"
+            case .invalidBackup(let url): "Cannot update Live Status because its recovery backup at \(url.path) is invalid."
+            case .unsupportedAgent(let agent): "\(agent.displayName) is not a supported Live Status integration."
+            case .configurationChanged(let url): "\(url.path) changed during setup. Atoll left it untouched; try again."
             }
         }
     }
@@ -81,6 +99,77 @@ public struct LifecycleHookInstaller {
         }
     }
 
+    public func uninstall() -> [RemovalResult] {
+        uninstall(agents: Self.supportedAgents)
+    }
+
+    public func uninstall(agents: [AgentHarness]) -> [RemovalResult] {
+        var results = agents.map { agent in
+            do {
+                return RemovalResult(
+                    agent: agent,
+                    outcome: try removeIntegration(for: agent) ? .removed : .notInstalled
+                )
+            } catch {
+                return RemovalResult(agent: agent, outcome: .failed(error.localizedDescription))
+            }
+        }
+
+        if !supportedIntegrationReferencesBridge(), fileManager.fileExists(atPath: bridgeURL.path) {
+            do {
+                try fileManager.removeItem(at: bridgeURL)
+            } catch {
+                if let index = results.indices.last,
+                   case .failed = results[index].outcome {
+                    // Keep the provider-specific failure, which is more actionable.
+                } else if let index = results.indices.last {
+                    results[index] = RemovalResult(
+                        agent: results[index].agent,
+                        outcome: .failed("The integration was removed, but Atoll could not remove its unused bridge: \(error.localizedDescription)")
+                    )
+                }
+            }
+        }
+        return results
+    }
+
+    public func hasIntegration(for agent: AgentHarness) -> Bool {
+        switch agent {
+        case .pi:
+            return managedFileBelongsToAtoll(at: piExtensionURL)
+        case .opencode:
+            return managedFileBelongsToAtoll(at: openCodePluginURL)
+                || managedFileBelongsToAtoll(at: legacyOpenCodePluginURL)
+        case .claude, .codex, .cursor:
+            let url = configurationURL(for: agent)
+            guard let root = try? jsonObject(at: url),
+                  let hooks = root["hooks"] as? [String: Any] else {
+                return fileReferencesBridge(url)
+            }
+            return hookMap(hooks, containsAny: ownedCommands(for: agent), grouped: agent != .cursor)
+                || fileReferencesBridge(url)
+        default:
+            return false
+        }
+    }
+
+    public func canUninstall(for agent: AgentHarness) -> Bool {
+        if hasIntegration(for: agent) { return true }
+        switch agent {
+        case .pi:
+            return fileManager.fileExists(atPath: piExtensionURL.path)
+        case .opencode:
+            return fileManager.fileExists(atPath: openCodePluginURL.path)
+                || fileManager.fileExists(atPath: legacyOpenCodePluginURL.path)
+        case .claude, .codex, .cursor:
+            let url = configurationURL(for: agent)
+            guard fileManager.fileExists(atPath: url.path) else { return false }
+            return (try? jsonObject(at: url)) == nil
+        default:
+            return false
+        }
+    }
+
     public func detectedAgents() -> [AgentHarness] {
         Self.supportedAgents.filter { configurationDirectory(for: $0).map { fileManager.fileExists(atPath: $0.path) } == true || commandNames(for: $0).contains(where: commandIsAvailable) }
     }
@@ -113,6 +202,23 @@ public struct LifecycleHookInstaller {
     }
 
     private var bridgeURL: URL { homeDirectory.appendingPathComponent(".atoll/bin/atoll-hook") }
+
+    private struct SharedConfigurationIdentity: Codable {
+        let provider: String
+        let originalPath: String
+    }
+
+    private struct SharedConfigurationBackup: Codable {
+        let provider: String
+        let originalPath: String
+        let contents: Data
+    }
+
+    private struct JSONConfigurationSnapshot {
+        let root: [String: Any]
+        let contents: Data?
+        let destinationURL: URL
+    }
 
     private func configurationURL(for agent: AgentHarness) -> URL {
         switch agent {
@@ -255,12 +361,17 @@ public struct LifecycleHookInstaller {
         }
     }
 
-    private func validateHookConfiguration(_ root: [String: Any], for agent: AgentHarness, at url: URL) throws {
+    private func validateHookConfiguration(
+        _ root: [String: Any],
+        for agent: AgentHarness,
+        at url: URL,
+        allowDisabled: Bool = false
+    ) throws {
         if agent == .claude, root["disableAllHooks"] != nil {
             guard let disabled = root["disableAllHooks"] as? Bool else {
                 throw Error.invalidHookConfiguration(url)
             }
-            if disabled { throw Error.hooksDisabled(url, setting: "disableAllHooks") }
+            if disabled && !allowDisabled { throw Error.hooksDisabled(url, setting: "disableAllHooks") }
         }
         if agent == .cursor, let version = root["version"], version as? Int != 1 {
             throw Error.invalidHookConfiguration(url)
@@ -455,7 +566,8 @@ public struct LifecycleHookInstaller {
         events: [(String, String)],
         removing removedEvents: [(String, String)] = []
     ) throws {
-        var root = try jsonObject(at: url)
+        let snapshot = try jsonConfiguration(at: url)
+        var root = snapshot.root
         try validateHookConfiguration(root, for: agent, at: url)
         let value = root["hooks"] ?? [String: Any]()
         guard var hooks = value as? [String: Any] else { throw Error.invalidHookConfiguration(url) }
@@ -473,7 +585,7 @@ public struct LifecycleHookInstaller {
         }
         root["version"] = root["version"] ?? 1
         root["hooks"] = hooks
-        try write(root, to: url)
+        try writeMergedConfiguration(root, snapshot: snapshot, for: agent, at: url)
     }
 
     private func writePiExtension() throws {
@@ -670,6 +782,122 @@ public struct LifecycleHookInstaller {
         try source.write(to: url, atomically: true, encoding: .utf8)
     }
 
+    private func removeIntegration(for agent: AgentHarness) throws -> Bool {
+        guard Self.supportedAgents.contains(agent) else { throw Error.unsupportedAgent(agent) }
+        switch agent {
+        case .pi:
+            return try removeManagedFiles(at: [piExtensionURL])
+        case .opencode:
+            return try removeManagedFiles(at: [openCodePluginURL, legacyOpenCodePluginURL])
+        case .claude, .codex, .cursor:
+            return try removeOwnedHooks(for: agent)
+        default:
+            return false
+        }
+    }
+
+    private func removeOwnedHooks(for agent: AgentHarness) throws -> Bool {
+        let url = configurationURL(for: agent)
+        guard fileManager.fileExists(atPath: url.path) else { return false }
+        let snapshot = try jsonConfiguration(at: url)
+        var root = snapshot.root
+        try validateHookConfiguration(root, for: agent, at: url, allowDisabled: true)
+        guard var hooks = root["hooks"] as? [String: Any] else { return false }
+
+        var removed = false
+        for event in Array(hooks.keys) {
+            for command in ownedCommands(for: agent) {
+                if agent == .cursor {
+                    if try removeFlatCommand(from: &hooks, event: event, command: command) {
+                        removed = true
+                    }
+                } else if try removeGroupedCommand(from: &hooks, event: event, command: command) {
+                    removed = true
+                }
+            }
+        }
+        guard removed else { return false }
+        root["hooks"] = hooks
+        try write(root, snapshot: snapshot, at: url)
+        return true
+    }
+
+    private func removeManagedFiles(at urls: [URL]) throws -> Bool {
+        let existing = urls.filter { fileManager.fileExists(atPath: $0.path) }
+        guard !existing.isEmpty else { return false }
+        for url in existing where !managedFileBelongsToAtoll(at: url) {
+            throw Error.managedFileConflict(url)
+        }
+        for url in existing {
+            try fileManager.removeItem(at: url)
+        }
+        return true
+    }
+
+    private func managedFileBelongsToAtoll(at url: URL) -> Bool {
+        guard let source = try? String(contentsOf: url, encoding: .utf8) else { return false }
+        return source
+            .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+            .first?
+            .contains(managedMarker) == true
+    }
+
+    private func ownedCommands(for agent: AgentHarness) -> Set<String> {
+        Set(LifecycleEventKind.allCases.map {
+            hookCommand(harness: agent.rawValue, kind: $0.rawValue)
+        })
+    }
+
+    private func hookMap(_ hooks: [String: Any], containsAny commands: Set<String>, grouped: Bool) -> Bool {
+        hooks.values.contains { value in
+            if grouped {
+                guard let groups = value as? [[String: Any]] else { return false }
+                return groups.contains { group in
+                    guard let handlers = group["hooks"] as? [[String: Any]] else { return false }
+                    return handlers.contains {
+                        $0["type"] as? String == "command"
+                            && ($0["command"] as? String).map(commands.contains) == true
+                    }
+                }
+            }
+            guard let entries = value as? [[String: Any]] else { return false }
+            return entries.contains { ($0["command"] as? String).map(commands.contains) == true }
+        }
+    }
+
+    private func supportedIntegrationReferencesBridge() -> Bool {
+        Self.supportedAgents.contains { agent in
+            switch agent {
+            case .opencode:
+                return fileReferencesBridge(openCodePluginURL)
+                    || fileReferencesBridge(legacyOpenCodePluginURL)
+            default:
+                return fileReferencesBridge(configurationURL(for: agent))
+            }
+        }
+    }
+
+    private func fileReferencesBridge(_ url: URL) -> Bool {
+        guard fileManager.fileExists(atPath: url.path) else { return false }
+        guard let data = try? Data(contentsOf: url) else { return true }
+        if let object = try? JSONSerialization.jsonObject(with: data),
+           jsonValueReferencesBridge(object) {
+            return true
+        }
+        guard let source = String(data: data, encoding: .utf8) else { return true }
+        return source.contains(bridgeURL.path)
+            || source.contains(bridgeURL.path.replacingOccurrences(of: "/", with: #"\/"#))
+    }
+
+    private func jsonValueReferencesBridge(_ value: Any) -> Bool {
+        if let string = value as? String { return string.contains(bridgeURL.path) }
+        if let array = value as? [Any] { return array.contains(where: jsonValueReferencesBridge) }
+        if let dictionary = value as? [String: Any] {
+            return dictionary.values.contains(where: jsonValueReferencesBridge)
+        }
+        return false
+    }
+
     private func javaScriptString(_ value: String) -> String {
         "\"\(value.replacingOccurrences(of: "\\\\", with: "\\\\\\\\").replacingOccurrences(of: "\"", with: "\\\\\""))\""
     }
@@ -746,27 +974,150 @@ public struct LifecycleHookInstaller {
     }
 
     private func mergeSettings(at url: URL, agent: AgentHarness, update: (inout [String: Any]) throws -> Void) throws {
-        var root = try jsonObject(at: url)
+        let snapshot = try jsonConfiguration(at: url)
+        var root = snapshot.root
         try validateHookConfiguration(root, for: agent, at: url)
         let value = root["hooks"] ?? [String: Any]()
         guard var hooks = value as? [String: Any] else { throw Error.invalidHookConfiguration(url) }
         try update(&hooks)
         root["hooks"] = hooks
-        try write(root, to: url)
+        try writeMergedConfiguration(root, snapshot: snapshot, for: agent, at: url)
     }
 
-    private func jsonObject(at url: URL) throws -> [String: Any] {
-        guard fileManager.fileExists(atPath: url.path) else { return [:] }
+    private func writeMergedConfiguration(
+        _ root: [String: Any],
+        snapshot: JSONConfigurationSnapshot,
+        for agent: AgentHarness,
+        at url: URL
+    ) throws {
+        let newAbsenceMarker = try backupSharedConfigurationIfNeeded(
+            for: agent,
+            at: url,
+            originalContents: snapshot.contents
+        )
+        do {
+            try write(root, snapshot: snapshot, at: url)
+        } catch {
+            if let newAbsenceMarker { try? fileManager.removeItem(at: newAbsenceMarker) }
+            throw error
+        }
+    }
+
+    private func backupSharedConfigurationIfNeeded(
+        for agent: AgentHarness,
+        at url: URL,
+        originalContents: Data?
+    ) throws -> URL? {
+        let pathDigest = SHA256.hash(data: Data(url.path.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let directory = homeDirectory.appendingPathComponent(".atoll/backups/live-status", isDirectory: true)
+        let backupURL = directory.appendingPathComponent("\(agent.rawValue)-\(pathDigest).json")
+        let absentURL = directory.appendingPathComponent("\(agent.rawValue)-\(pathDigest).absent")
+
+        if fileManager.fileExists(atPath: backupURL.path) {
+            try PrivateStorage.ensureDirectory(at: directory, fileManager: fileManager)
+            try PrivateStorage.hardenFile(at: backupURL, fileManager: fileManager)
+            guard let data = try? Data(contentsOf: backupURL),
+                  let backup = try? JSONDecoder().decode(SharedConfigurationBackup.self, from: data),
+                  backup.provider == agent.rawValue,
+                  backup.originalPath == url.path else {
+                throw Error.invalidBackup(backupURL)
+            }
+            return nil
+        }
+
+        if fileManager.fileExists(atPath: absentURL.path) {
+            try PrivateStorage.ensureDirectory(at: directory, fileManager: fileManager)
+            try PrivateStorage.hardenFile(at: absentURL, fileManager: fileManager)
+            guard let data = try? Data(contentsOf: absentURL),
+                  let identity = try? JSONDecoder().decode(SharedConfigurationIdentity.self, from: data),
+                  identity.provider == agent.rawValue,
+                  identity.originalPath == url.path else {
+                throw Error.invalidBackup(absentURL)
+            }
+            return nil
+        }
+
+        guard let originalContents else {
+            try PrivateStorage.writeAtomically(
+                try JSONEncoder().encode(
+                    SharedConfigurationIdentity(provider: agent.rawValue, originalPath: url.path)
+                ),
+                to: absentURL,
+                fileManager: fileManager,
+                hardenDirectory: true
+            )
+            return absentURL
+        }
+
+        let backup = SharedConfigurationBackup(
+            provider: agent.rawValue,
+            originalPath: url.path,
+            contents: originalContents
+        )
+        try PrivateStorage.writeAtomically(
+            try JSONEncoder().encode(backup),
+            to: backupURL,
+            fileManager: fileManager,
+            hardenDirectory: true
+        )
+        return nil
+    }
+
+    private func jsonConfiguration(at url: URL) throws -> JSONConfigurationSnapshot {
+        let destinationURL = url.resolvingSymlinksInPath().standardizedFileURL
+        if (try? fileManager.destinationOfSymbolicLink(atPath: url.path)) != nil,
+           !fileManager.fileExists(atPath: destinationURL.path) {
+            throw Error.invalidHookConfiguration(url)
+        }
+        guard fileManager.fileExists(atPath: url.path) else {
+            return JSONConfigurationSnapshot(root: [:], contents: nil, destinationURL: destinationURL)
+        }
         guard let data = try? Data(contentsOf: url),
               let object = try? JSONSerialization.jsonObject(with: data),
               let dictionary = object as? [String: Any] else { throw Error.invalidJSON(url) }
-        return dictionary
+        return JSONConfigurationSnapshot(root: dictionary, contents: data, destinationURL: destinationURL)
     }
 
-    private func write(_ object: [String: Any], to url: URL) throws {
-        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    private func jsonObject(at url: URL) throws -> [String: Any] {
+        try jsonConfiguration(at: url).root
+    }
+
+    private func write(
+        _ object: [String: Any],
+        snapshot: JSONConfigurationSnapshot,
+        at url: URL
+    ) throws {
+        guard url.resolvingSymlinksInPath().standardizedFileURL == snapshot.destinationURL,
+              try currentContents(at: url) == snapshot.contents else {
+            throw Error.configurationChanged(url)
+        }
+
+        let destination = snapshot.destinationURL
+        let directory = destination.deletingLastPathComponent()
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
-        try data.write(to: url, options: .atomic)
+        let temporaryURL = directory.appendingPathComponent(".\(UUID().uuidString).tmp")
+        defer { try? fileManager.removeItem(at: temporaryURL) }
+        try data.write(to: temporaryURL)
+
+        if let permissions = try? fileManager.attributesOfItem(atPath: destination.path)[.posixPermissions] {
+            try fileManager.setAttributes([.posixPermissions: permissions], ofItemAtPath: temporaryURL.path)
+        }
+
+        guard url.resolvingSymlinksInPath().standardizedFileURL == destination,
+              try currentContents(at: url) == snapshot.contents else {
+            throw Error.configurationChanged(url)
+        }
+        guard Darwin.rename(temporaryURL.path, destination.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    private func currentContents(at url: URL) throws -> Data? {
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        return try Data(contentsOf: url)
     }
 
     private func addGroupedCommand(to hooks: inout [String: Any], event: String, command: String, matcher: String?) throws {
@@ -780,17 +1131,21 @@ public struct LifecycleHookInstaller {
         hooks[event] = entries
     }
 
-    private func removeGroupedCommand(from hooks: inout [String: Any], event: String, command: String) throws {
-        guard let value = hooks[event] else { return }
+    @discardableResult
+    private func removeGroupedCommand(from hooks: inout [String: Any], event: String, command: String) throws -> Bool {
+        guard let value = hooks[event] else { return false }
         guard let entries = value as? [Any] else { throw Error.invalidHookConfiguration(homeDirectory) }
+        var removed = false
         let remaining = entries.compactMap { object -> Any? in
             guard var group = object as? [String: Any], let handlers = group["hooks"] as? [Any] else {
                 return object
             }
             let retained = handlers.filter { handler in
                 guard let dictionary = handler as? [String: Any] else { return true }
-                return dictionary["type"] as? String != "command"
-                    || dictionary["command"] as? String != command
+                let isOwned = dictionary["type"] as? String == "command"
+                    && dictionary["command"] as? String == command
+                if isOwned { removed = true }
+                return !isOwned
             }
             guard !retained.isEmpty else { return nil }
             group["hooks"] = retained
@@ -801,17 +1156,23 @@ public struct LifecycleHookInstaller {
         } else {
             hooks[event] = remaining
         }
+        return removed
     }
 
-    private func removeFlatCommand(from hooks: inout [String: Any], event: String, command: String) throws {
-        guard let value = hooks[event] else { return }
+    @discardableResult
+    private func removeFlatCommand(from hooks: inout [String: Any], event: String, command: String) throws -> Bool {
+        guard let value = hooks[event] else { return false }
         guard let entries = value as? [Any] else { throw Error.invalidHookConfiguration(homeDirectory) }
-        let remaining = entries.filter { ($0 as? [String: Any])?["command"] as? String != command }
+        let remaining = entries.filter {
+            ($0 as? [String: Any])?["command"] as? String != command
+        }
+        let removed = remaining.count != entries.count
         if remaining.isEmpty {
             hooks.removeValue(forKey: event)
         } else {
             hooks[event] = remaining
         }
+        return removed
     }
 
     private func containsGroupedCommand(

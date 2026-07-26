@@ -10,10 +10,11 @@ final class LiveStatusSetupWindowController {
     func presentSetup(
         for agents: [AgentHarness],
         check: @escaping @Sendable ([AgentHarness]) -> [HookInstallationResult],
-        install: @escaping @Sendable ([AgentHarness]) -> [HookInstallationResult]
+        install: @escaping @Sendable ([AgentHarness]) -> [HookInstallationResult],
+        remove: @escaping @Sendable ([AgentHarness]) -> [LifecycleHookInstaller.RemovalResult]
     ) {
         finish()
-        let model = LiveStatusSetupModel(agents: agents, check: check, install: install)
+        let model = LiveStatusSetupModel(agents: agents, check: check, install: install, remove: remove)
         setupModel = model
         present(
             LiveStatusSetupView(
@@ -93,7 +94,7 @@ final class LiveStatusSetupWindowController {
 private enum SetupPanelSize {
     static func size(for agentCount: Int) -> NSSize {
         let tileRowWidth = CGFloat(agentCount * 76 + max(0, agentCount - 1) * 12)
-        return NSSize(width: max(456, tileRowWidth + 56), height: 452)
+        return NSSize(width: max(456, tileRowWidth + 56), height: 500)
     }
 }
 
@@ -106,6 +107,7 @@ enum HookSetupReadiness: Equatable, Sendable {
 struct HookInstallationResult: Identifiable, Sendable {
     let agent: AgentHarness
     let readiness: HookSetupReadiness
+    let canRemove: Bool
 
     var id: String { agent.rawValue }
     var isReady: Bool { readiness == .configured }
@@ -115,13 +117,19 @@ struct HookInstallationResult: Identifiable, Sendable {
         return detail
     }
 
-    init(agent: AgentHarness, readiness: HookSetupReadiness) {
+    init(agent: AgentHarness, readiness: HookSetupReadiness, canRemove: Bool? = nil) {
         self.agent = agent
         self.readiness = readiness
+        self.canRemove = canRemove ?? (readiness == .configured)
     }
 
-    init(agent: AgentHarness, installerReadiness: LifecycleHookInstaller.Readiness) {
+    init(
+        agent: AgentHarness,
+        installerReadiness: LifecycleHookInstaller.Readiness,
+        canRemove: Bool
+    ) {
         self.agent = agent
+        self.canRemove = canRemove
         switch installerReadiness {
         case .notConfigured:
             readiness = .notConfigured
@@ -140,24 +148,31 @@ private final class LiveStatusSetupModel: ObservableObject {
         case ready
         case installing
         case complete
+        case confirmingRemoval
+        case removing
+        case removed
     }
 
     @Published private(set) var phase: Phase = .checking
     @Published private(set) var results: [String: HookInstallationResult] = [:]
     @Published private(set) var installingAgentIDs: Set<String> = []
+    @Published private(set) var removalResults: [String: LifecycleHookInstaller.RemovalResult] = [:]
 
     let agents: [AgentHarness]
     private let checkAction: @Sendable ([AgentHarness]) -> [HookInstallationResult]
     private let installAction: @Sendable ([AgentHarness]) -> [HookInstallationResult]
+    private let removeAction: @Sendable ([AgentHarness]) -> [LifecycleHookInstaller.RemovalResult]
 
     init(
         agents: [AgentHarness],
         check: @escaping @Sendable ([AgentHarness]) -> [HookInstallationResult],
-        install: @escaping @Sendable ([AgentHarness]) -> [HookInstallationResult]
+        install: @escaping @Sendable ([AgentHarness]) -> [HookInstallationResult],
+        remove: @escaping @Sendable ([AgentHarness]) -> [LifecycleHookInstaller.RemovalResult]
     ) {
         self.agents = agents
         self.checkAction = check
         self.installAction = install
+        self.removeAction = remove
 
         Task { [weak self] in
             await self?.checkSetup()
@@ -199,13 +214,59 @@ private final class LiveStatusSetupModel: ObservableObject {
         }
     }
 
+    func beginRemoval() {
+        guard (phase == .ready || phase == .complete), hasRemovableIntegrations else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            phase = .confirmingRemoval
+        }
+    }
+
+    func cancelRemoval() {
+        guard phase == .confirmingRemoval else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            phase = .ready
+        }
+    }
+
+    func remove() {
+        let agentsToRemove = agents.filter { results[$0.rawValue]?.canRemove == true }
+        guard phase == .confirmingRemoval, !agentsToRemove.isEmpty else { return }
+        installingAgentIDs = Set(agentsToRemove.map(\.rawValue))
+        phase = .removing
+
+        let removeAction = removeAction
+        Task { [weak self] in
+            let results = await Task.detached(priority: .userInitiated) {
+                removeAction(agentsToRemove)
+            }.value
+            guard let self, self.phase == .removing else { return }
+            self.removalResults = Dictionary(uniqueKeysWithValues: results.map { ($0.agent.rawValue, $0) })
+            self.installingAgentIDs = []
+            withAnimation(.easeInOut(duration: 0.2)) {
+                self.phase = .removed
+            }
+        }
+    }
+
     func status(for agent: AgentHarness) -> AgentInstallStatus {
         switch phase {
         case .checking:
             return .checking
         case .installing where installingAgentIDs.contains(agent.rawValue):
             return .installing
-        case .ready, .installing, .complete:
+        case .removing where installingAgentIDs.contains(agent.rawValue):
+            return .removing
+        case .removed:
+            switch removalResults[agent.rawValue]?.outcome {
+            case .removed, .notInstalled:
+                return .removed
+            case .failed(let detail):
+                return .failed(detail)
+            case nil:
+                break
+            }
+            fallthrough
+        case .ready, .installing, .complete, .confirmingRemoval, .removing:
             guard let result = results[agent.rawValue] else {
                 return .failed("Atoll could not check this tool.")
             }
@@ -247,12 +308,21 @@ private final class LiveStatusSetupModel: ObservableObject {
     var hasFailures: Bool { failedCount > 0 }
     var setupIsComplete: Bool { phase == .ready && needsSetupCount == 0 && !hasFailures }
     var hasNothingToInstall: Bool { phase == .ready && needsSetupCount == 0 }
+    var removableCount: Int { results.values.filter(\.canRemove).count }
+    var hasRemovableIntegrations: Bool { removableCount > 0 }
+    var removalFailureCount: Int {
+        removalResults.values.reduce(into: 0) { count, result in
+            if case .failed = result.outcome { count += 1 }
+        }
+    }
 }
 
 private enum AgentInstallStatus {
     case checking
     case notConfigured
     case installing
+    case removing
+    case removed
     case configured
     case failed(String)
 }
@@ -301,10 +371,36 @@ private struct LiveStatusSetupView: View {
                         .buttonStyle(LiveStatusPrimaryButtonStyle())
                         .disabled(true)
                         .padding(.top, 24)
+                } else if model.phase == .confirmingRemoval {
+                    Button(action: model.remove) {
+                        Text("Remove from \(model.removableCount) \(model.removableCount == 1 ? "Tool" : "Tools")")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(LiveStatusPrimaryButtonStyle(color: .red))
+                    .padding(.top, 24)
+
+                    Button("Cancel", action: model.cancelRemoval)
+                        .buttonStyle(LiveStatusSecondaryButtonStyle())
+                        .padding(.top, 7)
+                } else if model.phase == .removing {
+                    Button("Removing Live Status…") {}
+                        .buttonStyle(LiveStatusPrimaryButtonStyle(color: .red))
+                        .disabled(true)
+                        .padding(.top, 24)
+                } else if model.phase == .removed {
+                    Button("Done", action: onDismiss)
+                        .buttonStyle(LiveStatusPrimaryButtonStyle())
+                        .padding(.top, 24)
                 } else if model.phase == .complete || model.hasNothingToInstall {
                     Button("Done", action: onDismiss)
                         .buttonStyle(LiveStatusPrimaryButtonStyle())
                         .padding(.top, 24)
+
+                    if model.hasRemovableIntegrations {
+                        Button("Remove Live Status…", action: model.beginRemoval)
+                            .buttonStyle(LiveStatusSecondaryButtonStyle())
+                            .padding(.top, 7)
+                    }
                 } else {
                     Button(action: model.install) {
                         Text(installButtonTitle)
@@ -319,6 +415,13 @@ private struct LiveStatusSetupView: View {
                         .padding(.top, 7)
                         .opacity(model.phase == .installing ? 0 : 1)
                         .disabled(model.phase == .installing)
+
+                    if model.hasRemovableIntegrations {
+                        Button("Remove Existing Integrations…", action: model.beginRemoval)
+                            .buttonStyle(LiveStatusSecondaryButtonStyle())
+                            .disabled(model.phase == .installing)
+                            .opacity(model.phase == .installing ? 0 : 1)
+                    }
                 }
             }
         }
@@ -348,11 +451,26 @@ private struct LiveStatusSetupView: View {
             } else {
                 "Atoll's integration files are installed. Review each tool's activation note before expecting status to appear."
             }
+        case .confirmingRemoval:
+            "Atoll will remove only its own hooks and managed files. Other handlers and later configuration changes will stay untouched."
+        case .removing:
+            "Removing Atoll-owned integration entries from each tool."
+        case .removed:
+            if model.removalFailureCount == 0 {
+                "Atoll's integration files were removed. Any pre-edit backups remain in Atoll's private storage."
+            } else {
+                "Some integrations could not be removed automatically. Hover over a tool marked in red for details."
+            }
         }
     }
 
     private var title: String {
         if model.phase == .checking { return "Checking integrations" }
+        if model.phase == .confirmingRemoval { return "Remove live status?" }
+        if model.phase == .removing { return "Removing integrations" }
+        if model.phase == .removed {
+            return model.removalFailureCount == 0 ? "Integrations removed" : "Some tools need attention"
+        }
         if model.hasFailures { return "Some tools need attention" }
         if model.phase == .complete || model.setupIsComplete { return "Integrations installed" }
         return "Add live status"
@@ -447,6 +565,7 @@ private struct AgentInstallTile: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(agent.displayName), \(accessibilityStatus)")
         .accessibilityHint(accessibilityHint)
+        .focusable()
         .help(helpText)
     }
 
@@ -459,6 +578,8 @@ private struct AgentInstallTile: View {
         switch status {
         case .configured:
             "Integration configured. Runtime activation is not detected. \(agent.activationGuidance)"
+        case .removed:
+            "Atoll's integration was removed."
         default:
             accessibilityStatus
         }
@@ -469,6 +590,8 @@ private struct AgentInstallTile: View {
         case .checking: "checking setup"
         case .notConfigured: "integration not installed"
         case .installing: "installing integration"
+        case .removing: "removing integration"
+        case .removed: "integration removed"
         case .configured: "integration configured; runtime activation not verified"
         case .failed(let message): message
         }
@@ -481,7 +604,7 @@ private struct AgentStatusBadge: View {
     var body: some View {
         Group {
             switch status {
-            case .checking, .installing:
+            case .checking, .installing, .removing:
                 ProgressView()
                     .controlSize(.mini)
                     .frame(width: 20, height: 20)
@@ -498,6 +621,12 @@ private struct AgentStatusBadge: View {
                     .foregroundStyle(Color(nsColor: .alternateSelectedControlTextColor))
                     .frame(width: 20, height: 20)
                     .background(.green, in: Circle())
+            case .removed:
+                Image(systemName: "minus")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20, height: 20)
+                    .background(.regularMaterial, in: Circle())
             case .failed:
                 Image(systemName: "exclamationmark")
                     .font(.system(size: 10, weight: .bold))
@@ -530,13 +659,15 @@ private extension AgentHarness {
 }
 
 private struct LiveStatusPrimaryButtonStyle: ButtonStyle {
+    var color: Color = .accentColor
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 14, weight: .semibold))
             .foregroundStyle(Color(nsColor: .alternateSelectedControlTextColor))
             .frame(maxWidth: .infinity)
             .frame(height: 42)
-            .background(Color.accentColor.opacity(configuration.isPressed ? 0.72 : 1), in: Capsule())
+            .background(color.opacity(configuration.isPressed ? 0.72 : 1), in: Capsule())
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
     }
 }

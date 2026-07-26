@@ -110,7 +110,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
         liveStatusSetupController.presentSetup(for: agents) { agents in
             let installer = LifecycleHookInstaller()
             return agents.map { agent in
-                HookInstallationResult(agent: agent, installerReadiness: installer.readiness(for: agent))
+                HookInstallationResult(
+                    agent: agent,
+                    installerReadiness: installer.readiness(for: agent),
+                    canRemove: installer.canUninstall(for: agent)
+                )
             }
         } install: { agents in
             let installer = LifecycleHookInstaller()
@@ -125,18 +129,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
                             agent: agent,
                             readiness: .invalidConfiguration(
                                 "Atoll could not verify the installed Live Status integration. Try setup again."
-                            )
+                            ),
+                            canRemove: installer.canUninstall(for: agent)
                         )
                     case .invalidConfiguration(let detail):
-                        return HookInstallationResult(agent: agent, readiness: .invalidConfiguration(detail))
+                        return HookInstallationResult(
+                            agent: agent,
+                            readiness: .invalidConfiguration(detail),
+                            canRemove: installer.canUninstall(for: agent)
+                        )
                     }
                 } catch {
                     return HookInstallationResult(
                         agent: agent,
-                        readiness: .invalidConfiguration(error.localizedDescription)
+                        readiness: .invalidConfiguration(error.localizedDescription),
+                        canRemove: installer.canUninstall(for: agent)
                     )
                 }
             }
+        } remove: { agents in
+            LifecycleHookInstaller().uninstall(agents: agents)
         }
     }
 

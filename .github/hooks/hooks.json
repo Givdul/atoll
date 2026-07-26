@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "hooks": {
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "bash ~/.claude/hooks/peon-ping/adapters/copilot.sh postToolUse"
+      }
+    ],
+    "errorOccurred": [
+      {
+        "type": "command",
+        "bash": "bash ~/.claude/hooks/peon-ping/adapters/copilot.sh errorOccurred"
+      }
+    ]
+  }
+}
