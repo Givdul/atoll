@@ -2,12 +2,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="Atoll"
+APP_NAME="Skerry"
 DIST_DIR="$ROOT/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 ZIP_PATH="$DIST_DIR/$APP_NAME.zip"
 INSTALLED_APP="/Applications/$APP_NAME.app"
 INSTALLED_EXECUTABLE="$INSTALLED_APP/Contents/MacOS/$APP_NAME"
+LEGACY_APP_NAME="Atoll"
+LEGACY_BUNDLE_IDENTIFIER="dev.atoll.Atoll"
+LEGACY_INSTALLED_APP="/Applications/$LEGACY_APP_NAME.app"
+LEGACY_INSTALLED_EXECUTABLE="$LEGACY_INSTALLED_APP/Contents/MacOS/$LEGACY_APP_NAME"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 NOTARY_KEYCHAIN_PROFILE="${NOTARY_KEYCHAIN_PROFILE:-}"
 SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-}"
@@ -19,7 +23,10 @@ TEMP_DIRS=("")
 INSTALL_ROLLBACK_REQUIRED=0
 INSTALL_HAD_PREVIOUS_APP=0
 INSTALL_PREVIOUS_WAS_RUNNING=0
+INSTALL_HAD_LEGACY_APP=0
+INSTALL_LEGACY_WAS_RUNNING=0
 INSTALL_BACKUP=""
+INSTALL_LEGACY_BACKUP=""
 INSTALL_TEMP=""
 EXPECTED_TEAM_IDENTIFIER=""
 
@@ -31,7 +38,7 @@ cleanup() {
 
   if [[ "$INSTALL_ROLLBACK_REQUIRED" == "1" ]]; then
     if ! stop_installed_processes_for_rollback; then
-      echo "Rollback stopped because the failed installed Atoll process would not exit; the previous app remains at $INSTALL_BACKUP" >&2
+      echo "Rollback stopped because the failed installed Skerry process would not exit; the previous app remains at $INSTALL_BACKUP" >&2
       exit "$status"
     fi
     rm -rf "$INSTALLED_APP"
@@ -44,10 +51,19 @@ cleanup() {
         echo "Rollback could not restore the previous app; it remains at $INSTALL_BACKUP" >&2
       fi
     fi
+    if [[ "$INSTALL_HAD_LEGACY_APP" == "1" && -d "$INSTALL_LEGACY_BACKUP" ]]; then
+      if mv "$INSTALL_LEGACY_BACKUP" "$LEGACY_INSTALLED_APP"; then
+        if [[ "$INSTALL_LEGACY_WAS_RUNNING" == "1" ]]; then
+          open "$LEGACY_INSTALLED_APP" >/dev/null 2>&1 || true
+        fi
+      else
+        echo "Rollback could not restore the beta app; it remains at $INSTALL_LEGACY_BACKUP" >&2
+      fi
+    fi
   fi
 
   for temp_dir in "${TEMP_DIRS[@]}"; do
-    if [[ -n "$temp_dir" && "$temp_dir" == "$INSTALL_TEMP" && -d "$INSTALL_BACKUP" ]]; then
+    if [[ -n "$temp_dir" && "$temp_dir" == "$INSTALL_TEMP" && ( -d "$INSTALL_BACKUP" || -d "$INSTALL_LEGACY_BACKUP" ) ]]; then
       continue
     fi
     [[ -n "$temp_dir" ]] && rm -rf "$temp_dir"
@@ -80,7 +96,7 @@ fi
 
 release_directory() {
   local architecture=$1
-  echo "$ROOT/.build/atoll-release-$architecture/$architecture-apple-macosx/release"
+  echo "$ROOT/.build/skerry-release-$architecture/$architecture-apple-macosx/release"
 }
 
 verify_universal_binary() {
@@ -135,75 +151,65 @@ verify_signature_metadata() {
   fi
 }
 
-installed_app_pids() {
+app_pids() {
+  local name=$1
+  local executable=$2
   local candidate
   local command
-  for candidate in $(pgrep -x "$APP_NAME" 2>/dev/null || true); do
+  for candidate in $(pgrep -x "$name" 2>/dev/null || true); do
     command="$(ps -p "$candidate" -o command= 2>/dev/null || true)"
     command="${command#"${command%%[![:space:]]*}"}"
-    if [[ "$command" == "$INSTALLED_EXECUTABLE" ]]; then
+    if [[ "$command" == "$executable" ]]; then
       echo "$candidate"
     fi
   done
 }
 
-stop_installed_processes_for_rollback() {
+installed_app_pids() {
+  app_pids "$APP_NAME" "$INSTALLED_EXECUTABLE"
+}
+
+stop_app_processes() {
+  local name=$1
+  local executable=$2
+  local bundle_identifier=$3
   local deadline
   local pid
   local pids
 
-  pids="$(installed_app_pids)"
+  pids="$(app_pids "$name" "$executable")"
   [[ -z "$pids" ]] && return 0
 
-  osascript -e 'tell application id "dev.atoll.Atoll" to quit' >/dev/null 2>&1 || true
+  osascript -e "tell application id \"$bundle_identifier\" to quit" >/dev/null 2>&1 || true
   deadline=$((SECONDS + 3))
   while (( SECONDS < deadline )); do
-    [[ -z "$(installed_app_pids)" ]] && return 0
+    [[ -z "$(app_pids "$name" "$executable")" ]] && return 0
     sleep 0.2
   done
 
-  for pid in $(installed_app_pids); do
+  for pid in $(app_pids "$name" "$executable"); do
     kill -TERM "$pid" >/dev/null 2>&1 || true
   done
   deadline=$((SECONDS + 2))
   while (( SECONDS < deadline )); do
-    [[ -z "$(installed_app_pids)" ]] && return 0
+    [[ -z "$(app_pids "$name" "$executable")" ]] && return 0
     sleep 0.2
   done
 
-  for pid in $(installed_app_pids); do
+  for pid in $(app_pids "$name" "$executable"); do
     kill -KILL "$pid" >/dev/null 2>&1 || true
   done
   deadline=$((SECONDS + 1))
   while (( SECONDS < deadline )); do
-    [[ -z "$(installed_app_pids)" ]] && return 0
+    [[ -z "$(app_pids "$name" "$executable")" ]] && return 0
     sleep 0.1
   done
 
-  [[ -z "$(installed_app_pids)" ]]
+  [[ -z "$(app_pids "$name" "$executable")" ]]
 }
 
-wait_for_previous_processes() {
-  local previous_pids=$1
-  local deadline=$((SECONDS + 10))
-  local pid
-  local command
-
-  for pid in $previous_pids; do
-    while true; do
-      command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-      command="${command#"${command%%[![:space:]]*}"}"
-      [[ "$command" != "$INSTALLED_EXECUTABLE" ]] && break
-      if (( SECONDS >= deadline )); then
-        fail "Timed out waiting for installed Atoll process $pid to quit"
-      fi
-      sleep 0.2
-    done
-  done
-
-  if [[ -n "$(installed_app_pids)" ]]; then
-    fail "An installed Atoll process started while the release was being installed"
-  fi
+stop_installed_processes_for_rollback() {
+  stop_app_processes "$APP_NAME" "$INSTALLED_EXECUTABLE" "com.givdul.skerry"
 }
 
 wait_for_new_process() {
@@ -215,26 +221,29 @@ wait_for_new_process() {
     [[ -n "$pids" ]] && break
     sleep 0.2
   done
-  [[ -n "$pids" ]] || fail "Installed Atoll did not start within 10 seconds"
+  [[ -n "$pids" ]] || fail "Installed Skerry did not start within 10 seconds"
 
   sleep 0.5
   pids="$(installed_app_pids)"
   set -- $pids
   if [[ $# -ne 1 ]]; then
-    fail "Expected one installed Atoll process after launch, found $#"
+    fail "Expected one installed Skerry process after launch, found $#"
   fi
 }
 
 install_app() {
   local install_temp
   local install_candidate
+  local legacy_bundle_identifier
   local previous_pids
+  local legacy_pids
 
   install_temp="$(mktemp -d "/Applications/.$APP_NAME.install.XXXXXX")"
   INSTALL_TEMP="$install_temp"
   TEMP_DIRS+=("$INSTALL_TEMP")
   install_candidate="$INSTALL_TEMP/$APP_NAME.app"
   INSTALL_BACKUP="$INSTALL_TEMP/$APP_NAME.app.previous"
+  INSTALL_LEGACY_BACKUP="$INSTALL_TEMP/$LEGACY_APP_NAME.app.previous"
 
   ditto "$APP_BUNDLE" "$install_candidate"
   codesign --verify --deep --strict --verbose=2 "$install_candidate"
@@ -247,15 +256,30 @@ install_app() {
   previous_pids="$(installed_app_pids)"
   if [[ -n "$previous_pids" ]]; then
     INSTALL_PREVIOUS_WAS_RUNNING=1
-    osascript -e 'tell application id "dev.atoll.Atoll" to quit' >/dev/null 2>&1 || true
+    stop_app_processes "$APP_NAME" "$INSTALLED_EXECUTABLE" "com.givdul.skerry" \
+      || fail "Installed Skerry would not quit"
   fi
-  wait_for_previous_processes "$previous_pids"
 
   if [[ -d "$INSTALLED_APP" ]]; then
     INSTALL_HAD_PREVIOUS_APP=1
     mv "$INSTALLED_APP" "$INSTALL_BACKUP"
   fi
   INSTALL_ROLLBACK_REQUIRED=1
+
+  if [[ -d "$LEGACY_INSTALLED_APP" ]]; then
+    legacy_bundle_identifier="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$LEGACY_INSTALLED_APP/Contents/Info.plist" 2>/dev/null || true)"
+    if [[ "$legacy_bundle_identifier" == "$LEGACY_BUNDLE_IDENTIFIER" ]]; then
+      legacy_pids="$(app_pids "$LEGACY_APP_NAME" "$LEGACY_INSTALLED_EXECUTABLE")"
+      if [[ -n "$legacy_pids" ]]; then
+        INSTALL_LEGACY_WAS_RUNNING=1
+        stop_app_processes "$LEGACY_APP_NAME" "$LEGACY_INSTALLED_EXECUTABLE" "$LEGACY_BUNDLE_IDENTIFIER" \
+          || fail "Installed Atoll beta would not quit"
+      fi
+      INSTALL_HAD_LEGACY_APP=1
+      mv "$LEGACY_INSTALLED_APP" "$INSTALL_LEGACY_BACKUP"
+    fi
+  fi
+
   mv "$install_candidate" "$INSTALLED_APP"
 
   codesign --verify --deep --strict --verbose=2 "$INSTALLED_APP"
@@ -267,6 +291,9 @@ install_app() {
   if [[ "$INSTALL_HAD_PREVIOUS_APP" == "1" ]]; then
     rm -rf "$INSTALL_BACKUP"
   fi
+  if [[ "$INSTALL_HAD_LEGACY_APP" == "1" ]]; then
+    rm -rf "$INSTALL_LEGACY_BACKUP"
+  fi
   echo "Installed $INSTALLED_APP"
 }
 
@@ -274,7 +301,7 @@ mkdir -p "$DIST_DIR"
 rm -f "$ZIP_PATH"
 
 for architecture in "${ARCHITECTURES[@]}"; do
-  scratch_path="$ROOT/.build/atoll-release-$architecture"
+  scratch_path="$ROOT/.build/skerry-release-$architecture"
   release_dir="$(release_directory "$architecture")"
   resource_bundle="$release_dir/${APP_NAME}_${APP_NAME}.bundle"
 
@@ -323,7 +350,7 @@ if ! otool -l "$APP_BUNDLE/Contents/MacOS/$APP_NAME" | grep -Fq "@executable_pat
   install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 fi
 
-cp "$ROOT/Bundle/Atoll.icns" "$APP_BUNDLE/Contents/Resources/Atoll.icns"
+cp "$ROOT/Bundle/Skerry.icns" "$APP_BUNDLE/Contents/Resources/Skerry.icns"
 ditto "$RESOURCE_BUNDLE" "$APP_BUNDLE/Contents/Resources/$(basename "$RESOURCE_BUNDLE")"
 ditto "$SPARKLE_FRAMEWORK" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
 
@@ -373,7 +400,7 @@ verify_signature_metadata "$APP_BUNDLE"
 codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 
 if [[ -n "$NOTARY_KEYCHAIN_PROFILE" ]]; then
-  NOTARY_TEMP="$(mktemp -d "$DIST_DIR/.Atoll.notary.XXXXXX")"
+  NOTARY_TEMP="$(mktemp -d "$DIST_DIR/.Skerry.notary.XXXXXX")"
   TEMP_DIRS+=("$NOTARY_TEMP")
   NOTARY_UPLOAD="$NOTARY_TEMP/$APP_NAME.zip"
   ditto -c -k --keepParent "$APP_BUNDLE" "$NOTARY_UPLOAD"

@@ -5,15 +5,15 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>
-	<string>Atoll</string>
+	<string>Skerry</string>
 	<key>CFBundleIconFile</key>
-	<string>Atoll.icns</string>
+	<string>Skerry.icns</string>
 	<key>CFBundleIdentifier</key>
-	<string>dev.atoll.Atoll</string>
+	<string>com.givdul.skerry</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Atoll</string>
+	<string>Skerry</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

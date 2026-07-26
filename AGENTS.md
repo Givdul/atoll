@@ -7,7 +7,7 @@
 - Worker subagent: code editor, implements code and code changes, prefer to use GPT 5.3 Codex Spark as model with high thinking effort.
 - Do not delegate trivial tasks, work on the immediate critical path, or tightly coupled tasks that require continuous local judgment.
 - When a subagent is no longer needed, clean it up promptly.
-- After each fix, rebuild the release app into `/Applications` with `./Scripts/build-release.sh --install`, then restart Atoll from `/Applications/Atoll.app`.
+- After each fix, rebuild the release app into `/Applications` with `./Scripts/build-release.sh --install`, then restart Skerry from `/Applications/Skerry.app`.
 - Always verify UI changes in the installed app with screenshots as well; capture and inspect the relevant states before considering the change complete.
 - Add screenshots or recordings that confirm user-visible fixes to the pull request and share them in the active chat.
 - Prefer video when motion, transitions, or a multi-step flow shows the fix better than still screenshots.
@@ -15,10 +15,10 @@
 ## Commit and Publish Workflow
 
 - This workflow is adapted from the user-level `~/.agents/skills/yeet/AGENTS.md` guidance. When that file is available, use it as the detailed source for git publish commands and safety rules.
-- When working in Atoll, commit automatically at natural checkpoints after a coherent fix or feature slice is implemented and verified.
+- When working in Skerry, commit automatically at natural checkpoints after a coherent fix or feature slice is implemented and verified.
 - Prefer small, step-by-step commits over one large mixed commit when changes can be separated cleanly.
 - Before each commit, inspect `git status --short`, `git diff --stat`, and the staged diff enough to understand what is being published.
-- Stage only files that belong to the current Atoll work. Do not revert or overwrite unrelated user changes.
+- Stage only files that belong to the current Skerry work. Do not revert or overwrite unrelated user changes.
 - Generate commit messages and PR metadata in the current thread; do not use a separate generation provider or model.
 - Use one-line commit subjects, max 72 characters, in imperative Conventional Commit style when obvious, such as `fix: recognize Pi agent completion events`.
 - Avoid vague commit subjects like `Update files`, `Fix changes`, `Commit changes`, or `Misc changes`.
