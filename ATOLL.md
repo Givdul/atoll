@@ -66,7 +66,7 @@ Row click:
 
 Visibility rules:
 
-- Running, waiting-for-input, and waiting-for-permission sessions are visible unless confidence is historical.
+- Running, waiting-for-input, and waiting-for-permission sessions are visible.
 - Done, failed, and cancelled sessions are visible for `3s`.
 - Max visible sessions: `8`.
 - Recent terminal rows are prioritized ahead of running rows so completion remains perceptible under load.
@@ -200,7 +200,7 @@ State title weights/opacities:
 Each row contains:
 
 - Agent icon/glyph well, `rowHeight - 4 * scale` square.
-- Prompt text if present, otherwise session title.
+- Privacy-safe project-folder label, or `"<Provider> session"` when no usable working directory is available.
 - Right status segment, `82 * scale` wide.
 - SF Symbol status icon, then elapsed timer.
 
@@ -223,17 +223,12 @@ Timer formatting:
 - Otherwise: `"%02dh"`, capped at `99h`.
 - Terminal rows freeze timer at `updatedAt`; active rows tick every second.
 
-Test-mode row text:
+Test-mode row labels:
 
-- Running title: `"{Agent Display Name} test task"`.
-- Running prompt: `"Run {Agent Display Name} test task"`.
-- Detail: `"Test Mode"`.
-- Codex question title: `"Codex test question"`.
-- Codex question prompt: `"Choose a Codex test option"`.
-- Codex permission title: `"Codex test permission"`.
-- Codex permission prompt: `"Run a permission-gated Codex test"`.
-- Codex done title: `"Codex test done"`.
-- Codex done prompt: `"Completed a done-state scenario"`.
+- Running: `"{Agent Display Name} test task"`.
+- Codex question: `"Codex test question"`.
+- Codex permission: `"Codex test permission"`.
+- Codex done: `"Codex test done"`.
 
 ## Menu Bar
 
@@ -260,6 +255,7 @@ Lifecycle behavior:
 - The socket server persists a valid event before acknowledging it. The sender falls back to the same durable queue when delivery or acknowledgment fails.
 - The app refreshes immediately from a persisted receipt and removes that queue file only after the lifecycle registry is written successfully.
 - A `1s` maintenance timer retries pending receipts and expires stale lifecycle state; it never scans agent transcripts, processes, or lock files.
+- Lifecycle wire, queue, and registry data retains only provider, session ID, normalized state, ordering/delivery timestamps, a final-component project label or provider fallback, replay identities, and the complete origin PID/bundle pair. Prompt, message, reason, response, command, transcript, diff, environment, model, and full working-directory content is discarded before serialization.
 - Active sessions expire after `10m` of local inactivity. Terminal records are visible to the registry for `5s`, receive a `3s` UI dwell from local observation, and remain as non-visible tombstones for `10m` to suppress late cleanup duplicates.
 - **Live Status Setup…** explicitly installs user-level bridges for Codex, Claude Code, Cursor Agent, OpenCode, and Pi.
 - Setup readiness verifies Atoll's static files and bridge permissions. Runtime hook trust, managed policy, plugin reload, and active-session reload remain external and are described in `LIVE_STATUS_SUPPORT.md`.

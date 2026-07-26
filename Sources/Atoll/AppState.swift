@@ -53,7 +53,7 @@ final class AppState: ObservableObject {
         let candidates = displaySessions.filter { session in
             switch session.state {
             case .waitingForPermission, .waitingForInput, .running:
-                session.confidence != .historical
+                true
             case .done, .failed, .cancelled:
                 settings.testMode || isRecentTerminalNotification(session, now: now)
             case .unknown:
@@ -77,14 +77,13 @@ final class AppState: ObservableObject {
 
     var runningSessions: [AgentSession] {
         displaySessions.filter {
-            $0.state == .running && $0.confidence != .historical
+            $0.state == .running
         }
     }
 
     var waitingSessions: [AgentSession] {
         displaySessions.filter {
             ($0.state == .waitingForInput || $0.state == .waitingForPermission)
-                && $0.confidence != .historical
         }
     }
 
@@ -121,17 +120,9 @@ final class AppState: ObservableObject {
             AgentSession(
                 id: "test-\(harness.rawValue)-running",
                 harness: harness,
-                title: "\(harness.displayName) test task",
-                detail: "Test Mode",
-                prompt: "Run \(harness.displayName) test task",
-                lastToolCall: "Shell",
-                projectPath: nil,
-                model: "test",
+                label: "\(harness.displayName) test task",
                 state: .running,
-                updatedAt: now.addingTimeInterval(TimeInterval(-index)),
-                sourcePath: "atoll://test-mode/\(harness.rawValue)/running",
-                processID: nil,
-                confidence: .live
+                updatedAt: now.addingTimeInterval(TimeInterval(-index))
             )
         }
 
@@ -139,41 +130,25 @@ final class AppState: ObservableObject {
             AgentSession(
                 id: "test-codex-question",
                 harness: .codex,
-                title: "Codex test question",
-                detail: "Test Mode",
-                prompt: "Choose a Codex test option",
-                model: "test",
+                label: "Codex test question",
                 state: .waitingForInput,
-                updatedAt: now.addingTimeInterval(10),
-                sourcePath: "atoll://test-mode/codex/question",
-                confidence: .live
+                updatedAt: now.addingTimeInterval(10)
             ),
             AgentSession(
                 id: "test-codex-permission",
                 harness: .codex,
-                title: "Codex test permission",
-                detail: "Test Mode",
-                prompt: "Run a permission-gated Codex test",
-                lastToolCall: "Shell",
-                model: "test",
+                label: "Codex test permission",
                 state: .waitingForPermission,
-                updatedAt: now.addingTimeInterval(11),
-                sourcePath: "atoll://test-mode/codex/permission",
-                confidence: .live
+                updatedAt: now.addingTimeInterval(11)
             )
         ]
 
         let doneSession = AgentSession(
             id: "test-codex-done",
             harness: .codex,
-            title: "Codex test done",
-            detail: "Test Mode",
-            prompt: "Completed a done-state scenario",
-            model: "test",
+            label: "Codex test done",
             state: .done,
-            updatedAt: now,
-            sourcePath: "atoll://test-mode/codex/done",
-            confidence: .live
+            updatedAt: now
         )
 
         return (running + codexAttention + [doneSession]).sorted {

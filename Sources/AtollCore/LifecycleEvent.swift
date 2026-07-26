@@ -47,27 +47,20 @@ public struct LifecycleEvent: Hashable, Sendable {
     public var harness: AgentHarness
     public var kind: LifecycleEventKind
     public var timestamp: Date
-    public var title: String?
-    public var detail: String?
-    public var prompt: String?
-    public var projectPath: String?
-    public var model: String?
+    public var label: String
     public var originProcessID: Int32?
     public var originBundleIdentifier: String?
     /// Atoll-generated transport identity. It remains stable through socket and
     /// queue retries while distinct hook invocations receive distinct values.
     public var deliveryID: String?
+    private var legacyDeliveryIdentity: String?
 
     public init(
         sessionID: String,
         harness: AgentHarness,
         kind: LifecycleEventKind,
         timestamp: Date = Date(),
-        title: String? = nil,
-        detail: String? = nil,
-        prompt: String? = nil,
-        projectPath: String? = nil,
-        model: String? = nil,
+        label: String? = nil,
         originProcessID: Int32? = nil,
         originBundleIdentifier: String? = nil,
         deliveryID: String? = UUID().uuidString
@@ -76,14 +69,21 @@ public struct LifecycleEvent: Hashable, Sendable {
         self.harness = harness
         self.kind = kind
         self.timestamp = timestamp
-        self.title = title
-        self.detail = detail
-        self.prompt = prompt
-        self.projectPath = projectPath
-        self.model = model
-        self.originProcessID = originProcessID
-        self.originBundleIdentifier = originBundleIdentifier
+        self.label = Self.sanitizedLabel(label) ?? "\(harness.displayName) session"
+        let normalizedBundleIdentifier = originBundleIdentifier?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let originProcessID,
+           originProcessID > 0,
+           let normalizedBundleIdentifier,
+           !normalizedBundleIdentifier.isEmpty {
+            self.originProcessID = originProcessID
+            self.originBundleIdentifier = normalizedBundleIdentifier
+        } else {
+            self.originProcessID = nil
+            self.originBundleIdentifier = nil
+        }
         self.deliveryID = deliveryID
+        self.legacyDeliveryIdentity = nil
     }
 
     /// Parses one JSONL hook record. Aliases cover common hook payloads while
@@ -99,20 +99,27 @@ public struct LifecycleEvent: Hashable, Sendable {
             return nil
         }
 
-        return LifecycleEvent(
+        let deliveryID = JSONHelpers.directString(in: dictionary, keys: ["delivery_id", "deliveryId"])
+        var event = LifecycleEvent(
             sessionID: sessionID,
             harness: harness,
             kind: kind,
             timestamp: JSONHelpers.directDate(in: dictionary, keys: ["timestamp", "time", "occurred_at", "occurredAt", "updated_at", "updatedAt"]) ?? Date(),
-            title: JSONHelpers.directString(in: dictionary, keys: ["title", "summary"]),
-            detail: JSONHelpers.directString(in: dictionary, keys: ["detail", "reason", "message"]),
-            prompt: JSONHelpers.directString(in: dictionary, keys: ["prompt"]),
-            projectPath: JSONHelpers.directString(in: dictionary, keys: ["project_path", "projectPath", "cwd", "workspace"]),
-            model: JSONHelpers.directString(in: dictionary, keys: ["model", "model_id", "modelId"]),
+            label: JSONHelpers.directString(in: dictionary, keys: ["label"])
+                ?? projectLabel(from: JSONHelpers.directString(
+                    in: dictionary,
+                    keys: ["project_path", "projectPath", "cwd", "workspace"]
+                )),
             originProcessID: JSONHelpers.directString(in: dictionary, keys: ["origin_process_id", "originProcessID"]).flatMap(Int32.init),
             originBundleIdentifier: JSONHelpers.directString(in: dictionary, keys: ["origin_bundle_identifier", "originBundleIdentifier"]),
-            deliveryID: JSONHelpers.directString(in: dictionary, keys: ["delivery_id", "deliveryId"])
+            deliveryID: deliveryID
         )
+        if deliveryID == nil {
+            event.legacyDeliveryIdentity = validatedDeliveryIdentity(
+                JSONHelpers.directString(in: dictionary, keys: ["delivery_identity", "deliveryIdentity"])
+            ) ?? deliveryIdentity(forCanonicalRepresentation: jsonLine)
+        }
+        return event
     }
 
     /// Normalizes the JSON delivered on stdin by a native hook into Atoll's protocol.
@@ -147,11 +154,10 @@ public struct LifecycleEvent: Hashable, Sendable {
                 in: dictionary,
                 keys: ["timestamp", "time", "occurred_at", "occurredAt", "updated_at", "updatedAt"]
             ) ?? Date(),
-            title: JSONHelpers.directString(in: dictionary, keys: ["title", "summary"]),
-            detail: JSONHelpers.directString(in: dictionary, keys: ["reason", "message"]),
-            prompt: JSONHelpers.directString(in: dictionary, keys: ["prompt"]),
-            projectPath: JSONHelpers.directString(in: dictionary, keys: ["cwd", "project_path", "projectPath", "workspace"]),
-            model: JSONHelpers.directString(in: dictionary, keys: ["model", "model_id", "modelId"]),
+            label: projectLabel(from: JSONHelpers.directString(
+                in: dictionary,
+                keys: ["cwd", "project_path", "projectPath", "workspace"]
+            )),
             originProcessID: originProcessID,
             originBundleIdentifier: originBundleIdentifier
         )
@@ -177,6 +183,39 @@ public struct LifecycleEvent: Hashable, Sendable {
         }
     }
 
+    private static func projectLabel(from workingDirectory: String?) -> String? {
+        guard let workingDirectory,
+              workingDirectory.hasPrefix("/") else {
+            return nil
+        }
+        return sanitizedLabel((workingDirectory as NSString).lastPathComponent)
+    }
+
+    private static func sanitizedLabel(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let label = (value as NSString).lastPathComponent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty,
+              label != "/",
+              label != ".",
+              label != "..",
+              label != "~",
+              label.rangeOfCharacter(from: .controlCharacters) == nil else {
+            return nil
+        }
+        return label
+    }
+
+    private static func validatedDeliveryIdentity(_ value: String?) -> String? {
+        guard let value,
+              value.hasPrefix("sha256:"),
+              value.count == 71,
+              value.dropFirst(7).allSatisfy(\.isHexDigit) else {
+            return nil
+        }
+        return value.lowercased()
+    }
+
     public func jsonLine() -> String? {
         let timestampFormatter = ISO8601DateFormatter()
         timestampFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -186,14 +225,11 @@ public struct LifecycleEvent: Hashable, Sendable {
             "event": kind.rawValue,
             "timestamp": timestampFormatter.string(from: timestamp)
         ]
-        object["title"] = title
-        object["detail"] = detail
-        object["prompt"] = prompt
-        object["project_path"] = projectPath
-        object["model"] = model
+        object["label"] = label
         object["origin_process_id"] = originProcessID
         object["origin_bundle_identifier"] = originBundleIdentifier
         object["delivery_id"] = deliveryID
+        object["delivery_identity"] = deliveryID == nil ? legacyDeliveryIdentity : nil
 
         guard JSONSerialization.isValidJSONObject(object),
               let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
@@ -209,6 +245,9 @@ public struct LifecycleEvent: Hashable, Sendable {
     var deliveryIdentity: String {
         if let deliveryID, !deliveryID.isEmpty {
             return Self.deliveryIdentity(forCanonicalRepresentation: "delivery-id:\(deliveryID)")
+        }
+        if let legacyDeliveryIdentity {
+            return legacyDeliveryIdentity
         }
         if let line = jsonLine() {
             return Self.deliveryIdentity(forCanonicalRepresentation: line)
@@ -226,11 +265,7 @@ public struct LifecycleEvent: Hashable, Sendable {
             component(sessionID),
             component(kind.rawValue),
             component(String(timestamp.timeIntervalSinceReferenceDate.bitPattern)),
-            component(title),
-            component(detail),
-            component(prompt),
-            component(projectPath),
-            component(model),
+            component(label),
             component(originProcessID.map(String.init)),
             component(originBundleIdentifier)
         ].joined(separator: "|")
@@ -241,8 +276,8 @@ public struct LifecycleEvent: Hashable, Sendable {
     /// key. This also migrates `lastEventKey` values written before the receipt
     /// ledger used digests.
     static func deliveryIdentity(forCanonicalRepresentation representation: String) -> String {
-        if representation.hasPrefix("sha256:"), representation.count == 71 {
-            return representation
+        if let identity = validatedDeliveryIdentity(representation) {
+            return identity
         }
         let digest = SHA256.hash(data: Data(representation.utf8))
         return "sha256:" + digest.map { String(format: "%02x", $0) }.joined()
@@ -251,11 +286,10 @@ public struct LifecycleEvent: Hashable, Sendable {
     /// Migrates either the former canonical JSON key or an already-digested key
     /// without hashing a digest a second time.
     static func migratedDeliveryIdentity(_ legacyKey: String) -> String {
-        if legacyKey.hasPrefix("sha256:"), legacyKey.count == 71 {
-            return legacyKey
+        if let identity = validatedDeliveryIdentity(legacyKey) {
+            return identity
         }
-        if let legacyEvent = LifecycleEvent.parse(jsonLine: legacyKey),
-           legacyEvent.deliveryID != nil {
+        if let legacyEvent = LifecycleEvent.parse(jsonLine: legacyKey) {
             return legacyEvent.deliveryIdentity
         }
         return deliveryIdentity(forCanonicalRepresentation: legacyKey)

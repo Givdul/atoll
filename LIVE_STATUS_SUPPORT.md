@@ -11,6 +11,7 @@ This is the release contract for Atoll's bundled agent integrations. It was re-c
 - Terminal records remain as non-visible tombstones for ten minutes. This suppresses late cleanup events and duplicate completion notifications without hiding a genuinely newer turn.
 - Repeated identical terminals do not extend their dwell. A later terminal correction does receive a new dwell, and a generic **Done** cleanup cannot overwrite a more specific **Failed** or **Cancelled** result.
 - Socket delivery is at-least-once: a valid event is durably queued before the sender is acknowledged, and the queue item is removed only after the lifecycle registry is persisted. Duplicate replay is intentionally safe.
+- Lifecycle storage is limited to provider, session ID, normalized state, provider/local ordering and delivery timestamps, a final-component project label (or `"<Provider> session"`), replay-deduplication identities, and the complete origin PID/bundle pair used by click-to-return. Prompt, message, reason, response, command, transcript, diff, environment, model, and full working-directory content is discarded before socket or queue serialization.
 
 ## Setup and readiness contract
 

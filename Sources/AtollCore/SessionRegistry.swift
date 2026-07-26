@@ -20,11 +20,7 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         /// This prevents a future-skewed event from blocking later events.
         var orderingAt: Date?
         var startedAt: Date?
-        var title: String?
-        var detail: String?
-        var prompt: String?
-        var projectPath: String?
-        var model: String?
+        var label: String?
         var originProcessID: Int32?
         var originBundleIdentifier: String?
         /// Legacy single-event key retained only to decode and migrate registry
@@ -53,6 +49,7 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
     private let filePermissionSetter: PrivateStorage.FilePermissionSetter?
     private let lock = NSLock()
     private var records: [String: Record]
+    private var needsRewrite: Bool
 
     /// Delivery identities remain deduplicated for one day, independently of
     /// the much shorter active/terminal presentation lifetimes.
@@ -71,7 +68,9 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         self.terminalTTL = terminalTTL
         self.hardensParentDirectory = fileURL.deletingLastPathComponent().lastPathComponent == ".atoll"
         self.filePermissionSetter = nil
-        self.records = Self.load(from: fileURL)
+        let loaded = Self.load(from: fileURL)
+        self.records = loaded.records
+        self.needsRewrite = loaded.needsRewrite
     }
 
     package init(
@@ -85,7 +84,9 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         self.terminalTTL = terminalTTL
         self.hardensParentDirectory = fileURL.deletingLastPathComponent().lastPathComponent == ".atoll"
         self.filePermissionSetter = filePermissionSetter
-        self.records = Self.load(from: fileURL)
+        let loaded = Self.load(from: fileURL)
+        self.records = loaded.records
+        self.needsRewrite = loaded.needsRewrite
     }
 
     @discardableResult
@@ -223,11 +224,10 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
             // A corrected terminal outcome receives a fresh visible dwell.
             record.observedAt = now
         }
-        record.title = event.title ?? record.title
-        record.detail = event.detail ?? record.detail
-        record.prompt = event.prompt ?? record.prompt
-        record.projectPath = event.projectPath ?? record.projectPath
-        record.model = event.model ?? record.model
+        let fallbackLabel = "\(event.harness.displayName) session"
+        if record.label == nil || event.label != fallbackLabel {
+            record.label = event.label
+        }
         record.lastEventKey = nil
         records[key] = record
         prune(now: now)
@@ -249,11 +249,7 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
             observedAt: observedAt,
             orderingAt: orderingAt,
             startedAt: event.kind == .started ? orderingAt : nil,
-            title: nil,
-            detail: nil,
-            prompt: nil,
-            projectPath: nil,
-            model: nil,
+            label: event.label,
             originProcessID: hasOrigin ? event.originProcessID : nil,
             originBundleIdentifier: hasOrigin ? event.originBundleIdentifier : nil,
             lastEventKey: nil,
@@ -296,7 +292,7 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         let changed = prune(now: now)
-        if changed { _ = save() }
+        if changed || needsRewrite { _ = save() }
         return sessionsLocked(now: now)
     }
 
@@ -312,19 +308,13 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
             return AgentSession(
                 id: record.key,
                 harness: record.harness,
-                title: record.title ?? "\(record.harness.displayName) session",
-                detail: record.detail ?? record.harness.displayName,
-                prompt: record.prompt,
-                projectPath: record.projectPath,
-                model: record.model,
+                label: record.label ?? "\(record.harness.displayName) session",
                 state: record.state,
                 updatedAt: presentationUpdatedAt,
                 observedAt: record.observedAt,
                 startedAt: record.startedAt,
-                sourcePath: "lifecycle://\(record.key)",
                 originProcessID: record.originProcessID,
-                originBundleIdentifier: record.originBundleIdentifier,
-                confidence: .live
+                originBundleIdentifier: record.originBundleIdentifier
             )
         }
         .sorted { $0.updatedAt > $1.updatedAt }
@@ -363,7 +353,7 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         return changed
     }
 
-    private static func load(from fileURL: URL) -> [String: Record] {
+    private static func load(from fileURL: URL) -> (records: [String: Record], needsRewrite: Bool) {
         let fileManager = FileManager.default
         let directory = fileURL.deletingLastPathComponent()
         if directory.lastPathComponent == ".atoll" {
@@ -374,7 +364,7 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         }
         guard let data = try? Data(contentsOf: fileURL),
               let decoded = try? JSONDecoder().decode([LossyRecord].self, from: data) else {
-            return [:]
+            return ([:], false)
         }
         let now = Date()
         let records = decoded.compactMap(\.value).map { decodedRecord in
@@ -402,9 +392,18 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
             }
             record.lastEventKey = nil
             record.recentDeliveries = deliveries.isEmpty ? nil : deliveries
+            record.label = record.label ?? "\(record.harness.displayName) session"
+            let bundleIdentifier = record.originBundleIdentifier?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if (record.originProcessID ?? 0) <= 0 || bundleIdentifier?.isEmpty != false {
+                record.originProcessID = nil
+                record.originBundleIdentifier = nil
+            } else {
+                record.originBundleIdentifier = bundleIdentifier
+            }
             return record
         }
-        return Dictionary(uniqueKeysWithValues: records.map { ($0.key, $0) })
+        return (Dictionary(uniqueKeysWithValues: records.map { ($0.key, $0) }), true)
     }
 
     @discardableResult
@@ -422,6 +421,7 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
                 hardenDirectory: hardensParentDirectory,
                 filePermissionSetter: filePermissionSetter
             )
+            needsRewrite = false
             return true
         } catch {
             return false

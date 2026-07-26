@@ -37,20 +37,107 @@ final class LifecycleEventTests: XCTestCase {
         XCTAssertEqual(event.kind, .started)
     }
 
-    func testNormalizesNativeHookPayload() throws {
+    func testNormalizesHookStateWithoutRetainingSensitiveContent() throws {
+        let sensitive = "SENSITIVE-CONTENT-7B94E6"
+        let fullPath = "/Users/private-owner/Projects/Atoll-Privacy"
         let event = try XCTUnwrap(
             LifecycleEvent.fromHookPayload(
-                harness: .claude,
-                kind: .started,
-                json: "{\"session_id\":\"abc\",\"cwd\":\"/tmp/example\",\"prompt\":\"Fix auth\"}"
+                harness: .cursor,
+                kind: .finished,
+                json: """
+                    {"conversation_id":"abc","cwd":"\(fullPath)","status":"error","prompt":"\(sensitive)","title":"\(sensitive)","detail":"\(sensitive)","message":"\(sensitive)","reason":"\(sensitive)","response":"\(sensitive)","command":"\(sensitive)","transcript":"\(sensitive)","diff":"\(sensitive)","environment":"\(sensitive)","model":"\(sensitive)"}
+                    """
             )
         )
 
         XCTAssertEqual(event.sessionID, "abc")
-        XCTAssertEqual(event.projectPath, "/tmp/example")
-        XCTAssertEqual(event.prompt, "Fix auth")
+        XCTAssertEqual(event.kind, .failed)
+        XCTAssertEqual(event.label, "Atoll-Privacy")
         XCTAssertNotNil(event.deliveryID)
-        XCTAssertEqual(LifecycleEvent.parse(jsonLine: try XCTUnwrap(event.jsonLine()))?.kind, .started)
+
+        let wire = try XCTUnwrap(event.jsonLine())
+        XCTAssertFalse(wire.contains(sensitive))
+        XCTAssertFalse(wire.contains(fullPath))
+        let object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(wire.utf8)) as? [String: Any]
+        )
+        XCTAssertTrue(Set(object.keys).isSubset(of: [
+            "delivery_id", "event", "harness", "label", "origin_bundle_identifier",
+            "origin_process_id", "session_id", "timestamp"
+        ]))
+        XCTAssertEqual(LifecycleEvent.parse(jsonLine: wire)?.kind, .failed)
+    }
+
+    func testHookPayloadUsesProviderFallbackForUnusableWorkingDirectories() throws {
+        for workingDirectory in [nil, "", "/", "relative/project", "~"] as [String?] {
+            var payload: [String: Any] = ["session_id": UUID().uuidString]
+            payload["cwd"] = workingDirectory
+            let data = try JSONSerialization.data(withJSONObject: payload)
+            let event = try XCTUnwrap(LifecycleEvent.fromHookPayload(
+                harness: .claude,
+                kind: .started,
+                json: try XCTUnwrap(String(data: data, encoding: .utf8))
+            ))
+            XCTAssertEqual(event.label, "Claude Code session")
+        }
+    }
+
+    func testQueueAndRegistryPersistOnlyPrivacySafeLifecycleMetadata() throws {
+        let sensitive = "QUEUE-SENSITIVE-24A6D1"
+        let fullPath = "/Users/private-owner/Projects/Queue-Project"
+        let event = try XCTUnwrap(LifecycleEvent.fromHookPayload(
+            harness: .codex,
+            kind: .started,
+            json: "{\"session_id\":\"private\",\"cwd\":\"\(fullPath)\",\"prompt\":\"\(sensitive)\",\"message\":\"\(sensitive)\",\"model\":\"\(sensitive)\"}"
+        ))
+        let queue = LifecycleEventQueue(homeDirectory: directory)
+        let receipt = try XCTUnwrap(queue.enqueue(event))
+        let queueDirectory = directory.appendingPathComponent(".atoll/lifecycle-events", isDirectory: true)
+        let queueFile = try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(at: queueDirectory, includingPropertiesForKeys: nil).first
+        )
+        let queuedData = try XCTUnwrap(String(data: Data(contentsOf: queueFile), encoding: .utf8))
+
+        let store = directory.appendingPathComponent("registry.json")
+        let registry = LifecycleSessionRegistry(fileURL: store)
+        let session = try XCTUnwrap(registry.ingestPersisting(receipt.event)?.first)
+        let registryData = try XCTUnwrap(String(data: Data(contentsOf: store), encoding: .utf8))
+
+        XCTAssertEqual(session.label, "Queue-Project")
+        for persisted in [queuedData, registryData] {
+            XCTAssertFalse(persisted.contains(sensitive))
+            XCTAssertFalse(persisted.contains(fullPath))
+            XCTAssertTrue(persisted.contains("Queue-Project"))
+        }
+    }
+
+    func testLegacyQueueRecordDecodesWithoutCopyingSensitiveContent() throws {
+        let sensitive = "LEGACY-QUEUE-SENSITIVE-9C2A"
+        let fullPath = "/Users/private-owner/Projects/Legacy-Queue"
+        let queueDirectory = directory.appendingPathComponent(".atoll/lifecycle-events", isDirectory: true)
+        try FileManager.default.createDirectory(at: queueDirectory, withIntermediateDirectories: true)
+        let legacyFile = queueDirectory.appendingPathComponent("legacy.json")
+        try "{\"harness\":\"claude\",\"session_id\":\"legacy-queue\",\"event\":\"started\",\"cwd\":\"\(fullPath)\",\"prompt\":\"\(sensitive)\",\"message\":\"\(sensitive)\",\"model\":\"\(sensitive)\"}"
+            .write(to: legacyFile, atomically: true, encoding: .utf8)
+
+        let queue = LifecycleEventQueue(homeDirectory: directory)
+        let receipt = try XCTUnwrap(queue.pendingEvents().first)
+        XCTAssertEqual(receipt.event.label, "Legacy-Queue")
+        let migratedQueueData = try XCTUnwrap(String(data: Data(contentsOf: legacyFile), encoding: .utf8))
+        XCTAssertFalse(migratedQueueData.contains(sensitive))
+        XCTAssertFalse(migratedQueueData.contains(fullPath))
+        XCTAssertTrue(migratedQueueData.contains("Legacy-Queue"))
+
+        let store = directory.appendingPathComponent("registry.json")
+        let registry = LifecycleSessionRegistry(fileURL: store)
+        XCTAssertNotNil(registry.ingestPersisting(receipt.event))
+        XCTAssertTrue(queue.acknowledge(receipt))
+
+        let registryData = try XCTUnwrap(String(data: Data(contentsOf: store), encoding: .utf8))
+        XCTAssertFalse(registryData.contains(sensitive))
+        XCTAssertFalse(registryData.contains(fullPath))
+        XCTAssertTrue(registryData.contains("Legacy-Queue"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyFile.path))
     }
 
     func testJSONLinePreservesFractionalSecondTimestamp() throws {
@@ -79,6 +166,56 @@ final class LifecycleEventTests: XCTestCase {
         )
         XCTAssertEqual(parsed.originProcessID, 123)
         XCTAssertEqual(parsed.originBundleIdentifier, "com.apple.Terminal")
+    }
+
+    func testIncompleteOriginMetadataIsDroppedFromQueueAndLegacyRegistry() throws {
+        let queue = LifecycleEventQueue(homeDirectory: directory)
+        XCTAssertNotNil(queue.enqueue(LifecycleEvent(
+            sessionID: "pid-only",
+            harness: .codex,
+            kind: .started,
+            originProcessID: 123
+        )))
+        XCTAssertNotNil(queue.enqueue(LifecycleEvent(
+            sessionID: "bundle-only",
+            harness: .codex,
+            kind: .started,
+            originBundleIdentifier: "com.apple.Terminal"
+        )))
+        let queuedEvents = queue.pendingEvents().map(\.event)
+        XCTAssertEqual(queuedEvents.count, 2)
+        XCTAssertTrue(queuedEvents.allSatisfy {
+            $0.originProcessID == nil && $0.originBundleIdentifier == nil
+        })
+
+        let now = Date()
+        let store = directory.appendingPathComponent("legacy-registry.json")
+        let legacyRecords: [[String: Any]] = [
+            [
+                "sessionID": "pid-only",
+                "harness": "codex",
+                "state": "running",
+                "updatedAt": now.timeIntervalSinceReferenceDate,
+                "originProcessID": 123
+            ],
+            [
+                "sessionID": "bundle-only",
+                "harness": "codex",
+                "state": "running",
+                "updatedAt": now.timeIntervalSinceReferenceDate,
+                "originBundleIdentifier": "com.apple.Terminal"
+            ]
+        ]
+        try JSONSerialization.data(withJSONObject: legacyRecords).write(to: store)
+
+        let sessions = LifecycleSessionRegistry(fileURL: store).sessions(now: now)
+        XCTAssertEqual(sessions.count, 2)
+        XCTAssertTrue(sessions.allSatisfy {
+            $0.originProcessID == nil && $0.originBundleIdentifier == nil
+        })
+        let migrated = try XCTUnwrap(String(data: Data(contentsOf: store), encoding: .utf8))
+        XCTAssertFalse(migrated.contains("originProcessID"))
+        XCTAssertFalse(migrated.contains("originBundleIdentifier"))
     }
 
     func testTransportIdentityDistinguishesIdenticalInvocationsAndSurvivesRoundTrip() throws {
@@ -120,6 +257,16 @@ final class LifecycleEventTests: XCTestCase {
         XCTAssertEqual(firstParse.deliveryIdentity, secondParse.deliveryIdentity)
     }
 
+    func testMalformedLegacyDeliveryDigestIsRehashed() {
+        let malformed = "sha256:" + String(repeating: "x", count: 64)
+        let migrated = LifecycleEvent.migratedDeliveryIdentity(malformed)
+
+        XCTAssertNotEqual(migrated, malformed)
+        XCTAssertEqual(migrated.count, 71)
+        XCTAssertTrue(migrated.hasPrefix("sha256:"))
+        XCTAssertTrue(migrated.dropFirst(7).allSatisfy(\.isHexDigit))
+    }
+
     func testCursorTerminalStatusSelectsOfficialOutcome() throws {
         let outcomes: [(String, LifecycleEventKind)] = [
             ("completed", .finished),
@@ -143,11 +290,18 @@ final class LifecycleEventTests: XCTestCase {
         let store = directory.appendingPathComponent("registry.json")
         let start = Date(timeIntervalSince1970: 1_000)
         let registry = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)
-        registry.ingest(LifecycleEvent(sessionID: "one", harness: .codex, kind: .started, timestamp: start, title: "Fix auth"), now: start)
+        registry.ingest(LifecycleEvent(sessionID: "one", harness: .codex, kind: .started, timestamp: start, label: "Atoll-Privacy"), now: start)
         XCTAssertEqual(registry.sessions(now: start).first?.state, .running)
 
         let reloaded = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)
-        XCTAssertEqual(reloaded.sessions(now: start).first?.title, "Fix auth")
+        XCTAssertEqual(reloaded.sessions(now: start).first?.label, "Atoll-Privacy")
+        XCTAssertEqual(
+            reloaded.ingest(
+                LifecycleEvent(sessionID: "one", harness: .codex, kind: .finished, timestamp: start.addingTimeInterval(1)),
+                now: start.addingTimeInterval(1)
+            ).first?.label,
+            "Atoll-Privacy"
+        )
         XCTAssertTrue(reloaded.sessions(now: start.addingTimeInterval(61)).isEmpty)
     }
 
@@ -252,7 +406,8 @@ final class LifecycleEventTests: XCTestCase {
         registry.ingest(LifecycleEvent(sessionID: "one", harness: .codex, kind: .started, timestamp: now), now: now)
         let sessions = registry.ingest(LifecycleEvent(sessionID: "one", harness: .codex, kind: .finished, timestamp: now.addingTimeInterval(1)), now: now.addingTimeInterval(1))
         XCTAssertEqual(sessions.first?.state, .done)
-        XCTAssertNil(sessions.first?.processID)
+        XCTAssertNil(sessions.first?.originProcessID)
+        XCTAssertNil(sessions.first?.originBundleIdentifier)
     }
 
     func testActiveRetryPreservesCycleStart() throws {
@@ -281,8 +436,7 @@ final class LifecycleEventTests: XCTestCase {
             sessionID: "replayed",
             harness: .codex,
             kind: .started,
-            timestamp: providerTime,
-            prompt: "Keep this exact receipt stable"
+            timestamp: providerTime
         )
         let registry = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)
         _ = registry.ingest(event, now: firstObservedAt)
@@ -305,8 +459,7 @@ final class LifecycleEventTests: XCTestCase {
             sessionID: "crash-window",
             harness: .codex,
             kind: .started,
-            timestamp: providerTime,
-            prompt: "Survive registry save before queue acknowledgment"
+            timestamp: providerTime
         )))
         let registry = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)
         _ = try XCTUnwrap(registry.ingestPersisting(receipt.event, now: firstObservedAt))
@@ -327,13 +480,14 @@ final class LifecycleEventTests: XCTestCase {
         let store = directory.appendingPathComponent("registry.json")
         let providerTime = Date(timeIntervalSince1970: 1_000)
         let observedAt = providerTime.addingTimeInterval(10)
-        let event = LifecycleEvent(
-            sessionID: "legacy-delivery-key",
-            harness: .codex,
-            kind: .started,
-            timestamp: providerTime,
-            prompt: "Migrate this receipt"
-        )
+        let sensitive = "LEGACY-SENSITIVE-4E3D90"
+        let fullPath = "/Users/private-owner/Projects/Legacy-Project"
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let legacyWire = """
+            {"harness":"codex","session_id":"legacy-delivery-key","event":"started","timestamp":"\(formatter.string(from: providerTime))","title":"\(sensitive)","detail":"\(sensitive)","prompt":"\(sensitive)","project_path":"\(fullPath)","model":"\(sensitive)"}
+            """
+        let event = try XCTUnwrap(LifecycleEvent.parse(jsonLine: legacyWire))
         let legacyRecord: [[String: Any]] = [[
             "sessionID": event.sessionID,
             "harness": event.harness.rawValue,
@@ -342,12 +496,21 @@ final class LifecycleEventTests: XCTestCase {
             "observedAt": observedAt.timeIntervalSinceReferenceDate,
             "orderingAt": providerTime.timeIntervalSinceReferenceDate,
             "startedAt": providerTime.timeIntervalSinceReferenceDate,
-            "prompt": "Migrate this receipt",
-            "lastEventKey": try XCTUnwrap(event.jsonLine())
+            "title": sensitive,
+            "detail": sensitive,
+            "prompt": sensitive,
+            "projectPath": fullPath,
+            "model": sensitive,
+            "lastEventKey": legacyWire
         ]]
         try JSONSerialization.data(withJSONObject: legacyRecord).write(to: store)
 
         let registry = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)
+        XCTAssertEqual(registry.sessions(now: observedAt).first?.observedAt, observedAt)
+        let scrubbedOnLoad = try XCTUnwrap(String(data: Data(contentsOf: store), encoding: .utf8))
+        XCTAssertFalse(scrubbedOnLoad.contains(sensitive))
+        XCTAssertFalse(scrubbedOnLoad.contains(fullPath))
+
         let replayed = try XCTUnwrap(
             registry.ingest(event, now: observedAt.addingTimeInterval(20)).first
         )
@@ -357,9 +520,58 @@ final class LifecycleEventTests: XCTestCase {
             try JSONSerialization.jsonObject(with: Data(contentsOf: store)) as? [[String: Any]]
         )
         XCTAssertNil(migrated.first?["lastEventKey"])
+        XCTAssertEqual(migrated.first?["label"] as? String, "Codex session")
         let identities = try XCTUnwrap(migrated.first?["recentDeliveries"] as? [[String: Any]])
         XCTAssertEqual(identities.count, 1)
         XCTAssertTrue((identities.first?["identity"] as? String)?.hasPrefix("sha256:") == true)
+        let migratedData = try XCTUnwrap(String(data: Data(contentsOf: store), encoding: .utf8))
+        XCTAssertFalse(migratedData.contains(sensitive))
+        XCTAssertFalse(migratedData.contains(fullPath))
+    }
+
+    func testLegacyQueueReplayMatchesPreexistingDigestLedgerAfterSanitization() throws {
+        let store = directory.appendingPathComponent("registry.json")
+        let providerTime = Date(timeIntervalSince1970: 1_000)
+        let observedAt = providerTime.addingTimeInterval(10)
+        let sensitive = "LEGACY-REPLAY-SENSITIVE-7D5B"
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let legacyWire = """
+            {"event":"started","harness":"codex","prompt":"\(sensitive)","session_id":"legacy-replay","timestamp":"\(formatter.string(from: providerTime))"}
+            """
+        let legacyIdentity = LifecycleEvent.deliveryIdentity(forCanonicalRepresentation: legacyWire)
+        let legacyRecord: [[String: Any]] = [[
+            "sessionID": "legacy-replay",
+            "harness": "codex",
+            "state": "running",
+            "updatedAt": providerTime.timeIntervalSinceReferenceDate,
+            "observedAt": observedAt.timeIntervalSinceReferenceDate,
+            "orderingAt": providerTime.timeIntervalSinceReferenceDate,
+            "startedAt": providerTime.timeIntervalSinceReferenceDate,
+            "recentDeliveries": [[
+                "identity": legacyIdentity,
+                "receivedAt": observedAt.timeIntervalSinceReferenceDate
+            ]]
+        ]]
+        try JSONSerialization.data(withJSONObject: legacyRecord).write(to: store)
+
+        let queueDirectory = directory.appendingPathComponent(".atoll/lifecycle-events", isDirectory: true)
+        try FileManager.default.createDirectory(at: queueDirectory, withIntermediateDirectories: true)
+        let legacyFile = queueDirectory.appendingPathComponent("legacy-replay.json")
+        try legacyWire.write(to: legacyFile, atomically: true, encoding: .utf8)
+
+        let queue = LifecycleEventQueue(homeDirectory: directory)
+        let receipt = try XCTUnwrap(queue.pendingEvents().first)
+        XCTAssertEqual(receipt.event.deliveryIdentity, legacyIdentity)
+        let sanitizedQueue = try XCTUnwrap(String(data: Data(contentsOf: legacyFile), encoding: .utf8))
+        XCTAssertFalse(sanitizedQueue.contains(sensitive))
+        XCTAssertTrue(sanitizedQueue.contains(legacyIdentity))
+
+        let registry = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)
+        let replayed = try XCTUnwrap(
+            registry.ingest(receipt.event, now: observedAt.addingTimeInterval(20)).first
+        )
+        XCTAssertEqual(replayed.observedAt, observedAt)
     }
 
     func testNewActiveCycleAfterTerminalResetsCycleStart() throws {
@@ -481,8 +693,7 @@ final class LifecycleEventTests: XCTestCase {
             sessionID: "no-op-replay",
             harness: .codex,
             kind: .started,
-            timestamp: terminalAt,
-            prompt: "Do not reopen this completed turn"
+            timestamp: terminalAt
         )
         let duringDwell = try XCTUnwrap(
             registry.ingestPersisting(
@@ -809,8 +1020,7 @@ final class LifecycleEventTests: XCTestCase {
                     sessionID: "bounded-ledger",
                     harness: .codex,
                     kind: .started,
-                    timestamp: timestamp,
-                    prompt: "Delivery \(index)"
+                    timestamp: timestamp
                 ),
                 now: timestamp
             ))
