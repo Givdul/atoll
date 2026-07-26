@@ -61,12 +61,11 @@ if arguments.first == "--lifecycle-event" {
     guard arguments.count == 3,
           let harness = AgentHarness.parse(arguments[1]),
           LifecycleHookInstaller.supportedAgents.contains(harness),
-          let kind = LifecycleEventKind.parse(arguments[2]) else {
-        exit(EXIT_FAILURE)
+          let kind = LifecycleEventKind.parse(arguments[2]),
+          let json = LifecycleHookInput.readUTF8(from: .standardInput) else {
+        exit(EXIT_SUCCESS)
     }
     let origin = originatingApplication()
-    let payload = FileHandle.standardInput.readDataToEndOfFile()
-    let json = String(data: payload, encoding: .utf8) ?? "{}"
     if let event = LifecycleEvent.fromHookPayload(
         harness: harness,
         kind: kind,
@@ -74,14 +73,9 @@ if arguments.first == "--lifecycle-event" {
         originProcessID: origin?.processID,
         originBundleIdentifier: origin?.bundleIdentifier
     ) {
-        if !LifecycleSocketClient.send(event) {
-            guard LifecycleEventQueue().enqueue(event) != nil else {
-                exit(EXIT_FAILURE)
-            }
-        }
-        exit(EXIT_SUCCESS)
+        _ = LifecycleEventDelivery.deliver(event)
     }
-    exit(EXIT_FAILURE)
+    exit(EXIT_SUCCESS)
 }
 
 let app = NSApplication.shared
