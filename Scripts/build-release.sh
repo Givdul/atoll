@@ -19,7 +19,12 @@ SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-}"
 SKERRY_PURCHASE_URL="${SKERRY_PURCHASE_URL:-}"
 POLAR_ORGANIZATION_ID="${POLAR_ORGANIZATION_ID:-}"
 POLAR_BENEFIT_ID="${POLAR_BENEFIT_ID:-}"
+MARKETING_VERSION="${MARKETING_VERSION:-}"
+BUILD_NUMBER="${BUILD_NUMBER:-}"
+PREVIOUS_BUILD_NUMBER="${PREVIOUS_BUILD_NUMBER:-}"
+DEVELOPER_TEAM_ID="${DEVELOPER_TEAM_ID:-}"
 ARCHITECTURES=(arm64 x86_64)
+MODE="build"
 
 # Bash 3.2 treats an empty array expansion as unset under `set -u`.
 TEMP_DIRS=("")
@@ -80,8 +85,80 @@ fail() {
   exit 1
 }
 
-if [[ $# -gt 1 || ( $# -eq 1 && "$1" != "--install" ) ]]; then
-  fail "Usage: $0 [--install]"
+if [[ $# -gt 1 ]]; then
+  fail "Usage: $0 [--install|--distribution]"
+fi
+case "${1:-}" in
+  "")
+    ;;
+  --install)
+    MODE="install"
+    ;;
+  --distribution)
+    MODE="distribution"
+    ;;
+  *)
+    fail "Usage: $0 [--install|--distribution]"
+    ;;
+esac
+
+if [[ -n "$MARKETING_VERSION" && ! "$MARKETING_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  fail "MARKETING_VERSION must contain three dot-separated integers"
+fi
+if [[ -n "$BUILD_NUMBER" && ! "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+  fail "BUILD_NUMBER must be a positive integer"
+fi
+
+if [[ "$MODE" == "distribution" ]]; then
+  required_values=(
+    "$SIGN_IDENTITY"
+    "$DEVELOPER_TEAM_ID"
+    "$NOTARY_KEYCHAIN_PROFILE"
+    "$SPARKLE_FEED_URL"
+    "$SPARKLE_PUBLIC_ED_KEY"
+    "$SKERRY_PURCHASE_URL"
+    "$POLAR_ORGANIZATION_ID"
+    "$POLAR_BENEFIT_ID"
+    "$MARKETING_VERSION"
+    "$BUILD_NUMBER"
+    "$PREVIOUS_BUILD_NUMBER"
+  )
+  required_names=(
+    SIGN_IDENTITY
+    DEVELOPER_TEAM_ID
+    NOTARY_KEYCHAIN_PROFILE
+    SPARKLE_FEED_URL
+    SPARKLE_PUBLIC_ED_KEY
+    SKERRY_PURCHASE_URL
+    POLAR_ORGANIZATION_ID
+    POLAR_BENEFIT_ID
+    MARKETING_VERSION
+    BUILD_NUMBER
+    PREVIOUS_BUILD_NUMBER
+  )
+  for index in "${!required_values[@]}"; do
+    [[ -n "${required_values[$index]}" && "${required_values[$index]}" != "-" ]] \
+      || fail "${required_names[$index]} is required for --distribution"
+  done
+
+  [[ "$DEVELOPER_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] \
+    || fail "DEVELOPER_TEAM_ID must be a 10-character Apple team identifier"
+  [[ "$SPARKLE_PUBLIC_ED_KEY" =~ ^[A-Za-z0-9+/]{43}=$ ]] \
+    || fail "SPARKLE_PUBLIC_ED_KEY must be a base64-encoded Ed25519 public key"
+  [[ "$SKERRY_PURCHASE_URL" =~ ^https://buy\.polar\.sh/polar_cl_[A-Za-z0-9]+$ ]] \
+    || fail "SKERRY_PURCHASE_URL must use the production Polar checkout in --distribution"
+  [[ "$PREVIOUS_BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] \
+    || fail "PREVIOUS_BUILD_NUMBER must be a positive integer"
+  (( 10#$BUILD_NUMBER > 10#$PREVIOUS_BUILD_NUMBER )) \
+    || fail "BUILD_NUMBER must be greater than PREVIOUS_BUILD_NUMBER"
+  [[ "$SIGN_IDENTITY" == Developer\ ID\ Application:*"($DEVELOPER_TEAM_ID)" ]] \
+    || fail "SIGN_IDENTITY must be the Developer ID Application identity for DEVELOPER_TEAM_ID"
+  security find-identity -v -p codesigning | grep -F "\"$SIGN_IDENTITY\"" >/dev/null \
+    || fail "SIGN_IDENTITY is not available in the current keychain"
+
+  EXPECTED_TEAM_IDENTIFIER="$DEVELOPER_TEAM_ID"
+  xcrun notarytool history --keychain-profile "$NOTARY_KEYCHAIN_PROFILE" >/dev/null \
+    || fail "NOTARY_KEYCHAIN_PROFILE could not authenticate with Apple's notary service"
 fi
 
 if [[ -n "$SPARKLE_FEED_URL" || -n "$SPARKLE_PUBLIC_ED_KEY" ]]; then
@@ -113,6 +190,10 @@ fi
 
 if [[ -n "$NOTARY_KEYCHAIN_PROFILE" && "$SIGN_IDENTITY" == "-" ]]; then
   fail "NOTARY_KEYCHAIN_PROFILE requires a Developer ID signing identity"
+fi
+
+if [[ "$MODE" == "distribution" ]]; then
+  echo "Production preflight passed"
 fi
 
 release_directory() {
@@ -318,6 +399,48 @@ install_app() {
   echo "Installed $INSTALLED_APP"
 }
 
+verify_distribution_archive() {
+  local verify_temp
+  local extracted_app
+  local extracted_plist
+  local embedded_sparkle
+  local sparkle_binary
+
+  verify_temp="$(mktemp -d "$DIST_DIR/.Skerry.verify.XXXXXX")"
+  TEMP_DIRS+=("$verify_temp")
+  ditto -x -k "$ZIP_PATH" "$verify_temp"
+  extracted_app="$verify_temp/$APP_NAME.app"
+  [[ -d "$extracted_app" ]] || fail "Release archive does not contain $APP_NAME.app"
+
+  extracted_plist="$extracted_app/Contents/Info.plist"
+  [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$extracted_plist")" == "$MARKETING_VERSION" ]] \
+    || fail "Release archive has the wrong marketing version"
+  [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$extracted_plist")" == "$BUILD_NUMBER" ]] \
+    || fail "Release archive has the wrong build number"
+  [[ "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$extracted_plist")" == "$SPARKLE_FEED_URL" ]] \
+    || fail "Release archive has the wrong Sparkle feed URL"
+  [[ "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$extracted_plist")" == "$SPARKLE_PUBLIC_ED_KEY" ]] \
+    || fail "Release archive has the wrong Sparkle public key"
+
+  codesign --verify --deep --strict --verbose=2 "$extracted_app"
+  verify_signature_metadata "$extracted_app"
+  xcrun stapler validate "$extracted_app"
+  spctl --assess --type execute --verbose=2 "$extracted_app"
+  verify_universal_binary "$extracted_app/Contents/MacOS/$APP_NAME"
+
+  embedded_sparkle="$extracted_app/Contents/Frameworks/Sparkle.framework/Versions/B"
+  for sparkle_binary in \
+    "$embedded_sparkle/Sparkle" \
+    "$embedded_sparkle/Autoupdate" \
+    "$embedded_sparkle/XPCServices/Downloader.xpc/Contents/MacOS/Downloader" \
+    "$embedded_sparkle/XPCServices/Installer.xpc/Contents/MacOS/Installer" \
+    "$embedded_sparkle/Updater.app/Contents/MacOS/Updater"; do
+    verify_universal_binary "$sparkle_binary"
+  done
+
+  shasum -a 256 "$ZIP_PATH"
+}
+
 mkdir -p "$DIST_DIR"
 rm -f "$ZIP_PATH"
 
@@ -355,6 +478,11 @@ cp "$ROOT/Bundle/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy \
   -c "Set :CFBundleVersion ${BUILD_NUMBER:-$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)}" \
   "$APP_BUNDLE/Contents/Info.plist"
+if [[ -n "$MARKETING_VERSION" ]]; then
+  /usr/libexec/PlistBuddy \
+    -c "Set :CFBundleShortVersionString $MARKETING_VERSION" \
+    "$APP_BUNDLE/Contents/Info.plist"
+fi
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
   /usr/libexec/PlistBuddy -c "Add :SkerryEntitlementStorage string trial-file-v1" "$APP_BUNDLE/Contents/Info.plist"
 else
@@ -434,11 +562,22 @@ if [[ -n "$NOTARY_KEYCHAIN_PROFILE" ]]; then
   NOTARY_TEMP="$(mktemp -d "$DIST_DIR/.Skerry.notary.XXXXXX")"
   TEMP_DIRS+=("$NOTARY_TEMP")
   NOTARY_UPLOAD="$NOTARY_TEMP/$APP_NAME.zip"
+  NOTARY_RESULT="$DIST_DIR/$APP_NAME-notarization.json"
+  NOTARY_LOG="$DIST_DIR/$APP_NAME-notarization-log.json"
   ditto -c -k --keepParent "$APP_BUNDLE" "$NOTARY_UPLOAD"
   xcrun notarytool submit \
     "$NOTARY_UPLOAD" \
     --keychain-profile "$NOTARY_KEYCHAIN_PROFILE" \
-    --wait
+    --wait \
+    --output-format json > "$NOTARY_RESULT"
+  cat "$NOTARY_RESULT"
+  NOTARY_SUBMISSION_ID="$(plutil -extract id raw -o - "$NOTARY_RESULT")"
+  [[ "$(plutil -extract status raw -o - "$NOTARY_RESULT")" == "Accepted" ]] \
+    || fail "Apple did not accept the notarization submission"
+  xcrun notarytool log \
+    "$NOTARY_SUBMISSION_ID" \
+    "$NOTARY_LOG" \
+    --keychain-profile "$NOTARY_KEYCHAIN_PROFILE"
   xcrun stapler staple "$APP_BUNDLE"
   xcrun stapler validate "$APP_BUNDLE"
   codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
@@ -446,10 +585,13 @@ fi
 
 # The distributable archive must contain the stapled app, so always create it
 # after the optional notarization and stapling workflow has finished.
-ditto -c -k --keepParent "$APP_BUNDLE" "$ZIP_PATH"
+ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$ZIP_PATH"
 [[ -s "$ZIP_PATH" ]] || fail "Release archive was not created: $ZIP_PATH"
 
-if [[ "${1:-}" == "--install" ]]; then
+if [[ "$MODE" == "distribution" ]]; then
+  verify_distribution_archive
+  echo "Built and verified $ZIP_PATH"
+elif [[ "$MODE" == "install" ]]; then
   install_app
 else
   echo "Built $APP_BUNDLE and $ZIP_PATH"

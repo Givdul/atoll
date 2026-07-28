@@ -63,3 +63,8 @@ swift test
 ```
 
 The release script builds and verifies a universal `arm64` + `x86_64` bundle, signs embedded Sparkle components inside-out, and installs `/Applications/Skerry.app` with rollback on failure. The default signature is ad hoc for local builds. Distribution requires a Developer ID identity plus the external notarization and Sparkle feed credentials described by the script's environment variables.
+
+Release operators should follow [Releasing Skerry](RELEASING.md). Buyers can
+read the [privacy policy](PRIVACY.md), [license and sale terms](TERMS.md),
+[support tracker](https://github.com/Givdul/atoll/issues), and bundled
+third-party notices from Skerry's menu.
