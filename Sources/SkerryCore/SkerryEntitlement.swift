@@ -21,13 +21,17 @@ public enum SkerryEntitlementStatus: Equatable, Sendable {
 
 public struct SkerryStoredLicense: Codable, Equatable, Sendable {
     public let key: String
-    public let instanceID: String
     public var validatedAt: Date
+    public var lastValidationAttemptAt: Date?
 
-    public init(key: String, instanceID: String, validatedAt: Date) {
+    public init(
+        key: String,
+        validatedAt: Date,
+        lastValidationAttemptAt: Date? = nil
+    ) {
         self.key = key
-        self.instanceID = instanceID
         self.validatedAt = validatedAt
+        self.lastValidationAttemptAt = lastValidationAttemptAt
     }
 }
 
@@ -394,63 +398,78 @@ private final class KeychainOperationCompletion<Value: Sendable>: @unchecked Sen
     }
 }
 
-public struct LemonSqueezyConfiguration: Equatable, Sendable {
+public struct PolarConfiguration: Equatable, Sendable {
     public let purchaseURL: URL
-    public let storeID: Int
-    public let productID: Int
-    public let variantID: Int
+    public let organizationID: UUID
+    public let benefitID: UUID
+    let apiBaseURL: URL
 
     public init?(
         purchaseURL: URL,
-        storeID: Int,
-        productID: Int,
-        variantID: Int
+        organizationID: UUID,
+        benefitID: UUID
     ) {
         guard purchaseURL.scheme?.lowercased() == "https",
               purchaseURL.user == nil,
               purchaseURL.password == nil,
-              let host = purchaseURL.host?.lowercased(),
-              host.hasSuffix(".lemonsqueezy.com"),
-              purchaseURL.path.hasPrefix("/checkout/buy/"),
-              storeID > 0,
-              productID > 0,
-              variantID > 0 else {
+              purchaseURL.port == nil,
+              purchaseURL.query == nil,
+              purchaseURL.fragment == nil,
+              let host = purchaseURL.host?.lowercased() else {
             return nil
         }
+        let segments = purchaseURL.path.split(separator: "/", omittingEmptySubsequences: true)
+        let apiBaseURL: URL?
+        if host == "buy.polar.sh",
+           segments.count == 1,
+           Self.isCheckoutLinkID(segments[0]) {
+            apiBaseURL = URL(string: "https://api.polar.sh")
+        } else if host == "sandbox-api.polar.sh",
+                  segments.count == 4,
+                  segments[0] == "v1",
+                  segments[1] == "checkout-links",
+                  Self.isCheckoutLinkID(segments[2]),
+                  segments[3] == "redirect" {
+            apiBaseURL = URL(string: "https://sandbox-api.polar.sh")
+        } else {
+            apiBaseURL = nil
+        }
+        guard let apiBaseURL else { return nil }
         self.purchaseURL = purchaseURL
-        self.storeID = storeID
-        self.productID = productID
-        self.variantID = variantID
+        self.organizationID = organizationID
+        self.benefitID = benefitID
+        self.apiBaseURL = apiBaseURL
     }
 
     public init?(bundle: Bundle = .main) {
         guard let urlString = bundle.object(forInfoDictionaryKey: "SkerryPurchaseURL") as? String,
               let purchaseURL = URL(string: urlString),
-              let storeID = Self.integer(bundle.object(forInfoDictionaryKey: "SkerryLemonSqueezyStoreID")),
-              let productID = Self.integer(bundle.object(forInfoDictionaryKey: "SkerryLemonSqueezyProductID")),
-              let variantID = Self.integer(bundle.object(forInfoDictionaryKey: "SkerryLemonSqueezyVariantID")) else {
+              let organizationIDString = bundle.object(
+                  forInfoDictionaryKey: "SkerryPolarOrganizationID"
+              ) as? String,
+              let organizationID = UUID(uuidString: organizationIDString),
+              let benefitIDString = bundle.object(
+                  forInfoDictionaryKey: "SkerryPolarBenefitID"
+              ) as? String,
+              let benefitID = UUID(uuidString: benefitIDString) else {
             return nil
         }
         self.init(
             purchaseURL: purchaseURL,
-            storeID: storeID,
-            productID: productID,
-            variantID: variantID
+            organizationID: organizationID,
+            benefitID: benefitID
         )
     }
 
-    private static func integer(_ value: Any?) -> Int? {
-        if let value = value as? NSNumber {
-            return value.intValue
-        }
-        if let value = value as? String {
-            return Int(value)
-        }
-        return nil
+    private static func isCheckoutLinkID(_ segment: Substring) -> Bool {
+        guard segment.hasPrefix("polar_cl_") else { return false }
+        let token = segment.dropFirst("polar_cl_".count)
+        return !token.isEmpty
+            && token.allSatisfy { $0.isLetter || $0.isNumber }
     }
 }
 
-public struct LemonSqueezyLicenseClient: Sendable {
+public struct PolarLicenseClient: Sendable {
     public enum Error: LocalizedError, Equatable {
         case invalidKey
         case rejected(String)
@@ -470,62 +489,54 @@ public struct LemonSqueezyLicenseClient: Sendable {
         public var errorDescription: String? {
             switch self {
             case .invalidKey:
-                "Enter the license key from your Lemon Squeezy receipt."
+                "Enter the license key from your Polar purchase."
             case .rejected(let message):
-                message.isEmpty ? "Lemon Squeezy did not accept this license." : message
+                message.isEmpty ? "Polar did not accept this license." : message
             case .wrongProduct:
                 "This license belongs to a different product."
             case .temporaryFailure:
-                "Lemon Squeezy could not be reached. Skerry will try again later."
+                "Polar could not be reached. Skerry will try again later."
             case .malformedResponse:
-                "Lemon Squeezy returned an unexpected response. Skerry will try again later."
+                "Polar returned an unexpected response. Skerry will try again later."
             }
         }
     }
 
     private struct Response: Decodable {
-        struct LicenseKey: Decodable {
-            let status: String
-            let expiresAt: String?
-
-            private enum CodingKeys: String, CodingKey {
-                case status
-                case expiresAt = "expires_at"
-            }
-        }
-
-        struct Instance: Decodable {
-            let id: String
-        }
-
-        struct Meta: Decodable {
-            let storeID: Int
-            let productID: Int
-            let variantID: Int
-
-            private enum CodingKeys: String, CodingKey {
-                case storeID = "store_id"
-                case productID = "product_id"
-                case variantID = "variant_id"
-            }
-        }
-
-        let activated: Bool?
-        let deactivated: Bool?
-        let valid: Bool?
-        let error: String?
-        let licenseKey: LicenseKey?
-        let instance: Instance?
-        let meta: Meta?
+        let organizationID: UUID
+        let benefitID: UUID
+        let key: String
+        let status: String
+        let limitActivations: Int?
+        let limitUsage: Int?
+        let expiresAt: String?
 
         private enum CodingKeys: String, CodingKey {
-            case activated
-            case deactivated
-            case valid
-            case error
-            case licenseKey = "license_key"
-            case instance
-            case meta
+            case organizationID = "organization_id"
+            case benefitID = "benefit_id"
+            case key
+            case status
+            case limitActivations = "limit_activations"
+            case limitUsage = "limit_usage"
+            case expiresAt = "expires_at"
+        }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            guard container.contains(.limitActivations),
+                  container.contains(.limitUsage),
+                  container.contains(.expiresAt) else {
+                throw DecodingError.dataCorrupted(
+                    .init(codingPath: decoder.codingPath, debugDescription: "Missing limits")
+                )
+            }
+            organizationID = try container.decode(UUID.self, forKey: .organizationID)
+            benefitID = try container.decode(UUID.self, forKey: .benefitID)
+            key = try container.decode(String.self, forKey: .key)
+            status = try container.decode(String.self, forKey: .status)
+            limitActivations = try container.decodeIfPresent(Int.self, forKey: .limitActivations)
+            limitUsage = try container.decodeIfPresent(Int.self, forKey: .limitUsage)
+            expiresAt = try container.decodeIfPresent(String.self, forKey: .expiresAt)
         }
     }
 
@@ -535,9 +546,9 @@ public struct LemonSqueezyLicenseClient: Sendable {
         self.session = session
     }
 
-    public func activate(
+    public func validate(
         key rawKey: String,
-        configuration: LemonSqueezyConfiguration,
+        configuration: PolarConfiguration,
         now: Date = Date()
     ) async throws -> SkerryStoredLicense {
         let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -545,112 +556,48 @@ public struct LemonSqueezyLicenseClient: Sendable {
             throw Error.invalidKey
         }
         let response = try await request(
-            endpoint: "activate",
-            fields: [
-                URLQueryItem(name: "license_key", value: key),
-                URLQueryItem(name: "instance_name", value: "Skerry on Mac")
-            ]
+            key: key,
+            configuration: configuration
         )
-        guard response.activated == true else {
-            throw Error.rejected(response.error ?? "")
-        }
-        let instanceID = try validate(response, configuration: configuration)
-        return SkerryStoredLicense(key: key, instanceID: instanceID, validatedAt: now)
-    }
-
-    public func validate(
-        _ license: SkerryStoredLicense,
-        configuration: LemonSqueezyConfiguration,
-        now: Date = Date()
-    ) async throws -> SkerryStoredLicense {
-        let response = try await request(
-            endpoint: "validate",
-            fields: [
-                URLQueryItem(name: "license_key", value: license.key),
-                URLQueryItem(name: "instance_id", value: license.instanceID)
-            ]
-        )
-        guard response.valid == true else {
-            throw Error.rejected(response.error ?? "")
-        }
-        let instanceID = try validate(response, configuration: configuration)
-        guard instanceID == license.instanceID else {
-            throw Error.rejected("Lemon Squeezy did not validate this Mac's license activation.")
-        }
-        return SkerryStoredLicense(
-            key: license.key,
-            instanceID: license.instanceID,
-            validatedAt: now
-        )
-    }
-
-    public func deactivate(
-        _ license: SkerryStoredLicense,
-        configuration: LemonSqueezyConfiguration
-    ) async throws {
-        let response = try await request(
-            endpoint: "deactivate",
-            fields: [
-                URLQueryItem(name: "license_key", value: license.key),
-                URLQueryItem(name: "instance_id", value: license.instanceID)
-            ]
-        )
-        guard response.deactivated == true else {
-            throw Error.rejected(response.error ?? "")
-        }
-        let licenseKey = try validateProduct(response, configuration: configuration)
-        guard licenseKey.status == "active" || licenseKey.status == "inactive" else {
-            throw Error.rejected("This license is \(licenseKey.status).")
-        }
-    }
-
-    private func validate(
-        _ response: Response,
-        configuration: LemonSqueezyConfiguration
-    ) throws -> String {
-        let licenseKey = try validateProduct(response, configuration: configuration)
-        guard let instanceID = response.instance?.id, !instanceID.isEmpty else {
-            throw Error.malformedResponse
-        }
-        guard licenseKey.status == "active" else {
-            throw Error.rejected("This license is \(licenseKey.status). Paste an active Skerry license.")
-        }
-        return instanceID
-    }
-
-    private func validateProduct(
-        _ response: Response,
-        configuration: LemonSqueezyConfiguration
-    ) throws -> Response.LicenseKey {
-        guard let meta = response.meta, let licenseKey = response.licenseKey else {
-            throw Error.malformedResponse
-        }
-        guard meta.storeID == configuration.storeID,
-              meta.productID == configuration.productID,
-              meta.variantID == configuration.variantID else {
+        guard response.organizationID == configuration.organizationID,
+              response.benefitID == configuration.benefitID,
+              response.key == key else {
             throw Error.wrongProduct
         }
-        guard licenseKey.expiresAt == nil else {
+        guard response.expiresAt == nil,
+              response.limitActivations == nil,
+              response.limitUsage == nil else {
             throw Error.rejected("This license is not the perpetual Skerry license.")
         }
-        return licenseKey
+        guard response.status == "granted" else {
+            throw Error.rejected("This license is \(response.status). Paste an active Skerry license.")
+        }
+        return SkerryStoredLicense(
+            key: key,
+            validatedAt: now,
+            lastValidationAttemptAt: now
+        )
     }
 
-    private func request(endpoint: String, fields: [URLQueryItem]) async throws -> Response {
-        guard let url = URL(string: "https://api.lemonsqueezy.com/v1/licenses/\(endpoint)") else {
-            throw Error.malformedResponse
-        }
-        var components = URLComponents()
-        components.queryItems = fields
+    private func request(
+        key: String,
+        configuration: PolarConfiguration
+    ) async throws -> Response {
+        let url = configuration.apiBaseURL
+            .appendingPathComponent("v1/customer-portal/license-keys/validate")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 10
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue(
-            "application/x-www-form-urlencoded",
-            forHTTPHeaderField: "Content-Type"
-        )
-        request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        guard let body = try? JSONSerialization.data(withJSONObject: [
+            "key": key,
+            "organization_id": configuration.organizationID.uuidString.lowercased(),
+            "benefit_id": configuration.benefitID.uuidString.lowercased()
+        ]) else {
+            throw Error.malformedResponse
+        }
+        request.httpBody = body
 
         let data: Data
         let response: URLResponse
@@ -664,15 +611,16 @@ public struct LemonSqueezyLicenseClient: Sendable {
         }
         if http.statusCode == 408
             || http.statusCode == 425
+            || http.statusCode == 422
             || http.statusCode == 429
             || (500...599).contains(http.statusCode) {
             throw Error.temporaryFailure
         }
+        guard (200...299).contains(http.statusCode) else {
+            throw Error.rejected(http.statusCode == 404 ? "This license was not found." : "")
+        }
         guard let decoded = try? JSONDecoder().decode(Response.self, from: data) else {
             throw Error.malformedResponse
-        }
-        guard (200...299).contains(http.statusCode) else {
-            throw Error.rejected(decoded.error ?? "")
         }
         return decoded
     }

@@ -7,7 +7,7 @@ protocol StatusMenuControllerDelegate: AnyObject {
     func refreshNow()
     func showLifecycleSetup()
     func buySkerry()
-    func activateLicense()
+    func enterLicense()
     func showLicenseStatus()
     func setEnabled(_ enabled: Bool)
     func setNotificationsEnabled(_ enabled: Bool)
@@ -72,14 +72,14 @@ final class StatusMenuController {
         purchase.isEnabled = delegate?.purchaseAvailable == true
         menu.addItem(purchase)
 
-        let activate = NSMenuItem(
-            title: "Activate License…",
-            action: #selector(activateLicense(_:)),
+        let license = NSMenuItem(
+            title: "Enter License…",
+            action: #selector(enterLicense(_:)),
             keyEquivalent: ""
         )
-        activate.target = self
-        activate.isEnabled = delegate?.purchaseAvailable == true
-        menu.addItem(activate)
+        license.target = self
+        license.isEnabled = delegate?.purchaseAvailable == true
+        menu.addItem(license)
 
         menu.addItem(.separator())
 
@@ -210,8 +210,8 @@ final class StatusMenuController {
         delegate?.buySkerry()
     }
 
-    @objc private func activateLicense(_ sender: NSMenuItem) {
-        delegate?.activateLicense()
+    @objc private func enterLicense(_ sender: NSMenuItem) {
+        delegate?.enterLicense()
     }
 
     @objc private func showLicenseStatus(_ sender: NSMenuItem) {

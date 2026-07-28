@@ -206,24 +206,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
         guard let url = entitlementController.configuration?.purchaseURL else {
             showAlert(
                 title: "Purchase Unavailable",
-                message: SkerryEntitlementController.ActivationError.notConfigured.localizedDescription
+                message: SkerryEntitlementController.LicenseError.notConfigured.localizedDescription
             )
             return
         }
         NSWorkspace.shared.open(url)
     }
 
-    func activateLicense() {
+    func enterLicense() {
         let input = NSTextField(string: "")
         input.placeholderString = "License key"
         input.frame = NSRect(x: 0, y: 0, width: 360, height: 24)
 
         let alert = NSAlert()
-        alert.messageText = "Activate Skerry"
-        alert.informativeText = "Paste the license key from your Lemon Squeezy receipt."
+        alert.messageText = "Enter Skerry License"
+        alert.informativeText = "Paste the license key from your Polar purchase."
         alert.alertStyle = .informational
         alert.accessoryView = input
-        alert.addButton(withTitle: "Activate")
+        alert.addButton(withTitle: "Use License")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)
 
@@ -232,7 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
         Task { [weak self] in
             guard let self else { return }
             do {
-                self.state.entitlement = try await self.entitlementController.activate(key: key)
+                self.state.entitlement = try await self.entitlementController.enter(key: key)
                 self.islandController?.syncVisibility()
                 self.statusController?.refreshMenu()
                 self.showAlert(
@@ -243,7 +243,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
                 self.state.entitlement = self.entitlementController.observe()
                 self.islandController?.syncVisibility()
                 self.statusController?.refreshMenu()
-                self.showAlert(title: "License Not Activated", message: error.localizedDescription)
+                self.showAlert(title: "License Not Accepted", message: error.localizedDescription)
             }
         }
     }

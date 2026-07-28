@@ -17,9 +17,8 @@ NOTARY_KEYCHAIN_PROFILE="${NOTARY_KEYCHAIN_PROFILE:-}"
 SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-}"
 SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-}"
 SKERRY_PURCHASE_URL="${SKERRY_PURCHASE_URL:-}"
-LEMON_SQUEEZY_STORE_ID="${LEMON_SQUEEZY_STORE_ID:-}"
-LEMON_SQUEEZY_PRODUCT_ID="${LEMON_SQUEEZY_PRODUCT_ID:-}"
-LEMON_SQUEEZY_VARIANT_ID="${LEMON_SQUEEZY_VARIANT_ID:-}"
+POLAR_ORGANIZATION_ID="${POLAR_ORGANIZATION_ID:-}"
+POLAR_BENEFIT_ID="${POLAR_BENEFIT_ID:-}"
 ARCHITECTURES=(arm64 x86_64)
 
 # Bash 3.2 treats an empty array expansion as unset under `set -u`.
@@ -94,20 +93,20 @@ if [[ -n "$SPARKLE_FEED_URL" || -n "$SPARKLE_PUBLIC_ED_KEY" ]]; then
   fi
 fi
 
-if [[ "$SIGN_IDENTITY" == "-" && ( -n "$SKERRY_PURCHASE_URL" || -n "$LEMON_SQUEEZY_STORE_ID" || -n "$LEMON_SQUEEZY_PRODUCT_ID" || -n "$LEMON_SQUEEZY_VARIANT_ID" ) ]]; then
-  fail "Ad-hoc builds cannot contain Lemon Squeezy configuration"
+if [[ "$SIGN_IDENTITY" == "-" && ( -n "$SKERRY_PURCHASE_URL" || -n "$POLAR_ORGANIZATION_ID" || -n "$POLAR_BENEFIT_ID" ) ]]; then
+  fail "Ad-hoc builds cannot contain Polar configuration"
 fi
 
-if [[ -n "$SKERRY_PURCHASE_URL" || -n "$LEMON_SQUEEZY_STORE_ID" || -n "$LEMON_SQUEEZY_PRODUCT_ID" || -n "$LEMON_SQUEEZY_VARIANT_ID" ]]; then
-  if [[ -z "$SKERRY_PURCHASE_URL" || -z "$LEMON_SQUEEZY_STORE_ID" || -z "$LEMON_SQUEEZY_PRODUCT_ID" || -z "$LEMON_SQUEEZY_VARIANT_ID" ]]; then
-    fail "SKERRY_PURCHASE_URL and all Lemon Squeezy IDs must be set together"
+if [[ -n "$SKERRY_PURCHASE_URL" || -n "$POLAR_ORGANIZATION_ID" || -n "$POLAR_BENEFIT_ID" ]]; then
+  if [[ -z "$SKERRY_PURCHASE_URL" || -z "$POLAR_ORGANIZATION_ID" || -z "$POLAR_BENEFIT_ID" ]]; then
+    fail "SKERRY_PURCHASE_URL, POLAR_ORGANIZATION_ID, and POLAR_BENEFIT_ID must be set together"
   fi
-  if [[ "$SKERRY_PURCHASE_URL" != https://*.lemonsqueezy.com/checkout/buy/* ]]; then
-    fail "SKERRY_PURCHASE_URL must be a Lemon Squeezy HTTPS checkout/buy URL"
+  if [[ ! "$SKERRY_PURCHASE_URL" =~ ^https://buy\.polar\.sh/polar_cl_[A-Za-z0-9]+$ && ! "$SKERRY_PURCHASE_URL" =~ ^https://sandbox-api\.polar\.sh/v1/checkout-links/polar_cl_[A-Za-z0-9]+/redirect$ ]]; then
+    fail "SKERRY_PURCHASE_URL must be an exact Polar production or sandbox checkout link"
   fi
-  for identifier in "$LEMON_SQUEEZY_STORE_ID" "$LEMON_SQUEEZY_PRODUCT_ID" "$LEMON_SQUEEZY_VARIANT_ID"; do
-    if [[ ! "$identifier" =~ ^[1-9][0-9]*$ ]]; then
-      fail "Lemon Squeezy IDs must be positive integers"
+  for identifier in "$POLAR_ORGANIZATION_ID" "$POLAR_BENEFIT_ID"; do
+    if [[ ! "$identifier" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
+      fail "Polar organization and benefit IDs must be UUIDs"
     fi
   done
 fi
@@ -367,9 +366,8 @@ if [[ -n "$SPARKLE_FEED_URL" ]]; then
 fi
 if [[ -n "$SKERRY_PURCHASE_URL" ]]; then
   /usr/libexec/PlistBuddy -c "Add :SkerryPurchaseURL string $SKERRY_PURCHASE_URL" "$APP_BUNDLE/Contents/Info.plist"
-  /usr/libexec/PlistBuddy -c "Add :SkerryLemonSqueezyStoreID integer $LEMON_SQUEEZY_STORE_ID" "$APP_BUNDLE/Contents/Info.plist"
-  /usr/libexec/PlistBuddy -c "Add :SkerryLemonSqueezyProductID integer $LEMON_SQUEEZY_PRODUCT_ID" "$APP_BUNDLE/Contents/Info.plist"
-  /usr/libexec/PlistBuddy -c "Add :SkerryLemonSqueezyVariantID integer $LEMON_SQUEEZY_VARIANT_ID" "$APP_BUNDLE/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :SkerryPolarOrganizationID string $POLAR_ORGANIZATION_ID" "$APP_BUNDLE/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :SkerryPolarBenefitID string $POLAR_BENEFIT_ID" "$APP_BUNDLE/Contents/Info.plist"
 fi
 
 lipo -create \
