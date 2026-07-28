@@ -85,6 +85,73 @@ fail() {
   exit 1
 }
 
+is_valid_https_url() {
+  SPARKLE_FEED_URL="$1" /usr/bin/osascript -l JavaScript -e '
+    ObjC.import("Foundation");
+    var value = ObjC.unwrap($.NSProcessInfo.processInfo.environment.objectForKey("SPARKLE_FEED_URL"));
+    var components = $.NSURLComponents.componentsWithString(value);
+    var scheme = components ? ObjC.unwrap(components.scheme) : undefined;
+    var host = components ? ObjC.unwrap(components.host) : undefined;
+    var user = components ? ObjC.unwrap(components.user) : undefined;
+    var password = components ? ObjC.unwrap(components.password) : undefined;
+    if (!components ||
+        scheme !== "https" ||
+        typeof host !== "string" ||
+        host.length === 0 ||
+        user !== undefined ||
+        password !== undefined) {
+      throw new Error("invalid URL");
+    }
+  ' >/dev/null 2>&1
+}
+
+decimal_greater_than() {
+  local LC_ALL=C
+  if (( ${#1} != ${#2} )); then
+    (( ${#1} > ${#2} ))
+  else
+    [[ "$1" > "$2" ]]
+  fi
+}
+
+latest_appcast_build() {
+  local appcast=$1
+  local channel_count
+  local item_count
+  local index
+  local version
+  local latest=0
+
+  /usr/bin/xmllint --nonet --noout "$appcast" 2>/dev/null \
+    || fail "SPARKLE_FEED_URL did not return valid XML"
+  channel_count="$(/usr/bin/xmllint --nonet --xpath \
+    'count(/*[local-name()="rss"]/*[local-name()="channel"])' "$appcast")"
+  [[ "$channel_count" == "1" ]] \
+    || fail "SPARKLE_FEED_URL must contain one RSS channel"
+  item_count="$(/usr/bin/xmllint --nonet --xpath \
+    'count(/*[local-name()="rss"]/*[local-name()="channel"]/*[local-name()="item"])' "$appcast")"
+  [[ "$item_count" =~ ^[0-9]+$ ]] \
+    || fail "SPARKLE_FEED_URL has an invalid item count"
+
+  for (( index = 1; index <= item_count; index++ )); do
+    version="$(/usr/bin/xmllint --nonet --xpath \
+      "normalize-space(string((/*[local-name()='rss']/*[local-name()='channel']/*[local-name()='item'])[$index]/*[local-name()='version'][1]))" \
+      "$appcast")"
+    if [[ -z "$version" ]]; then
+      version="$(/usr/bin/xmllint --nonet --xpath \
+        "normalize-space(string((/*[local-name()='rss']/*[local-name()='channel']/*[local-name()='item'])[$index]/*[local-name()='enclosure'][1]/@*[local-name()='version']))" \
+        "$appcast")"
+    fi
+    [[ "$version" =~ ^[1-9][0-9]*$ ]] \
+      || fail "Every Sparkle appcast item must have a positive integer build version"
+    if decimal_greater_than "$version" "$latest"; then
+      latest="$version"
+    fi
+  done
+
+  echo "$latest"
+}
+
 if [[ $# -gt 1 ]]; then
   fail "Usage: $0 [--install|--distribution]"
 fi
@@ -108,6 +175,8 @@ fi
 if [[ -n "$BUILD_NUMBER" && ! "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
   fail "BUILD_NUMBER must be a positive integer"
 fi
+
+mkdir -p "$DIST_DIR"
 
 if [[ "$MODE" == "distribution" ]]; then
   required_values=(
@@ -140,34 +209,14 @@ if [[ "$MODE" == "distribution" ]]; then
     [[ -n "${required_values[$index]}" && "${required_values[$index]}" != "-" ]] \
       || fail "${required_names[$index]} is required for --distribution"
   done
-
-  [[ "$DEVELOPER_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] \
-    || fail "DEVELOPER_TEAM_ID must be a 10-character Apple team identifier"
-  [[ "$SPARKLE_PUBLIC_ED_KEY" =~ ^[A-Za-z0-9+/]{43}=$ ]] \
-    || fail "SPARKLE_PUBLIC_ED_KEY must be a base64-encoded Ed25519 public key"
-  [[ "$SKERRY_PURCHASE_URL" =~ ^https://buy\.polar\.sh/polar_cl_[A-Za-z0-9]+$ ]] \
-    || fail "SKERRY_PURCHASE_URL must use the production Polar checkout in --distribution"
-  [[ "$PREVIOUS_BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] \
-    || fail "PREVIOUS_BUILD_NUMBER must be a positive integer"
-  (( 10#$BUILD_NUMBER > 10#$PREVIOUS_BUILD_NUMBER )) \
-    || fail "BUILD_NUMBER must be greater than PREVIOUS_BUILD_NUMBER"
-  [[ "$SIGN_IDENTITY" == Developer\ ID\ Application:*"($DEVELOPER_TEAM_ID)" ]] \
-    || fail "SIGN_IDENTITY must be the Developer ID Application identity for DEVELOPER_TEAM_ID"
-  security find-identity -v -p codesigning | grep -F "\"$SIGN_IDENTITY\"" >/dev/null \
-    || fail "SIGN_IDENTITY is not available in the current keychain"
-
-  EXPECTED_TEAM_IDENTIFIER="$DEVELOPER_TEAM_ID"
-  xcrun notarytool history --keychain-profile "$NOTARY_KEYCHAIN_PROFILE" >/dev/null \
-    || fail "NOTARY_KEYCHAIN_PROFILE could not authenticate with Apple's notary service"
 fi
 
 if [[ -n "$SPARKLE_FEED_URL" || -n "$SPARKLE_PUBLIC_ED_KEY" ]]; then
   if [[ -z "$SPARKLE_FEED_URL" || -z "$SPARKLE_PUBLIC_ED_KEY" ]]; then
     fail "SPARKLE_FEED_URL and SPARKLE_PUBLIC_ED_KEY must be set together"
   fi
-  if [[ "$SPARKLE_FEED_URL" != https://* ]]; then
-    fail "SPARKLE_FEED_URL must use HTTPS"
-  fi
+  is_valid_https_url "$SPARKLE_FEED_URL" \
+    || fail "SPARKLE_FEED_URL must be a valid HTTPS URL with a host"
 fi
 
 if [[ "$SIGN_IDENTITY" == "-" && ( -n "$SKERRY_PURCHASE_URL" || -n "$POLAR_ORGANIZATION_ID" || -n "$POLAR_BENEFIT_ID" ) ]]; then
@@ -190,6 +239,51 @@ fi
 
 if [[ -n "$NOTARY_KEYCHAIN_PROFILE" && "$SIGN_IDENTITY" == "-" ]]; then
   fail "NOTARY_KEYCHAIN_PROFILE requires a Developer ID signing identity"
+fi
+
+if [[ "$MODE" == "distribution" ]]; then
+  [[ "$DEVELOPER_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] \
+    || fail "DEVELOPER_TEAM_ID must be a 10-character Apple team identifier"
+  [[ "$SPARKLE_PUBLIC_ED_KEY" =~ ^[A-Za-z0-9+/]{43}=$ ]] \
+    || fail "SPARKLE_PUBLIC_ED_KEY must be a base64-encoded Ed25519 public key"
+  [[ "$SKERRY_PURCHASE_URL" =~ ^https://buy\.polar\.sh/polar_cl_[A-Za-z0-9]+$ ]] \
+    || fail "SKERRY_PURCHASE_URL must use the production Polar checkout in --distribution"
+  [[ "$PREVIOUS_BUILD_NUMBER" =~ ^(0|[1-9][0-9]*)$ ]] \
+    || fail "PREVIOUS_BUILD_NUMBER must be zero or a positive integer"
+  [[ "$SIGN_IDENTITY" == Developer\ ID\ Application:*"($DEVELOPER_TEAM_ID)" ]] \
+    || fail "SIGN_IDENTITY must be the Developer ID Application identity for DEVELOPER_TEAM_ID"
+
+  APPCAST_TEMP="$(mktemp -d "$DIST_DIR/.Skerry.appcast.XXXXXX")"
+  TEMP_DIRS+=("$APPCAST_TEMP")
+  APPCAST_PATH="$APPCAST_TEMP/appcast.xml"
+  curl \
+    --fail \
+    --silent \
+    --show-error \
+    --location \
+    --proto '=https' \
+    --proto-redir '=https' \
+    --connect-timeout 10 \
+    --max-time 30 \
+    --max-filesize 10485760 \
+    "$SPARKLE_FEED_URL" > "$APPCAST_PATH" \
+    || fail "Could not fetch SPARKLE_FEED_URL"
+  LATEST_PUBLISHED_BUILD="$(latest_appcast_build "$APPCAST_PATH")"
+  if [[ "$LATEST_PUBLISHED_BUILD" == "0" ]]; then
+    [[ "$PREVIOUS_BUILD_NUMBER" == "0" ]] \
+      || fail "An empty Sparkle feed requires PREVIOUS_BUILD_NUMBER=0"
+  else
+    [[ "$PREVIOUS_BUILD_NUMBER" == "$LATEST_PUBLISHED_BUILD" ]] \
+      || fail "PREVIOUS_BUILD_NUMBER must match latest published build $LATEST_PUBLISHED_BUILD"
+  fi
+  decimal_greater_than "$BUILD_NUMBER" "$LATEST_PUBLISHED_BUILD" \
+    || fail "BUILD_NUMBER must be greater than latest published build $LATEST_PUBLISHED_BUILD"
+  security find-identity -v -p codesigning | grep -F "\"$SIGN_IDENTITY\"" >/dev/null \
+    || fail "SIGN_IDENTITY is not available in the current keychain"
+
+  EXPECTED_TEAM_IDENTIFIER="$DEVELOPER_TEAM_ID"
+  xcrun notarytool history --keychain-profile "$NOTARY_KEYCHAIN_PROFILE" >/dev/null \
+    || fail "NOTARY_KEYCHAIN_PROFILE could not authenticate with Apple's notary service"
 fi
 
 if [[ "$MODE" == "distribution" ]]; then
@@ -441,7 +535,6 @@ verify_distribution_archive() {
   shasum -a 256 "$ZIP_PATH"
 }
 
-mkdir -p "$DIST_DIR"
 rm -f "$ZIP_PATH"
 
 for architecture in "${ARCHITECTURES[@]}"; do

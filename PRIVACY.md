@@ -11,11 +11,17 @@ label, and—when available—the originating app identity used to return to tha
 app. Prompts, responses, transcripts, diffs, commands, model names, environment
 values, and full working-directory paths are discarded.
 
-Settings use macOS user defaults. App-owned lifecycle state and delivery queues
-are stored with owner-only permissions under `~/.skerry`. Release builds store
-the trial start, last observation, license key, and validation times in the
-macOS Keychain. Ad-hoc development builds store trial-only state under
-`~/.skerry` and cannot contain licensing configuration.
+Settings are stored in `~/.skerry/config.json`. App-owned lifecycle state and
+delivery queues are stored with owner-only permissions under `~/.skerry`;
+lifecycle payload content is discarded after it is normalized. Reversible Live
+Status setup also keeps owner-only, byte-for-byte backups of existing agent
+configuration under `~/.skerry/backups/live-status`. Those backups remain local
+and may contain commands or environment values that were already present in the
+agent configuration.
+
+Release builds store the trial start, last observation, license key, and
+validation times in the macOS Keychain. Ad-hoc development builds store
+trial-only state under `~/.skerry` and cannot contain licensing configuration.
 
 ## Network access
 

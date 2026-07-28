@@ -30,8 +30,26 @@ webhook secrets, or local environment files.
 
 ## Build, notarize, staple, and verify
 
+First publish a valid HTTPS appcast. For the first release only, it may contain
+one empty RSS channel:
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0"
+  xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Skerry updates</title>
+    <link>https://YOUR_HOST/</link>
+    <description>Skerry releases</description>
+    <language>en</language>
+  </channel>
+</rss>
+```
+
 Choose a new three-part marketing version and an integer build number greater
-than the last published build. Run:
+than the last published build. Set `PREVIOUS_BUILD_NUMBER=0` only for that
+empty-feed bootstrap; otherwise set it to the greatest `sparkle:version` in the
+published feed. Run:
 
 ```sh
 SIGN_IDENTITY='Developer ID Application: YOUR NAME (YOURTEAMID)' \
@@ -48,18 +66,26 @@ PREVIOUS_BUILD_NUMBER='1' \
 ./Scripts/build-release.sh --distribution
 ```
 
-The production preflight runs before compilation. The script then builds both
-architectures, signs nested Sparkle code inside-out with hardened runtime and
-timestamps, submits to Apple, staples the app, creates the final ZIP, extracts
-that ZIP, and verifies strict signatures, the ticket, Gatekeeper assessment,
-and every required universal executable. It prints the final ZIP's SHA-256.
-Keep that checksum and `dist/Skerry-notarization*.json` with the release record,
-and review every warning in the notarization log.
+The production preflight validates the feed URL, downloads and parses the
+published appcast, requires `PREVIOUS_BUILD_NUMBER` to equal its greatest
+integer Sparkle build version, and rejects a repeated or decreasing
+`BUILD_NUMBER` before it accesses signing or notarization credentials or starts
+compilation. A non-empty feed can never use the bootstrap value.
+
+The script then builds both architectures, signs nested Sparkle code inside-out
+with hardened runtime and timestamps, submits to Apple, staples the app, creates
+the final ZIP, extracts that ZIP, and verifies strict signatures, the ticket,
+Gatekeeper assessment, and every required universal executable. It prints the
+final ZIP's SHA-256. Keep that checksum and
+`dist/Skerry-notarization*.json` with the release record, and review every
+warning in the notarization log.
 
 ## Sign and publish the Sparkle update
 
 Keep the update directory outside this repository and retain older signed
-archives for upgrade testing and rollback:
+archives for upgrade testing, delta generation, and rollback. Put optional
+same-basename `.html` or `.md` release notes beside each archive before running
+Sparkle's tool:
 
 ```sh
 cp dist/Skerry.zip "$SKERRY_UPDATE_DIR/Skerry-1.0.0.zip"
@@ -70,10 +96,17 @@ cp dist/Skerry.zip "$SKERRY_UPDATE_DIR/Skerry-1.0.0.zip"
 ```
 
 `generate_appcast` reads the private Ed25519 key from Keychain and signs the
-archive entry. Inspect the generated item for the expected build, marketing
-version, HTTPS archive URL, length, and `sparkle:edSignature`; upload the ZIP
-and appcast together. Fetch both public URLs and compare the downloaded ZIP's
-SHA-256 with the release record before announcing the release.
+archive entry. It may also generate signed `.delta` files and reference
+same-basename release notes. Inspect the generated item for the expected build,
+marketing version, HTTPS archive and delta URLs, lengths,
+`sparkle:edSignature`, and any release-notes URL.
+
+Upload the generated appcast and every archive, `.delta`, and release-note file
+referenced by it in one publication. Do not publish an appcast while any
+referenced artifact is missing. Fetch every public URL from the published feed,
+then compare the downloaded full ZIP's SHA-256 with the release record before
+announcing the release. The next build must use the greatest published
+`sparkle:version` as `PREVIOUS_BUILD_NUMBER`.
 
 ## Acceptance
 

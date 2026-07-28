@@ -25,11 +25,56 @@ final class ReleaseScriptTests: XCTestCase {
         environment["BUILD_NUMBER"] = "7"
         let result = try runReleaseScript(
             arguments: ["--distribution"],
+            environment: environment,
+            appcast: Self.appcast(builds: [7])
+        )
+
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(result.output.contains("BUILD_NUMBER must be greater than latest published build 7"))
+        XCTAssertFalse(result.output.contains("Building for production"))
+    }
+
+    func testDistributionRejectsBuildBelowAuthoritativePublishedFeed() throws {
+        var environment = Self.releaseEnvironment
+        environment["BUILD_NUMBER"] = "2"
+        environment["PREVIOUS_BUILD_NUMBER"] = "1"
+        let result = try runReleaseScript(
+            arguments: ["--distribution"],
+            environment: environment,
+            appcast: Self.appcast(builds: [7, 100])
+        )
+
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(result.output.contains("must match latest published build 100"))
+        XCTAssertFalse(result.output.contains("Building for production"))
+    }
+
+    func testDistributionRejectsInvalidHTTPSFeedURLBeforeCompilation() throws {
+        var environment = Self.releaseEnvironment
+        environment["SPARKLE_FEED_URL"] = "https:///appcast.xml"
+        let result = try runReleaseScript(
+            arguments: ["--distribution"],
             environment: environment
         )
 
         XCTAssertNotEqual(result.status, 0)
-        XCTAssertTrue(result.output.contains("BUILD_NUMBER must be greater than PREVIOUS_BUILD_NUMBER"))
+        XCTAssertTrue(result.output.contains("must be a valid HTTPS URL with a host"))
+        XCTAssertFalse(result.output.contains("Building for production"))
+    }
+
+    func testDistributionAcceptsValidHTTPSFeedURL() throws {
+        var environment = Self.releaseEnvironment
+        environment["BUILD_NUMBER"] = "101"
+        environment["PREVIOUS_BUILD_NUMBER"] = "100"
+        let result = try runReleaseScript(
+            arguments: ["--distribution"],
+            environment: environment,
+            appcast: Self.appcast(builds: [100, 7])
+        )
+
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertFalse(result.output.contains("must be a valid HTTPS URL with a host"))
+        XCTAssertTrue(result.output.contains("SIGN_IDENTITY is not available"))
         XCTAssertFalse(result.output.contains("Building for production"))
     }
 
@@ -61,9 +106,25 @@ final class ReleaseScriptTests: XCTestCase {
         "PREVIOUS_BUILD_NUMBER": "7"
     ]
 
+    private static func appcast(builds: [Int]) -> String {
+        let items = builds.enumerated().map { index, build in
+            if index.isMultiple(of: 2) {
+                return "<item><sparkle:version>\(build)</sparkle:version></item>"
+            }
+            return "<item><enclosure sparkle:version=\"\(build)\" /></item>"
+        }.joined()
+        return """
+        <?xml version="1.0" encoding="utf-8"?>
+        <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+          <channel>\(items)</channel>
+        </rss>
+        """
+    }
+
     private func runReleaseScript(
         arguments: [String],
-        environment additions: [String: String] = [:]
+        environment additions: [String: String] = [:],
+        appcast: String? = nil
     ) throws -> (status: Int32, output: String) {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -85,6 +146,23 @@ final class ReleaseScriptTests: XCTestCase {
             "BUILD_NUMBER",
             "PREVIOUS_BUILD_NUMBER"
         ].forEach { environment.removeValue(forKey: $0) }
+        var mockDirectory: URL?
+        if let appcast {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("skerry-release-tests-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let curl = directory.appendingPathComponent("curl")
+            try Data("#!/bin/sh\n/usr/bin/printf '%s' \"$SKERRY_TEST_APPCAST\"\n".utf8).write(to: curl)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: curl.path)
+            environment["PATH"] = "\(directory.path):\(environment["PATH"] ?? "/usr/bin:/bin")"
+            environment["SKERRY_TEST_APPCAST"] = appcast
+            mockDirectory = directory
+        }
+        defer {
+            if let mockDirectory {
+                try? FileManager.default.removeItem(at: mockDirectory)
+            }
+        }
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = [root.appendingPathComponent("Scripts/build-release.sh").path] + arguments
         process.environment = environment.merging(additions) { _, new in new }
