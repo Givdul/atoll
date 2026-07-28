@@ -6,9 +6,13 @@ import SwiftUI
 protocol StatusMenuControllerDelegate: AnyObject {
     func refreshNow()
     func showLifecycleSetup()
+    func buySkerry()
+    func activateLicense()
+    func showLicenseStatus()
     func setEnabled(_ enabled: Bool)
     func setNotificationsEnabled(_ enabled: Bool)
     func setTestMode(_ testMode: Bool)
+    var purchaseAvailable: Bool { get }
     var canCheckForUpdates: Bool { get }
     func checkForUpdates()
     func quit()
@@ -36,10 +40,48 @@ final class StatusMenuController {
 
     func refreshMenu() {
         let menu = NSMenu()
+        menu.autoenablesItems = false
 
         let title = NSMenuItem(title: "Skerry", action: nil, keyEquivalent: "")
         title.isEnabled = false
         menu.addItem(title)
+
+        let entitlement = NSMenuItem(title: entitlementTitle, action: nil, keyEquivalent: "")
+        entitlement.isEnabled = false
+        menu.addItem(entitlement)
+
+        if case .recoverableError(let message, _) = state.entitlement {
+            let details = NSMenuItem(
+                title: "License Details…",
+                action: #selector(showLicenseStatus(_:)),
+                keyEquivalent: ""
+            )
+            details.target = self
+            details.toolTip = message
+            menu.addItem(details)
+        }
+
+        let purchase = NSMenuItem(
+            title: delegate?.purchaseAvailable == true
+                ? "Buy Skerry — $7.99…"
+                : "Buy Skerry — $7.99 (Unavailable)",
+            action: #selector(buySkerry(_:)),
+            keyEquivalent: ""
+        )
+        purchase.target = self
+        purchase.isEnabled = delegate?.purchaseAvailable == true
+        menu.addItem(purchase)
+
+        let activate = NSMenuItem(
+            title: "Activate License…",
+            action: #selector(activateLicense(_:)),
+            keyEquivalent: ""
+        )
+        activate.target = self
+        activate.isEnabled = delegate?.purchaseAvailable == true
+        menu.addItem(activate)
+
+        menu.addItem(.separator())
 
         let enabled = NSMenuItem(
             title: "Show Island",
@@ -89,6 +131,32 @@ final class StatusMenuController {
         updateStatusButton()
     }
 
+    private var entitlementTitle: String {
+        switch state.entitlement {
+        case .activeTrial(let expiresAt, let currentTime):
+            "Trial — \(Self.remainingTime(until: expiresAt, now: currentTime)) left"
+        case .expired:
+            "Trial Expired"
+        case .licensed:
+            "Licensed"
+        case .recoverableError:
+            "License Needs Attention"
+        }
+    }
+
+    private static func remainingTime(until date: Date, now: Date = Date()) -> String {
+        let minutes = max(1, Int(ceil(date.timeIntervalSince(now) / 60)))
+        if minutes >= 24 * 60 {
+            let days = Int(ceil(Double(minutes) / Double(24 * 60)))
+            return days == 1 ? "1 day" : "\(days) days"
+        }
+        if minutes >= 60 {
+            let hours = Int(ceil(Double(minutes) / 60))
+            return hours == 1 ? "1 hour" : "\(hours) hours"
+        }
+        return minutes == 1 ? "1 minute" : "\(minutes) minutes"
+    }
+
     private func updateStatusButton() {
         guard let button = statusItem.button else {
             return
@@ -136,6 +204,18 @@ final class StatusMenuController {
 
     @objc private func showLifecycleSetup(_ sender: NSMenuItem) {
         delegate?.showLifecycleSetup()
+    }
+
+    @objc private func buySkerry(_ sender: NSMenuItem) {
+        delegate?.buySkerry()
+    }
+
+    @objc private func activateLicense(_ sender: NSMenuItem) {
+        delegate?.activateLicense()
+    }
+
+    @objc private func showLicenseStatus(_ sender: NSMenuItem) {
+        delegate?.showLicenseStatus()
     }
 
     @objc private func checkForUpdates(_ sender: NSMenuItem) {

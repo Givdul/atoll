@@ -28,6 +28,10 @@ final class AppState: ObservableObject {
     @Published var lastRefresh: Date?
     @Published var islandHoverState: IslandHoverState = .inactive
     @Published var isIslandAvailable = false
+    @Published var entitlement: SkerryEntitlementStatus = .recoverableError(
+        message: "Skerry is checking its entitlement.",
+        allowsUse: true
+    )
 
     private static let maxVisibleSessions = 8
 
@@ -41,7 +45,8 @@ final class AppState: ObservableObject {
     private var terminalObservations: [String: TerminalObservation] = [:]
 
     private var displaySessions: [AgentSession] {
-        settings.testMode ? Self.testModeSessions() : allSessions
+        guard entitlement.allowsUse else { return [] }
+        return settings.testMode ? Self.testModeSessions() : allSessions
     }
 
     init(settingsStore: SettingsStore) {
