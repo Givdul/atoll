@@ -23,9 +23,16 @@ Production locations are fixed:
      --password YOUR_APP_SPECIFIC_PASSWORD
    ```
 
-3. Run Sparkle's `generate_keys` once. Keep the private Ed25519 key in Keychain
-   or an encrypted offline backup. Only its public key belongs in release
-   configuration.
+3. Generate the Sparkle key once under Skerry's dedicated Keychain account:
+
+   ```sh
+   SPARKLE_KEYCHAIN_ACCOUNT='givdul-skerry'
+   .build/artifacts/sparkle/Sparkle/bin/generate_keys \
+     --account "$SPARKLE_KEYCHAIN_ACCOUNT"
+   ```
+
+   Keep the private Ed25519 key in Keychain or an encrypted offline backup.
+   Only its public key belongs in release configuration.
 4. Create the production Polar product and its dedicated perpetual, unlimited
    License Keys benefit. Record only its public checkout URL, organization
    UUID, and benefit UUID in release configuration.
@@ -45,14 +52,24 @@ a positive integer build number greater than `latest-build.txt`. The ledger is
 the monotonic authority even if the appcast was rolled back.
 
 ```sh
+set -e
 export MARKETING_VERSION='1.0.0'
 export BUILD_NUMBER='1'
+export SPARKLE_KEYCHAIN_ACCOUNT='givdul-skerry'
+export SPARKLE_PUBLIC_ED_KEY='YOUR_PUBLIC_ED25519_KEY'
+
+keychain_public_key="$(
+  .build/artifacts/sparkle/Sparkle/bin/generate_keys \
+    --account "$SPARKLE_KEYCHAIN_ACCOUNT" -p
+)"
+test -n "$keychain_public_key"
+test "$keychain_public_key" = "$SPARKLE_PUBLIC_ED_KEY"
 
 SIGN_IDENTITY='Developer ID Application: YOUR NAME (YOURTEAMID)' \
 DEVELOPER_TEAM_ID='YOURTEAMID' \
 NOTARY_KEYCHAIN_PROFILE='skerry-notary' \
 SPARKLE_FEED_URL='https://raw.githubusercontent.com/Givdul/atoll/main/appcast.xml' \
-SPARKLE_PUBLIC_ED_KEY='YOUR_PUBLIC_ED25519_KEY' \
+SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY" \
 SKERRY_PURCHASE_URL='https://buy.polar.sh/polar_cl_YOUR_LINK' \
 POLAR_ORGANIZATION_ID='YOUR_ORGANIZATION_UUID' \
 POLAR_BENEFIT_ID='YOUR_BENEFIT_UUID' \
@@ -80,12 +97,19 @@ Work in a temporary directory containing only the new full archive and optional
 same-basename release notes:
 
 ```sh
+set -e
 export RELEASE_DIR="$(mktemp -d)"
 cp dist/Skerry.zip "$RELEASE_DIR/Skerry-${MARKETING_VERSION}.zip"
 # Optional:
 # cp RELEASE_NOTES.md "$RELEASE_DIR/Skerry-${MARKETING_VERSION}.md"
 
+test "$(
+  .build/artifacts/sparkle/Sparkle/bin/generate_keys \
+    --account "$SPARKLE_KEYCHAIN_ACCOUNT" -p
+)" = "$SPARKLE_PUBLIC_ED_KEY"
+
 .build/artifacts/sparkle/Sparkle/bin/generate_appcast \
+  --account "$SPARKLE_KEYCHAIN_ACCOUNT" \
   --download-url-prefix \
     "https://github.com/Givdul/atoll/releases/download/v${MARKETING_VERSION}/" \
   --maximum-versions 1 \
@@ -107,12 +131,14 @@ test "$(xmllint --nonet --xpath 'count(/*[local-name()="rss"]/*[local-name()="ch
 test "$(xmllint --nonet --xpath 'string((//*[local-name()="item"]/*[local-name()="enclosure"])[1]/@*[local-name()="version"])' "$RELEASE_DIR/appcast.xml")" = "$BUILD_NUMBER"
 test "$(xmllint --nonet --xpath 'string((//*[local-name()="item"]/*[local-name()="enclosure"])[1]/@url)' "$RELEASE_DIR/appcast.xml")" = \
   "https://github.com/Givdul/atoll/releases/download/v${MARKETING_VERSION}/Skerry-${MARKETING_VERSION}.zip"
+test -n "$(xmllint --nonet --xpath 'normalize-space(string((//*[local-name()="item"]/*[local-name()="enclosure"])[1]/@*[local-name()="edSignature"]))' "$RELEASE_DIR/appcast.xml")"
 test "$(xmllint --nonet --xpath 'count(//*[local-name()="deltas"])' "$RELEASE_DIR/appcast.xml")" = 0
 ```
 
-The appcast is not itself a signed feed. `generate_appcast` puts the archive's
-EdDSA signature in `sparkle:edSignature`; Skerry verifies that signature with
-the public key embedded in the app.
+Any failed key or XML check stops before upload. The appcast is not itself
+signed. `generate_appcast` puts the archive's EdDSA signature in
+`sparkle:edSignature`; Skerry verifies that signature with the exact public key
+embedded in the app.
 
 ## Publish the archive before the feed
 

@@ -120,6 +120,8 @@ latest_appcast_build() {
   local channel_count
   local item_count
   local index
+  local element_version
+  local enclosure_version
   local version
   local latest=0
 
@@ -135,14 +137,16 @@ latest_appcast_build() {
     || fail "SPARKLE_FEED_URL has an invalid item count"
 
   for (( index = 1; index <= item_count; index++ )); do
-    version="$(/usr/bin/xmllint --nonet --xpath \
+    element_version="$(/usr/bin/xmllint --nonet --xpath \
       "normalize-space(string((/*[local-name()='rss']/*[local-name()='channel']/*[local-name()='item'])[$index]/*[local-name()='version'][1]))" \
       "$appcast")"
-    if [[ -z "$version" ]]; then
-      version="$(/usr/bin/xmllint --nonet --xpath \
-        "normalize-space(string((/*[local-name()='rss']/*[local-name()='channel']/*[local-name()='item'])[$index]/*[local-name()='enclosure'][1]/@*[local-name()='version']))" \
-        "$appcast")"
+    enclosure_version="$(/usr/bin/xmllint --nonet --xpath \
+      "normalize-space(string((/*[local-name()='rss']/*[local-name()='channel']/*[local-name()='item'])[$index]/*[local-name()='enclosure'][1]/@*[local-name()='version']))" \
+      "$appcast")"
+    if [[ -n "$element_version" && -n "$enclosure_version" && "$element_version" != "$enclosure_version" ]]; then
+      fail "Sparkle appcast item has conflicting build versions"
     fi
+    version="${enclosure_version:-$element_version}"
     [[ "$version" =~ ^[1-9][0-9]*$ ]] \
       || fail "Every Sparkle appcast item must have a positive integer build version"
     if decimal_greater_than "$version" "$latest"; then

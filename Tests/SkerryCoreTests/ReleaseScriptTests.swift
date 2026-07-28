@@ -122,6 +122,29 @@ final class ReleaseScriptTests: XCTestCase {
         XCTAssertFalse(result.output.contains("Building for production"))
     }
 
+    func testDistributionRejectsConflictingAppcastBuildVersions() throws {
+        let result = try runReleaseScript(
+            arguments: ["--distribution"],
+            environment: Self.releaseEnvironment,
+            appcast: """
+            <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+              <channel>
+                <item>
+                  <sparkle:version>100</sparkle:version>
+                  <enclosure sparkle:version="101" />
+                </item>
+              </channel>
+            </rss>
+            """,
+            ledger: "101"
+        )
+
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(result.output.contains("appcast item has conflicting build versions"))
+        XCTAssertEqual(result.sideEffects, ["network appcast", "network ledger"])
+        XCTAssertFalse(result.output.contains("Building for production"))
+    }
+
     func testDistributionRejectsMalformedBuildLedger() throws {
         let result = try runReleaseScript(
             arguments: ["--distribution"],
