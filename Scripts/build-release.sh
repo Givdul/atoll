@@ -16,6 +16,10 @@ SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 NOTARY_KEYCHAIN_PROFILE="${NOTARY_KEYCHAIN_PROFILE:-}"
 SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-}"
 SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-}"
+SKERRY_PURCHASE_URL="${SKERRY_PURCHASE_URL:-}"
+LEMON_SQUEEZY_STORE_ID="${LEMON_SQUEEZY_STORE_ID:-}"
+LEMON_SQUEEZY_PRODUCT_ID="${LEMON_SQUEEZY_PRODUCT_ID:-}"
+LEMON_SQUEEZY_VARIANT_ID="${LEMON_SQUEEZY_VARIANT_ID:-}"
 ARCHITECTURES=(arm64 x86_64)
 
 # Bash 3.2 treats an empty array expansion as unset under `set -u`.
@@ -88,6 +92,24 @@ if [[ -n "$SPARKLE_FEED_URL" || -n "$SPARKLE_PUBLIC_ED_KEY" ]]; then
   if [[ "$SPARKLE_FEED_URL" != https://* ]]; then
     fail "SPARKLE_FEED_URL must use HTTPS"
   fi
+fi
+
+if [[ "$SIGN_IDENTITY" == "-" && ( -n "$SKERRY_PURCHASE_URL" || -n "$LEMON_SQUEEZY_STORE_ID" || -n "$LEMON_SQUEEZY_PRODUCT_ID" || -n "$LEMON_SQUEEZY_VARIANT_ID" ) ]]; then
+  fail "Ad-hoc builds cannot contain Lemon Squeezy configuration"
+fi
+
+if [[ -n "$SKERRY_PURCHASE_URL" || -n "$LEMON_SQUEEZY_STORE_ID" || -n "$LEMON_SQUEEZY_PRODUCT_ID" || -n "$LEMON_SQUEEZY_VARIANT_ID" ]]; then
+  if [[ -z "$SKERRY_PURCHASE_URL" || -z "$LEMON_SQUEEZY_STORE_ID" || -z "$LEMON_SQUEEZY_PRODUCT_ID" || -z "$LEMON_SQUEEZY_VARIANT_ID" ]]; then
+    fail "SKERRY_PURCHASE_URL and all Lemon Squeezy IDs must be set together"
+  fi
+  if [[ "$SKERRY_PURCHASE_URL" != https://*.lemonsqueezy.com/checkout/buy/* ]]; then
+    fail "SKERRY_PURCHASE_URL must be a Lemon Squeezy HTTPS checkout/buy URL"
+  fi
+  for identifier in "$LEMON_SQUEEZY_STORE_ID" "$LEMON_SQUEEZY_PRODUCT_ID" "$LEMON_SQUEEZY_VARIANT_ID"; do
+    if [[ ! "$identifier" =~ ^[1-9][0-9]*$ ]]; then
+      fail "Lemon Squeezy IDs must be positive integers"
+    fi
+  done
 fi
 
 if [[ -n "$NOTARY_KEYCHAIN_PROFILE" && "$SIGN_IDENTITY" == "-" ]]; then
@@ -334,9 +356,20 @@ cp "$ROOT/Bundle/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy \
   -c "Set :CFBundleVersion ${BUILD_NUMBER:-$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)}" \
   "$APP_BUNDLE/Contents/Info.plist"
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+  /usr/libexec/PlistBuddy -c "Add :SkerryEntitlementStorage string trial-file-v1" "$APP_BUNDLE/Contents/Info.plist"
+else
+  /usr/libexec/PlistBuddy -c "Add :SkerryEntitlementStorage string keychain-v2" "$APP_BUNDLE/Contents/Info.plist"
+fi
 if [[ -n "$SPARKLE_FEED_URL" ]]; then
   /usr/libexec/PlistBuddy -c "Add :SUFeedURL string $SPARKLE_FEED_URL" "$APP_BUNDLE/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $SPARKLE_PUBLIC_ED_KEY" "$APP_BUNDLE/Contents/Info.plist"
+fi
+if [[ -n "$SKERRY_PURCHASE_URL" ]]; then
+  /usr/libexec/PlistBuddy -c "Add :SkerryPurchaseURL string $SKERRY_PURCHASE_URL" "$APP_BUNDLE/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :SkerryLemonSqueezyStoreID integer $LEMON_SQUEEZY_STORE_ID" "$APP_BUNDLE/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :SkerryLemonSqueezyProductID integer $LEMON_SQUEEZY_PRODUCT_ID" "$APP_BUNDLE/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :SkerryLemonSqueezyVariantID integer $LEMON_SQUEEZY_VARIANT_ID" "$APP_BUNDLE/Contents/Info.plist"
 fi
 
 lipo -create \

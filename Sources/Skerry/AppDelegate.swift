@@ -29,7 +29,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
     private var islandController: IslandWindowController?
     private let notificationCenter = UNUserNotificationCenter.current()
     private var isRequestingNotificationAuthorization = false
+    private var isValidatingLicense = false
     private var notificationTracker = SessionNotificationTracker()
+    private let entitlementController = SkerryEntitlementController()
     private let liveStatusSetupController = LiveStatusSetupWindowController()
     private lazy var lifecycleServer = LifecycleSocketServer(queue: lifecycleQueue) { [weak self] receipt in
         Task { @MainActor [weak self] in
@@ -62,6 +64,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
                 self?.refreshNow()
             }
         }
+        Task { [weak self] in
+            guard let self else { return }
+            self.state.entitlement = await self.entitlementController.start()
+            self.islandController?.syncVisibility()
+            self.statusController?.refreshMenu()
+            self.validateLicenseIfNeeded()
+        }
         DispatchQueue.main.async { [weak self] in
             self?.presentOnboardingIfNeeded()
         }
@@ -69,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
 
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
+        Task { await entitlementController.persistObservation() }
         lifecycleServer.stop()
         islandController?.shutdown()
     }
@@ -79,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
     }
 
     func refreshNow() {
+        state.entitlement = entitlementController.observe()
         for receipt in lifecycleQueue.pendingEvents() {
             guard let sessions = accept(receipt) else { break }
             deliverNotifications(currentSessions: sessions)
@@ -89,6 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
         state.lastRefresh = Date()
         islandController?.syncVisibility()
         statusController?.refreshMenu()
+        validateLicenseIfNeeded()
     }
 
     private func apply(_ receipt: QueuedLifecycleEvent) {
@@ -186,6 +198,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
         }
     }
 
+    var purchaseAvailable: Bool {
+        entitlementController.configuration != nil
+    }
+
+    func buySkerry() {
+        guard let url = entitlementController.configuration?.purchaseURL else {
+            showAlert(
+                title: "Purchase Unavailable",
+                message: SkerryEntitlementController.ActivationError.notConfigured.localizedDescription
+            )
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    func activateLicense() {
+        let input = NSTextField(string: "")
+        input.placeholderString = "License key"
+        input.frame = NSRect(x: 0, y: 0, width: 360, height: 24)
+
+        let alert = NSAlert()
+        alert.messageText = "Activate Skerry"
+        alert.informativeText = "Paste the license key from your Lemon Squeezy receipt."
+        alert.alertStyle = .informational
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Activate")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let key = input.stringValue
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                self.state.entitlement = try await self.entitlementController.activate(key: key)
+                self.islandController?.syncVisibility()
+                self.statusController?.refreshMenu()
+                self.showAlert(
+                    title: "Skerry Is Licensed",
+                    message: "This Mac can keep using Skerry offline. The license is checked periodically when a connection is available."
+                )
+            } catch {
+                self.state.entitlement = self.entitlementController.observe()
+                self.islandController?.syncVisibility()
+                self.statusController?.refreshMenu()
+                self.showAlert(title: "License Not Activated", message: error.localizedDescription)
+            }
+        }
+    }
+
+    func showLicenseStatus() {
+        showAlert(
+            title: "License Needs Attention",
+            message: entitlementController.guidance
+                ?? "Paste the Skerry license key again or try later."
+        )
+    }
+
     var canCheckForUpdates: Bool {
         guard let feedURL = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String,
               let publicKey = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String else {
@@ -234,6 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
     }
 
     private func deliverNotifications(currentSessions: [AgentSession]) {
+        guard state.entitlement.allowsUse else { return }
         let frontmostApplication = NSWorkspace.shared.frontmostApplication.flatMap {
             ApplicationIdentity(
                 processID: $0.processIdentifier,
@@ -256,6 +327,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
             )
             notificationCenter.add(request) { _ in }
         }
+    }
+
+    private func validateLicenseIfNeeded() {
+        guard !isValidatingLicense, entitlementController.shouldValidate() else { return }
+        isValidatingLicense = true
+        Task { [weak self] in
+            guard let self else { return }
+            self.state.entitlement = await self.entitlementController.validate()
+            self.isValidatingLicense = false
+            self.islandController?.syncVisibility()
+            self.statusController?.refreshMenu()
+        }
+    }
+
+    private func showAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 }
 

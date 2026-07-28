@@ -4,6 +4,11 @@ Skerry is a calm status light for exactly five local coding agents: Codex, Claud
 
 It is event-driven: native agent hooks send minimal lifecycle events to a user-only local Unix socket. Skerry never infers a live run from transcript age, process names, or lock files.
 
+The complete product includes one 72-hour trial followed by a $7.99 one-time
+Lemon Squeezy license—no account or subscription. See [Licensing](LICENSING.md)
+for the Keychain, offline, privacy, release-configuration, and validation
+boundaries.
+
 ## Lifecycle model
 
 - `started` shows a running session immediately.

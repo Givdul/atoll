@@ -78,13 +78,6 @@ if arguments.first == "--lifecycle-event" {
     ) else {
         exit(EXIT_SUCCESS)
     }
-    do {
-        try SkerryBetaMigration.migrateIfNeeded()
-    } catch {
-        // Provider hooks must remain fail-open, but the migration failure is not hidden.
-        fputs("Skerry could not complete beta migration: \(error.localizedDescription)\n", stderr)
-        exit(EXIT_SUCCESS)
-    }
     _ = LifecycleEventDelivery.deliver(event)
     exit(EXIT_SUCCESS)
 }

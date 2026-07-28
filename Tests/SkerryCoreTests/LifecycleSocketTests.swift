@@ -219,6 +219,31 @@ final class LifecycleSocketTests: XCTestCase {
         let queue = LifecycleEventQueue(homeDirectory: home)
         XCTAssertEqual(queue.pendingEvents().map(\.event.sessionID), ["entry"])
 
+        for index in 1..<LifecycleEventQueue.maximumPendingEvents {
+            XCTAssertNotNil(queue.enqueue(
+                LifecycleEvent(sessionID: "entry-\(index)", harness: .codex, kind: .started)
+            ))
+        }
+        let lock = home.appendingPathComponent(".skerry/.lifecycle-events.writer.lock")
+        let descriptor = open(lock.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { close(descriptor) }
+        XCTAssertEqual(flock(descriptor, LOCK_EX), 0)
+        defer { flock(descriptor, LOCK_UN) }
+
+        let heldLock = try run(
+            executable: executable,
+            arguments: ["--lifecycle-event", "codex", "started"],
+            input: hookPayload(sessionID: "held-lock"),
+            environment: environment
+        )
+        XCTAssertEqual(heldLock.status, 0)
+        XCTAssertLessThan(heldLock.duration, .milliseconds(900))
+        let retained = queue.pendingEvents().map(\.event.sessionID)
+        XCTAssertEqual(retained.count, LifecycleEventQueue.maximumPendingEvents)
+        XCTAssertTrue(retained.contains("entry"))
+        XCTAssertFalse(retained.contains("held-lock"))
+
         let blockedHome = directory.appendingPathComponent("entry-blocked-home", isDirectory: true)
         try FileManager.default.createDirectory(at: blockedHome, withIntermediateDirectories: true)
         try Data("blocked".utf8).write(to: blockedHome.appendingPathComponent(".skerry"))

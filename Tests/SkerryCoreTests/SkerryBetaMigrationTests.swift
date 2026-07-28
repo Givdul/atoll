@@ -30,12 +30,19 @@ final class SkerryBetaMigrationTests: XCTestCase {
             withIntermediateDirectories: true
         )
         try FileManager.default.createDirectory(at: current, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: current.appendingPathComponent("lifecycle-events"),
+            withIntermediateDirectories: true
+        )
 
         try Data("beta-config".utf8).write(to: beta.appendingPathComponent("config.json"))
         try Data("current-config".utf8).write(to: current.appendingPathComponent("config.json"))
         try Data("sessions".utf8).write(to: beta.appendingPathComponent("lifecycle-sessions.json"))
         try Data("event".utf8).write(
             to: beta.appendingPathComponent("lifecycle-events/event.json")
+        )
+        try Data("current-event".utf8).write(
+            to: current.appendingPathComponent("lifecycle-events/current.json")
         )
         try Data("backup".utf8).write(
             to: beta.appendingPathComponent("backups/live-status/codex.json")
@@ -70,6 +77,13 @@ final class SkerryBetaMigrationTests: XCTestCase {
             FileManager.default.fileExists(
                 atPath: current.appendingPathComponent("lifecycle-events/event.json").path
             )
+        )
+        XCTAssertEqual(
+            try String(
+                contentsOf: current.appendingPathComponent("lifecycle-events/current.json"),
+                encoding: .utf8
+            ),
+            "current-event"
         )
         XCTAssertTrue(
             FileManager.default.fileExists(
