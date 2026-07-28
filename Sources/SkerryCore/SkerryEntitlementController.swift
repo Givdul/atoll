@@ -5,21 +5,20 @@ public final class SkerryEntitlementController {
     public static let validationInterval: TimeInterval = 24 * 60 * 60
     private static let observationWriteInterval: TimeInterval = 60
 
-    public let configuration: LemonSqueezyConfiguration?
+    public let configuration: PolarConfiguration?
 
     private let store: SkerryEntitlementStore
-    private let client: LemonSqueezyLicenseClient
+    private let client: PolarLicenseClient
     private var record: SkerryEntitlementRecord?
     private var lastSavedAt: Date?
-    private var lastValidationAttemptAt: Date?
     private var message: String?
     private var canReplaceMalformedRecord = false
     private var mutationInProgress = false
 
     public init(
         store: SkerryEntitlementStore = SkerryEntitlementStore.configured(),
-        client: LemonSqueezyLicenseClient = LemonSqueezyLicenseClient(),
-        configuration: LemonSqueezyConfiguration? = LemonSqueezyConfiguration()
+        client: PolarLicenseClient = PolarLicenseClient(),
+        configuration: PolarConfiguration? = PolarConfiguration()
     ) {
         self.store = store
         self.client = client
@@ -77,18 +76,20 @@ public final class SkerryEntitlementController {
 
     public func shouldValidate(at now: Date = Date()) -> Bool {
         guard !mutationInProgress,
-              let validatedAt = record?.license?.validatedAt else { return false }
-        return now.timeIntervalSince(max(validatedAt, lastValidationAttemptAt ?? .distantPast))
+              let license = record?.license else { return false }
+        return now.timeIntervalSince(
+            max(license.validatedAt, license.lastValidationAttemptAt ?? .distantPast)
+        )
             >= Self.validationInterval
     }
 
-    public func activate(key: String, at now: Date = Date()) async throws -> SkerryEntitlementStatus {
+    public func enter(key: String, at now: Date = Date()) async throws -> SkerryEntitlementStatus {
         guard beginMutation() else {
-            throw ActivationError.busy
+            throw LicenseError.busy
         }
         defer { endMutation() }
         guard let configuration else {
-            throw ActivationError.notConfigured
+            throw LicenseError.notConfigured
         }
         let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard var record = record ?? (canReplaceMalformedRecord
@@ -97,22 +98,20 @@ public final class SkerryEntitlementController {
                 lastSeenAt: now
             )
             : nil) else {
-            throw ActivationError.storageUnavailable
+            throw LicenseError.storageUnavailable
         }
 
-        let license: SkerryStoredLicense
-        let createdInstance: Bool
         if let existing = record.license {
             guard existing.key == key else {
-                throw ActivationError.differentKey
+                throw LicenseError.differentKey
             }
             do {
-                license = try await client.validate(
-                    existing,
+                record.license = try await client.validate(
+                    key: existing.key,
                     configuration: configuration,
                     now: now
                 )
-            } catch let error as LemonSqueezyLicenseClient.Error where error.isDefinitive {
+            } catch let error as PolarLicenseClient.Error where error.isDefinitive {
                 record.license = nil
                 record.observe(now)
                 try await store.saveBounded(record)
@@ -120,30 +119,23 @@ public final class SkerryEntitlementController {
                 lastSavedAt = now
                 message = error.localizedDescription
                 throw error
+            } catch let error as PolarLicenseClient.Error {
+                record.license?.lastValidationAttemptAt = now
+                try await store.saveBounded(record)
+                self.record = record
+                lastSavedAt = now
+                message = error.localizedDescription
+                throw error
             }
-            createdInstance = false
         } else {
-            license = try await client.activate(
+            record.license = try await client.validate(
                 key: key,
                 configuration: configuration,
                 now: now
             )
-            createdInstance = true
         }
-        record.license = license
         record.observe(now)
-        do {
-            try await store.saveBounded(record)
-        } catch let saveError {
-            if createdInstance {
-                do {
-                    try await client.deactivate(license, configuration: configuration)
-                } catch {
-                    throw ActivationError.cleanupFailed
-                }
-            }
-            throw saveError
-        }
+        try await store.saveBounded(record)
         self.record = record
         lastSavedAt = now
         message = nil
@@ -154,17 +146,16 @@ public final class SkerryEntitlementController {
     public func validate(at now: Date = Date()) async -> SkerryEntitlementStatus {
         guard beginMutation() else { return status(at: now) }
         defer { endMutation() }
-        lastValidationAttemptAt = now
         guard let configuration, var record, let license = record.license else {
             if record?.license != nil, configuration == nil {
-                message = ActivationError.notConfigured.localizedDescription
+                message = LicenseError.notConfigured.localizedDescription
             }
             return status(at: now)
         }
 
         do {
             record.license = try await client.validate(
-                license,
+                key: license.key,
                 configuration: configuration,
                 now: now
             )
@@ -173,10 +164,20 @@ public final class SkerryEntitlementController {
             self.record = record
             lastSavedAt = now
             message = nil
-        } catch let error as LemonSqueezyLicenseClient.Error {
+        } catch let error as PolarLicenseClient.Error {
             if error.isDefinitive {
                 record.license = nil
                 record.observe(now)
+                do {
+                    try await store.saveBounded(record)
+                    self.record = record
+                    lastSavedAt = now
+                } catch {
+                    message = error.localizedDescription
+                    return status(at: now)
+                }
+            } else {
+                record.license?.lastValidationAttemptAt = now
                 do {
                     try await store.saveBounded(record)
                     self.record = record
@@ -213,7 +214,7 @@ public final class SkerryEntitlementController {
     private func status(at now: Date) -> SkerryEntitlementStatus {
         guard let record else {
             return .recoverableError(
-                message: message ?? ActivationError.storageUnavailable.localizedDescription,
+                message: message ?? LicenseError.storageUnavailable.localizedDescription,
                 allowsUse: !canReplaceMalformedRecord
             )
         }
@@ -232,25 +233,22 @@ public final class SkerryEntitlementController {
         mutationInProgress = false
     }
 
-    public enum ActivationError: LocalizedError {
+    public enum LicenseError: LocalizedError {
         case notConfigured
         case storageUnavailable
         case busy
         case differentKey
-        case cleanupFailed
 
         public var errorDescription: String? {
             switch self {
             case .notConfigured:
-                "This build does not contain Skerry's Lemon Squeezy checkout and product IDs."
+                "This build does not contain Skerry's Polar checkout and license IDs."
             case .storageUnavailable:
                 "Skerry cannot save a license until its protected Keychain record is available."
             case .busy:
                 "Skerry is already updating its license. Try again in a moment."
             case .differentKey:
-                "This Mac already has a different active license. Skerry did not consume another activation."
-            case .cleanupFailed:
-                "Skerry could not save or deactivate the new license instance. Contact support before trying another activation."
+                "This Mac already has a different active license."
             }
         }
     }

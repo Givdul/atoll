@@ -4,6 +4,9 @@ import Security
 import XCTest
 @testable import SkerryCore
 
+private let testOrganizationID = UUID(uuidString: "11111111-1111-4111-8111-111111111111")!
+private let testBenefitID = UUID(uuidString: "22222222-2222-4222-8222-222222222222")!
+
 final class SkerryEntitlementTests: XCTestCase {
     private let start = Date(timeIntervalSince1970: 2_000_000_000)
     private var keychainServices: [String] = []
@@ -17,7 +20,7 @@ final class SkerryEntitlementTests: XCTestCase {
         }
         keychainServices = []
         MockLicenseURLProtocol.mode = .valid
-        MockLicenseURLProtocol.requestedEndpoints = []
+        MockLicenseURLProtocol.requests = []
         super.tearDown()
     }
 
@@ -86,7 +89,6 @@ final class SkerryEntitlementTests: XCTestCase {
             lastSeenAt: start,
             license: SkerryStoredLicense(
                 key: "must-not-persist",
-                instanceID: "instance-1",
                 validatedAt: start
             )
         )
@@ -111,22 +113,38 @@ final class SkerryEntitlementTests: XCTestCase {
         }
     }
 
-    func testAdHocBuildRejectsEveryLemonConfigurationBeforeCompilation() throws {
+    func testLegacyLicenseRecordDecodesWithoutValidationAttempt() throws {
+        let data = Data("""
+        {
+          "trialStartedAt": 0,
+          "lastSeenAt": 0,
+          "license": {
+            "key": "legacy-license",
+            "validatedAt": 0
+          }
+        }
+        """.utf8)
+
+        let record = try JSONDecoder().decode(SkerryEntitlementRecord.self, from: data)
+
+        XCTAssertNil(record.license?.lastValidationAttemptAt)
+    }
+
+    func testAdHocBuildRejectsEveryPolarConfigurationBeforeCompilation() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let script = root.appendingPathComponent("Scripts/build-release.sh")
-        let lemonVariables = [
+        let polarVariables = [
             "SKERRY_PURCHASE_URL",
-            "LEMON_SQUEEZY_STORE_ID",
-            "LEMON_SQUEEZY_PRODUCT_ID",
-            "LEMON_SQUEEZY_VARIANT_ID"
+            "POLAR_ORGANIZATION_ID",
+            "POLAR_BENEFIT_ID"
         ]
 
-        for variable in lemonVariables {
+        for variable in polarVariables {
             var environment = ProcessInfo.processInfo.environment
-            lemonVariables.forEach { environment.removeValue(forKey: $0) }
+            polarVariables.forEach { environment.removeValue(forKey: $0) }
             environment["SIGN_IDENTITY"] = "-"
             environment[variable] = "configured"
 
@@ -146,10 +164,42 @@ final class SkerryEntitlementTests: XCTestCase {
             ) ?? ""
             XCTAssertNotEqual(process.terminationStatus, 0, variable)
             XCTAssertTrue(
-                message.contains("Ad-hoc builds cannot contain Lemon Squeezy configuration"),
+                message.contains("Ad-hoc builds cannot contain Polar configuration"),
                 "\(variable): \(message)"
             )
             XCTAssertFalse(message.contains("Building for production"), variable)
+        }
+    }
+
+    func testPolarConfigurationAcceptsOnlyExactCheckoutForms() throws {
+        let production = try XCTUnwrap(PolarConfiguration(
+            purchaseURL: XCTUnwrap(URL(string: "https://buy.polar.sh/polar_cl_abc123")),
+            organizationID: testOrganizationID,
+            benefitID: testBenefitID
+        ))
+        XCTAssertEqual(production.apiBaseURL.absoluteString, "https://api.polar.sh")
+
+        let sandbox = try XCTUnwrap(PolarConfiguration(
+            purchaseURL: XCTUnwrap(URL(
+                string: "https://sandbox-api.polar.sh/v1/checkout-links/polar_cl_abc123/redirect"
+            )),
+            organizationID: testOrganizationID,
+            benefitID: testBenefitID
+        ))
+        XCTAssertEqual(sandbox.apiBaseURL.absoluteString, "https://sandbox-api.polar.sh")
+
+        for value in [
+            "http://buy.polar.sh/polar_cl_abc123",
+            "https://buy.polar.sh/polar_cl_abc123?customer_email=private@example.com",
+            "https://buy.polar.sh/checkout/polar_cl_abc123",
+            "https://example.com/polar_cl_abc123",
+            "https://sandbox-api.polar.sh/v1/checkout-links/polar_cl_abc123"
+        ] {
+            XCTAssertNil(PolarConfiguration(
+                purchaseURL: try XCTUnwrap(URL(string: value)),
+                organizationID: testOrganizationID,
+                benefitID: testBenefitID
+            ), value)
         }
     }
 
@@ -214,12 +264,12 @@ final class SkerryEntitlementTests: XCTestCase {
     }
 
     @MainActor
-    func testActivationSurvivesOfflineLaunchAndDefinitiveRevocation() async throws {
+    func testLicenseEntrySurvivesOfflineLaunchAndDefinitiveRevocation() async throws {
         let store = makeStore()
         let configuration = try XCTUnwrap(configuration())
         let sessionConfiguration = URLSessionConfiguration.ephemeral
         sessionConfiguration.protocolClasses = [MockLicenseURLProtocol.self]
-        let client = LemonSqueezyLicenseClient(session: URLSession(configuration: sessionConfiguration))
+        let client = PolarLicenseClient(session: URLSession(configuration: sessionConfiguration))
         let controller = SkerryEntitlementController(
             store: store,
             client: client,
@@ -228,12 +278,17 @@ final class SkerryEntitlementTests: XCTestCase {
         _ = await controller.start(at: start)
 
         MockLicenseURLProtocol.mode = .valid
-        let activated = try await controller.activate(key: "skerry-test-license", at: start)
-        XCTAssertEqual(activated, .licensed(validatedAt: start))
-        XCTAssertEqual(
-            MockLicenseURLProtocol.lastForm["instance_name"],
-            "Skerry on Mac"
-        )
+        let licensed = try await controller.enter(key: "skerry-test-license", at: start)
+        XCTAssertEqual(licensed, .licensed(validatedAt: start))
+        let initialRequest = try XCTUnwrap(MockLicenseURLProtocol.requests.last)
+        XCTAssertEqual(initialRequest.path, "/v1/customer-portal/license-keys/validate")
+        XCTAssertEqual(initialRequest.contentType, "application/json")
+        XCTAssertNil(initialRequest.authorization)
+        XCTAssertEqual(initialRequest.json, [
+            "key": "skerry-test-license",
+            "organization_id": testOrganizationID.uuidString.lowercased(),
+            "benefit_id": testBenefitID.uuidString.lowercased()
+        ])
 
         let afterUpdate = SkerryEntitlementController(
             store: store,
@@ -289,96 +344,98 @@ final class SkerryEntitlementTests: XCTestCase {
         )
     }
 
-    func testWrongProductMalformedAndCheckoutConfigurationFailSafely() async throws {
-        XCTAssertNil(LemonSqueezyConfiguration(
-            purchaseURL: try XCTUnwrap(URL(string: "http://skerry.lemonsqueezy.com/checkout/buy/30")),
-            storeID: 10,
-            productID: 20,
-            variantID: 30
-        ))
-        XCTAssertNil(LemonSqueezyConfiguration(
-            purchaseURL: try XCTUnwrap(URL(string: "https://example.com/checkout/buy/30")),
-            storeID: 10,
-            productID: 20,
-            variantID: 30
-        ))
-
+    func testWrongScopeKeyAndPerpetualTermsAreDefinitive() async throws {
         let configuration = try XCTUnwrap(configuration())
         let sessionConfiguration = URLSessionConfiguration.ephemeral
         sessionConfiguration.protocolClasses = [MockLicenseURLProtocol.self]
-        let client = LemonSqueezyLicenseClient(session: URLSession(configuration: sessionConfiguration))
+        let client = PolarLicenseClient(session: URLSession(configuration: sessionConfiguration))
 
-        MockLicenseURLProtocol.mode = .wrongProduct
+        for mode in [
+            MockLicenseURLProtocol.Mode.wrongOrganization,
+            .wrongBenefit,
+            .wrongKey,
+            .expired,
+            .activationLimited,
+            .usageLimited,
+            .disabled,
+            .revoked,
+            .notFound
+        ] {
+            MockLicenseURLProtocol.mode = mode
+            do {
+                _ = try await client.validate(
+                    key: "skerry-test-license",
+                    configuration: configuration,
+                    now: start
+                )
+                XCTFail("\(mode) validation succeeded")
+            } catch let error as PolarLicenseClient.Error {
+                XCTAssertTrue(error.isDefinitive, "\(mode)")
+            }
+        }
+    }
+
+    func testMalformedResponseIsTemporary() async throws {
+        let configuration = try XCTUnwrap(configuration())
+        let sessionConfiguration = URLSessionConfiguration.ephemeral
+        sessionConfiguration.protocolClasses = [MockLicenseURLProtocol.self]
+        let client = PolarLicenseClient(session: URLSession(configuration: sessionConfiguration))
+        MockLicenseURLProtocol.mode = .malformed
         do {
-            _ = try await client.activate(
+            _ = try await client.validate(
                 key: "skerry-test-license",
                 configuration: configuration,
                 now: start
             )
-            XCTFail("Wrong-product activation succeeded")
-        } catch let error as LemonSqueezyLicenseClient.Error {
-            XCTAssertEqual(error, .wrongProduct)
-            XCTAssertTrue(error.isDefinitive)
-        }
-
-        MockLicenseURLProtocol.mode = .malformed
-        do {
-            _ = try await client.validate(
-                SkerryStoredLicense(
-                    key: "skerry-test-license",
-                    instanceID: "instance-1",
-                    validatedAt: start
-                ),
-                configuration: configuration,
-                now: start
-            )
             XCTFail("Malformed validation succeeded")
-        } catch let error as LemonSqueezyLicenseClient.Error {
+        } catch let error as PolarLicenseClient.Error {
             XCTAssertEqual(error, .malformedResponse)
             XCTAssertFalse(error.isDefinitive)
         }
     }
 
     @MainActor
-    func testActivationReusesInstanceAndRefusesDifferentKeyWithoutRemoteCall() async throws {
+    func testLicenseEntryRevalidatesSameKeyAndRefusesDifferentKeyWithoutRemoteCall() async throws {
         let configuration = try XCTUnwrap(configuration())
         let sessionConfiguration = URLSessionConfiguration.ephemeral
         sessionConfiguration.protocolClasses = [MockLicenseURLProtocol.self]
         let controller = SkerryEntitlementController(
             store: makeStore(),
-            client: LemonSqueezyLicenseClient(
+            client: PolarLicenseClient(
                 session: URLSession(configuration: sessionConfiguration)
             ),
             configuration: configuration
         )
         _ = await controller.start(at: start)
 
-        _ = try await controller.activate(key: "skerry-first-license", at: start)
-        _ = try await controller.activate(
+        _ = try await controller.enter(key: "skerry-first-license", at: start)
+        _ = try await controller.enter(
             key: "skerry-first-license",
             at: start.addingTimeInterval(1)
         )
-        XCTAssertEqual(MockLicenseURLProtocol.requestedEndpoints, ["activate", "validate"])
-        XCTAssertEqual(MockLicenseURLProtocol.lastForm["instance_id"], "instance-1")
+        XCTAssertEqual(MockLicenseURLProtocol.requests.count, 2)
+        XCTAssertTrue(MockLicenseURLProtocol.requests.allSatisfy {
+            $0.path == "/v1/customer-portal/license-keys/validate"
+        })
 
-        MockLicenseURLProtocol.requestedEndpoints = []
+        MockLicenseURLProtocol.requests = []
         do {
-            _ = try await controller.activate(
+            _ = try await controller.enter(
                 key: "skerry-second-license",
                 at: start.addingTimeInterval(2)
             )
             XCTFail("Different key replaced an active license")
-        } catch SkerryEntitlementController.ActivationError.differentKey {}
-        XCTAssertTrue(MockLicenseURLProtocol.requestedEndpoints.isEmpty)
+        } catch SkerryEntitlementController.LicenseError.differentKey {}
+        XCTAssertTrue(MockLicenseURLProtocol.requests.isEmpty)
 
         MockLicenseURLProtocol.mode = .revoked
         do {
-            _ = try await controller.activate(
+            _ = try await controller.enter(
                 key: "skerry-first-license",
                 at: start.addingTimeInterval(73 * 60 * 60)
             )
-            XCTFail("Revoked same-key activation succeeded")
-        } catch let error as LemonSqueezyLicenseClient.Error {
+            XCTFail("Revoked same-key entry succeeded")
+        } catch let error as PolarLicenseClient.Error {
             XCTAssertTrue(error.isDefinitive)
         }
         guard case .recoverableError(_, let allowsUse) = controller.observe(
@@ -390,7 +447,7 @@ final class SkerryEntitlementTests: XCTestCase {
     }
 
     @MainActor
-    func testActivationCompensatesRemoteInstanceWhenLocalSaveFails() async throws {
+    func testLicenseEntryDoesNotPersistWhenLocalSaveFails() async throws {
         let service = "com.givdul.skerry.tests.\(UUID().uuidString)"
         keychainServices.append(service)
         let store = SkerryEntitlementStore(
@@ -403,65 +460,65 @@ final class SkerryEntitlementTests: XCTestCase {
         sessionConfiguration.protocolClasses = [MockLicenseURLProtocol.self]
         let controller = SkerryEntitlementController(
             store: store,
-            client: LemonSqueezyLicenseClient(
+            client: PolarLicenseClient(
                 session: URLSession(configuration: sessionConfiguration)
             ),
             configuration: try XCTUnwrap(configuration())
         )
         _ = await controller.start(at: start)
-        MockLicenseURLProtocol.requestedEndpoints = []
+        MockLicenseURLProtocol.requests = []
 
         do {
-            _ = try await controller.activate(key: "skerry-test-license", at: start)
-            XCTFail("Activation survived a failed local save")
+            _ = try await controller.enter(key: "skerry-test-license", at: start)
+            XCTFail("License entry survived a failed local save")
         } catch let error as SkerryEntitlementStore.Error {
             XCTAssertEqual(error, .keychain(errSecNotAvailable))
         }
 
-        XCTAssertEqual(MockLicenseURLProtocol.requestedEndpoints, ["activate", "deactivate"])
+        XCTAssertEqual(MockLicenseURLProtocol.requests.count, 1)
         let persistedRecord = try await store.loadBounded()
         XCTAssertNil(persistedRecord?.license)
     }
 
     @MainActor
-    func testValidationMutationGateRejectsOverlappingActivation() async throws {
+    func testValidationMutationGateRejectsOverlappingLicenseEntry() async throws {
         let configuration = try XCTUnwrap(configuration())
         let sessionConfiguration = URLSessionConfiguration.ephemeral
         sessionConfiguration.protocolClasses = [MockLicenseURLProtocol.self]
         let controller = SkerryEntitlementController(
             store: makeStore(),
-            client: LemonSqueezyLicenseClient(
+            client: PolarLicenseClient(
                 session: URLSession(configuration: sessionConfiguration)
             ),
             configuration: configuration
         )
         _ = await controller.start(at: start)
-        _ = try await controller.activate(key: "skerry-test-license", at: start)
+        _ = try await controller.enter(key: "skerry-test-license", at: start)
 
         MockLicenseURLProtocol.mode = .delayedValid
-        MockLicenseURLProtocol.requestedEndpoints = []
+        MockLicenseURLProtocol.requests = []
         let validation = Task { @MainActor in
             await controller.validate(at: start.addingTimeInterval(25 * 60 * 60))
         }
-        for _ in 0..<100 where MockLicenseURLProtocol.requestedEndpoints.isEmpty {
+        for _ in 0..<100 where MockLicenseURLProtocol.requests.isEmpty {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
-        XCTAssertEqual(MockLicenseURLProtocol.requestedEndpoints, ["validate"])
+        XCTAssertEqual(MockLicenseURLProtocol.requests.count, 1)
 
         do {
-            _ = try await controller.activate(
+            _ = try await controller.enter(
                 key: "skerry-test-license",
                 at: start.addingTimeInterval(25 * 60 * 60)
             )
-            XCTFail("Activation overlapped automatic validation")
-        } catch SkerryEntitlementController.ActivationError.busy {}
+            XCTFail("License entry overlapped automatic validation")
+        } catch SkerryEntitlementController.LicenseError.busy {}
 
         let validationStatus = await validation.value
         XCTAssertEqual(
             validationStatus,
             .licensed(validatedAt: start.addingTimeInterval(25 * 60 * 60))
         )
-        XCTAssertEqual(MockLicenseURLProtocol.requestedEndpoints, ["validate"])
+        XCTAssertEqual(MockLicenseURLProtocol.requests.count, 1)
     }
 
     @MainActor
@@ -472,15 +529,22 @@ final class SkerryEntitlementTests: XCTestCase {
         let store = makeStore()
         let controller = SkerryEntitlementController(
             store: store,
-            client: LemonSqueezyLicenseClient(
+            client: PolarLicenseClient(
                 session: URLSession(configuration: sessionConfiguration)
             ),
             configuration: configuration
         )
         _ = await controller.start(at: start)
-        _ = try await controller.activate(key: "skerry-test-license", at: start)
+        _ = try await controller.enter(key: "skerry-test-license", at: start)
 
-        for mode in [MockLicenseURLProtocol.Mode.throttled, .serverError] {
+        for mode in [
+            MockLicenseURLProtocol.Mode.requestTimeout,
+            .tooEarly,
+            .unprocessable,
+            .throttled,
+            .serverError,
+            .malformed
+        ] {
             MockLicenseURLProtocol.mode = mode
             guard case .recoverableError(_, let allowsUse) = await controller.validate(
                 at: start.addingTimeInterval(25 * 60 * 60)
@@ -492,7 +556,7 @@ final class SkerryEntitlementTests: XCTestCase {
 
         let relaunched = SkerryEntitlementController(
             store: store,
-            client: LemonSqueezyLicenseClient(
+            client: PolarLicenseClient(
                 session: URLSession(configuration: sessionConfiguration)
             ),
             configuration: configuration
@@ -504,7 +568,48 @@ final class SkerryEntitlementTests: XCTestCase {
     }
 
     @MainActor
-    func testMalformedProtectedRecordRecoversThroughActivationWithoutResettingTrial() async throws {
+    func testTemporaryFailureThrottlesRelaunchUntilNextDay() async throws {
+        let service = "com.givdul.skerry.tests.\(UUID().uuidString)"
+        keychainServices.append(service)
+        let configuration = try XCTUnwrap(configuration())
+        let sessionConfiguration = URLSessionConfiguration.ephemeral
+        sessionConfiguration.protocolClasses = [MockLicenseURLProtocol.self]
+        let client = PolarLicenseClient(
+            session: URLSession(configuration: sessionConfiguration)
+        )
+        let first = SkerryEntitlementController(
+            store: SkerryEntitlementStore(service: service),
+            client: client,
+            configuration: configuration
+        )
+        _ = await first.start(at: start)
+        _ = try await first.enter(key: "skerry-test-license", at: start)
+
+        let attempt = start.addingTimeInterval(25 * 60 * 60)
+        MockLicenseURLProtocol.mode = .offline
+        _ = await first.validate(at: attempt)
+        MockLicenseURLProtocol.requests = []
+
+        let relaunched = SkerryEntitlementController(
+            store: SkerryEntitlementStore(service: service),
+            client: client,
+            configuration: configuration
+        )
+        _ = await relaunched.start(at: attempt.addingTimeInterval(23 * 60 * 60))
+        if relaunched.shouldValidate(at: attempt.addingTimeInterval(23 * 60 * 60)) {
+            _ = await relaunched.validate(at: attempt.addingTimeInterval(23 * 60 * 60))
+        }
+        XCTAssertTrue(MockLicenseURLProtocol.requests.isEmpty)
+
+        MockLicenseURLProtocol.mode = .valid
+        let nextDay = attempt.addingTimeInterval(SkerryEntitlementController.validationInterval)
+        XCTAssertTrue(relaunched.shouldValidate(at: nextDay))
+        _ = await relaunched.validate(at: nextDay)
+        XCTAssertEqual(MockLicenseURLProtocol.requests.count, 1)
+    }
+
+    @MainActor
+    func testMalformedProtectedRecordRecoversThroughLicenseEntryWithoutResettingTrial() async throws {
         let service = "com.givdul.skerry.tests.\(UUID().uuidString)"
         keychainServices.append(service)
         let malformed = Data("{".utf8)
@@ -519,7 +624,7 @@ final class SkerryEntitlementTests: XCTestCase {
         let store = SkerryEntitlementStore(service: service)
         let sessionConfiguration = URLSessionConfiguration.ephemeral
         sessionConfiguration.protocolClasses = [MockLicenseURLProtocol.self]
-        let client = LemonSqueezyLicenseClient(
+        let client = PolarLicenseClient(
             session: URLSession(configuration: sessionConfiguration)
         )
         let configuration = try XCTUnwrap(configuration())
@@ -542,11 +647,11 @@ final class SkerryEntitlementTests: XCTestCase {
         ] as CFDictionary, &stored), errSecSuccess)
         XCTAssertEqual(stored as? Data, malformed)
 
-        let activated = try await controller.activate(
+        let licensed = try await controller.enter(
             key: "skerry-test-license",
             at: start
         )
-        XCTAssertEqual(activated, .licensed(validatedAt: start))
+        XCTAssertEqual(licensed, .licensed(validatedAt: start))
         MockLicenseURLProtocol.mode = .revoked
         _ = await controller.validate(at: start.addingTimeInterval(73 * 60 * 60))
 
@@ -667,12 +772,11 @@ final class SkerryEntitlementTests: XCTestCase {
         return home
     }
 
-    private func configuration() -> LemonSqueezyConfiguration? {
-        LemonSqueezyConfiguration(
-            purchaseURL: URL(string: "https://skerry.lemonsqueezy.com/checkout/buy/30")!,
-            storeID: 10,
-            productID: 20,
-            variantID: 30
+    private func configuration() -> PolarConfiguration? {
+        PolarConfiguration(
+            purchaseURL: URL(string: "https://buy.polar.sh/polar_cl_skerry")!,
+            organizationID: testOrganizationID,
+            benefitID: testBenefitID
         )
     }
 }
@@ -682,19 +786,35 @@ private final class MockLicenseURLProtocol: URLProtocol, @unchecked Sendable {
         case valid
         case offline
         case revoked
-        case wrongProduct
+        case disabled
+        case notFound
+        case wrongOrganization
+        case wrongBenefit
+        case wrongKey
+        case expired
+        case activationLimited
+        case usageLimited
         case malformed
+        case requestTimeout
+        case tooEarly
+        case unprocessable
         case throttled
         case serverError
         case delayedValid
     }
 
+    struct CapturedRequest {
+        let path: String
+        let json: [String: String]
+        let authorization: String?
+        let contentType: String?
+    }
+
     nonisolated(unsafe) static var mode = Mode.valid
-    nonisolated(unsafe) static var lastForm: [String: String] = [:]
-    nonisolated(unsafe) static var requestedEndpoints: [String] = []
+    nonisolated(unsafe) static var requests: [CapturedRequest] = []
 
     override class func canInit(with request: URLRequest) -> Bool {
-        request.url?.host == "api.lemonsqueezy.com"
+        request.url?.host == "api.polar.sh" || request.url?.host == "sandbox-api.polar.sh"
     }
 
     override class func canonicalRequest(for request: URLRequest) -> URLRequest {
@@ -702,8 +822,13 @@ private final class MockLicenseURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func startLoading() {
-        Self.lastForm = Self.form(from: Self.bodyData(from: request))
-        Self.requestedEndpoints.append(request.url?.lastPathComponent ?? "")
+        let json = Self.json(from: Self.bodyData(from: request))
+        Self.requests.append(CapturedRequest(
+            path: request.url?.path ?? "",
+            json: json,
+            authorization: request.value(forHTTPHeaderField: "Authorization"),
+            contentType: request.value(forHTTPHeaderField: "Content-Type")
+        ))
         if Self.mode == .delayedValid {
             Thread.sleep(forTimeInterval: 0.2)
         }
@@ -717,39 +842,49 @@ private final class MockLicenseURLProtocol: URLProtocol, @unchecked Sendable {
         switch Self.mode {
         case .valid, .delayedValid:
             status = 200
-            let endpoint = request.url?.lastPathComponent
-            let resultField = switch endpoint {
-            case "activate": #""activated":true"#
-            case "deactivate": #""deactivated":true"#
-            default: #""valid":true"#
-            }
-            data = Self.response(
-                resultField: resultField,
-                productID: 20,
-                licenseStatus: endpoint == "deactivate" ? "inactive" : "active",
-                instanceID: endpoint == "deactivate" ? nil : "instance-1"
-            )
+            data = Self.response(key: json["key"] ?? "")
         case .revoked:
-            status = 404
-            data = Self.response(
-                resultField: #""valid":false"#,
-                productID: 20,
-                licenseStatus: "disabled",
-                error: "This license key has been disabled."
-            )
-        case .wrongProduct:
             status = 200
-            data = Self.response(
-                resultField: #""activated":true"#,
-                productID: 999,
-                licenseStatus: "active"
-            )
+            data = Self.response(licenseStatus: "revoked")
+        case .disabled:
+            status = 200
+            data = Self.response(licenseStatus: "disabled")
+        case .notFound:
+            status = 404
+            data = Data(#"{"detail":"Not Found"}"#.utf8)
+        case .wrongOrganization:
+            status = 200
+            data = Self.response(organizationID: UUID())
+        case .wrongBenefit:
+            status = 200
+            data = Self.response(benefitID: UUID())
+        case .wrongKey:
+            status = 200
+            data = Self.response(key: "another-license-key")
+        case .expired:
+            status = 200
+            data = Self.response(expiresAt: "2027-01-01T00:00:00Z")
+        case .activationLimited:
+            status = 200
+            data = Self.response(limitActivations: 1)
+        case .usageLimited:
+            status = 200
+            data = Self.response(limitUsage: 100)
         case .malformed:
             status = 200
-            data = Data(#"{"valid":true}"#.utf8)
+            data = Data(#"{"status":"granted"}"#.utf8)
+        case .requestTimeout:
+            status = 408
+            data = Data()
+        case .tooEarly:
+            status = 425
+            data = Data()
+        case .unprocessable:
+            status = 422
+            data = Data(#"{"detail":"Validation error"}"#.utf8)
         case .throttled:
             status = 429
-            data = Data(#"{"error":"Too many requests."}"#.utf8)
+            data = Data(#"{"detail":"Too many requests."}"#.utf8)
         case .serverError:
             status = 503
             data = Data("temporarily unavailable".utf8)
@@ -771,41 +906,40 @@ private final class MockLicenseURLProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 
     private static func response(
-        resultField: String,
-        productID: Int,
-        licenseStatus: String,
-        error: String? = nil,
-        instanceID: String? = "instance-1"
+        organizationID: UUID = testOrganizationID,
+        benefitID: UUID = testBenefitID,
+        key: String = "skerry-test-license",
+        licenseStatus: String = "granted",
+        limitActivations: Int? = nil,
+        limitUsage: Int? = nil,
+        expiresAt: String? = nil
     ) -> Data {
         Data("""
         {
-          \(resultField),
-          "error": \(error.map { "\"\($0)\"" } ?? "null"),
-          "license_key": {
-            "status": "\(licenseStatus)",
-            "expires_at": null
-          },
-          "instance": \(instanceID.map { #"{"id":"\#($0)"}"# } ?? "null"),
-          "meta": {
-            "store_id": 10,
-            "product_id": \(productID),
-            "variant_id": 30
-          }
+          "id": "33333333-3333-4333-8333-333333333333",
+          "organization_id": "\(organizationID.uuidString.lowercased())",
+          "benefit_id": "\(benefitID.uuidString.lowercased())",
+          "key": "\(key)",
+          "status": "\(licenseStatus)",
+          "limit_activations": \(limitActivations.map(String.init) ?? "null"),
+          "usage": 0,
+          "limit_usage": \(limitUsage.map(String.init) ?? "null"),
+          "validations": 1,
+          "last_validated_at": null,
+          "expires_at": \(expiresAt.map { "\"\($0)\"" } ?? "null")
         }
         """.utf8)
     }
 
-    private static func form(from data: Data?) -> [String: String] {
+    private static func json(from data: Data?) -> [String: String] {
         guard let data,
-              let text = String(data: data, encoding: .utf8) else {
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return [:]
         }
-        var components = URLComponents()
-        components.percentEncodedQuery = text
         return Dictionary(
-            uniqueKeysWithValues: (components.queryItems ?? []).compactMap {
-                guard let value = $0.value else { return nil }
-                return ($0.name, value)
+            uniqueKeysWithValues: object.compactMap {
+                guard let value = $0.value as? String else { return nil }
+                return ($0.key, value)
             }
         )
     }
