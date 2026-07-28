@@ -1,15 +1,20 @@
 # Releasing Skerry
 
-This is the manual direct-sale release procedure. It extends the repository's
-single Sparkle build path; it does not publish automatically.
+Skerry uses one manual direct-sale release path: a universal Developer ID
+archive, Apple notarization, a version-tagged GitHub Release asset, and the
+Sparkle feed committed to `main`.
+
+Production locations are fixed:
+
+- Feed: `https://raw.githubusercontent.com/Givdul/atoll/main/appcast.xml`
+- Build ledger: `https://raw.githubusercontent.com/Givdul/atoll/main/latest-build.txt`
+- Archive: `https://github.com/Givdul/atoll/releases/download/vVERSION/Skerry-VERSION.zip`
 
 ## One-time prerequisites
 
-1. Install current Xcode command-line tools and confirm the universal build and
-   tests pass.
-2. Install the intended `Developer ID Application` certificate in the login
-   Keychain.
-3. Store notarization credentials outside the repository:
+1. Install current Xcode command-line tools and the intended
+   `Developer ID Application` certificate in the login Keychain.
+2. Store notarization credentials outside the repository:
 
    ```sh
    xcrun notarytool store-credentials skerry-notary \
@@ -18,117 +23,183 @@ single Sparkle build path; it does not publish automatically.
      --password YOUR_APP_SPECIFIC_PASSWORD
    ```
 
-4. From Sparkle's downloaded artifact, run `generate_keys` once. Keep the
-   private Ed25519 key in the login Keychain (or an encrypted offline backup)
-   and put only its printed public key in release configuration.
-5. Create the production Polar product and its dedicated perpetual,
-   unlimited License Keys benefit. Record only the public checkout URL,
-   organization UUID, and benefit UUID in release configuration.
+3. Run Sparkle's `generate_keys` once. Keep the private Ed25519 key in Keychain
+   or an encrypted offline backup. Only its public key belongs in release
+   configuration.
+4. Create the production Polar product and its dedicated perpetual, unlimited
+   License Keys benefit. Record only its public checkout URL, organization
+   UUID, and benefit UUID in release configuration.
+5. Authenticate `gh` for `Givdul/atoll`.
+6. Before the first public release, enable
+   [release immutability](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/establish-provenance-and-integrity/prevent-release-changes)
+   under repository **Settings → Releases**. GitHub applies it only to future
+   releases; after publication it protects the tag and uploaded archive.
 
 Never commit Apple credentials, the Sparkle private key, Polar access tokens,
 webhook secrets, or local environment files.
 
 ## Build, notarize, staple, and verify
 
-First publish a valid HTTPS appcast. For the first release only, it may contain
-one empty RSS channel:
-
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0"
-  xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
-  <channel>
-    <title>Skerry updates</title>
-    <link>https://YOUR_HOST/</link>
-    <description>Skerry releases</description>
-    <language>en</language>
-  </channel>
-</rss>
-```
-
-Choose a new three-part marketing version and an integer build number greater
-than the last published build. Set `PREVIOUS_BUILD_NUMBER=0` only for that
-empty-feed bootstrap; otherwise set it to the greatest `sparkle:version` in the
-published feed. Run:
+Start from clean, current `main`. Choose a new three-part marketing version and
+a positive integer build number greater than `latest-build.txt`. The ledger is
+the monotonic authority even if the appcast was rolled back.
 
 ```sh
+export MARKETING_VERSION='1.0.0'
+export BUILD_NUMBER='1'
+
 SIGN_IDENTITY='Developer ID Application: YOUR NAME (YOURTEAMID)' \
 DEVELOPER_TEAM_ID='YOURTEAMID' \
 NOTARY_KEYCHAIN_PROFILE='skerry-notary' \
-SPARKLE_FEED_URL='https://YOUR_HOST/appcast.xml' \
+SPARKLE_FEED_URL='https://raw.githubusercontent.com/Givdul/atoll/main/appcast.xml' \
 SPARKLE_PUBLIC_ED_KEY='YOUR_PUBLIC_ED25519_KEY' \
 SKERRY_PURCHASE_URL='https://buy.polar.sh/polar_cl_YOUR_LINK' \
 POLAR_ORGANIZATION_ID='YOUR_ORGANIZATION_UUID' \
 POLAR_BENEFIT_ID='YOUR_BENEFIT_UUID' \
-MARKETING_VERSION='1.0.0' \
-BUILD_NUMBER='2' \
-PREVIOUS_BUILD_NUMBER='1' \
+MARKETING_VERSION="$MARKETING_VERSION" \
+BUILD_NUMBER="$BUILD_NUMBER" \
 ./Scripts/build-release.sh --distribution
 ```
 
-The production preflight validates the feed URL, downloads and parses the
-published appcast, requires `PREVIOUS_BUILD_NUMBER` to equal its greatest
-integer Sparkle build version, and rejects a repeated or decreasing
-`BUILD_NUMBER` before it accesses signing or notarization credentials or starts
-compilation. A non-empty feed can never use the bootstrap value.
+Before it accesses signing/notarization credentials or compiles, the script
+downloads the production feed and ledger over HTTPS with time and size limits.
+It requires the appcast's greatest build to be no greater than the ledger,
+allows an empty appcast only with ledger `0`, and requires the new build to be
+greater than the ledger. This rejects repeated builds after an appcast rollback
+and fails closed if raw GitHub caches expose a newer appcast than ledger.
 
-The script then builds both architectures, signs nested Sparkle code inside-out
-with hardened runtime and timestamps, submits to Apple, staples the app, creates
-the final ZIP, extracts that ZIP, and verifies strict signatures, the ticket,
-Gatekeeper assessment, and every required universal executable. It prints the
-final ZIP's SHA-256. Keep that checksum and
-`dist/Skerry-notarization*.json` with the release record, and review every
-warning in the notarization log.
+The script builds both architectures, signs Sparkle and the app inside-out with
+hardened runtime and timestamps, notarizes, staples, creates the final ZIP
+after stapling, extracts that ZIP, and verifies signatures, the notarization
+ticket, Gatekeeper, and required universal executables. Record the printed
+SHA-256 and keep `dist/Skerry-notarization*.json`.
 
-## Sign and publish the Sparkle update
+## Generate one update item
 
-Keep the update directory outside this repository and retain older signed
-archives for upgrade testing, delta generation, and rollback. Put optional
-same-basename `.html` or `.md` release notes beside each archive before running
-Sparkle's tool:
+Work in a temporary directory containing only the new full archive and optional
+same-basename release notes:
 
 ```sh
-cp dist/Skerry.zip "$SKERRY_UPDATE_DIR/Skerry-1.0.0.zip"
+export RELEASE_DIR="$(mktemp -d)"
+cp dist/Skerry.zip "$RELEASE_DIR/Skerry-${MARKETING_VERSION}.zip"
+# Optional:
+# cp RELEASE_NOTES.md "$RELEASE_DIR/Skerry-${MARKETING_VERSION}.md"
+
 .build/artifacts/sparkle/Sparkle/bin/generate_appcast \
-  --download-url-prefix 'https://YOUR_HOST/downloads/' \
-  -o "$SKERRY_UPDATE_DIR/appcast.xml" \
-  "$SKERRY_UPDATE_DIR"
+  --download-url-prefix \
+    "https://github.com/Givdul/atoll/releases/download/v${MARKETING_VERSION}/" \
+  --maximum-versions 1 \
+  --maximum-deltas 0 \
+  --embed-release-notes \
+  -o "$RELEASE_DIR/appcast.xml" \
+  "$RELEASE_DIR"
 ```
 
-`generate_appcast` reads the private Ed25519 key from Keychain and signs the
-archive entry. It may also generate signed `.delta` files and reference
-same-basename release notes. Inspect the generated item for the expected build,
-marketing version, HTTPS archive and delta URLs, lengths,
-`sparkle:edSignature`, and any release-notes URL.
+`--maximum-versions 1` keeps one full update item.
+`--maximum-deltas 0` intentionally disables deltas until release volume makes
+their extra publication and rollback surface worthwhile.
 
-Upload the generated appcast and every archive, `.delta`, and release-note file
-referenced by it in one publication. Do not publish an appcast while any
-referenced artifact is missing. Fetch every public URL from the published feed,
-then compare the downloaded full ZIP's SHA-256 with the release record before
-announcing the release. The next build must use the greatest published
-`sparkle:version` as `PREVIOUS_BUILD_NUMBER`.
+Inspect the generated XML before publishing:
+
+```sh
+xmllint --nonet --noout "$RELEASE_DIR/appcast.xml"
+test "$(xmllint --nonet --xpath 'count(/*[local-name()="rss"]/*[local-name()="channel"]/*[local-name()="item"])' "$RELEASE_DIR/appcast.xml")" = 1
+test "$(xmllint --nonet --xpath 'string((//*[local-name()="item"]/*[local-name()="enclosure"])[1]/@*[local-name()="version"])' "$RELEASE_DIR/appcast.xml")" = "$BUILD_NUMBER"
+test "$(xmllint --nonet --xpath 'string((//*[local-name()="item"]/*[local-name()="enclosure"])[1]/@url)' "$RELEASE_DIR/appcast.xml")" = \
+  "https://github.com/Givdul/atoll/releases/download/v${MARKETING_VERSION}/Skerry-${MARKETING_VERSION}.zip"
+test "$(xmllint --nonet --xpath 'count(//*[local-name()="deltas"])' "$RELEASE_DIR/appcast.xml")" = 0
+```
+
+The appcast is not itself a signed feed. `generate_appcast` puts the archive's
+EdDSA signature in `sparkle:edSignature`; Skerry verifies that signature with
+the public key embedded in the app.
+
+## Publish the archive before the feed
+
+Create a draft GitHub Release for the version tag, upload the full archive, and
+then publish the Release:
+
+```sh
+gh release create "v${MARKETING_VERSION}" \
+  --repo Givdul/atoll \
+  --draft \
+  --title "Skerry ${MARKETING_VERSION}" \
+  --generate-notes
+gh release upload "v${MARKETING_VERSION}" \
+  "$RELEASE_DIR/Skerry-${MARKETING_VERSION}.zip" \
+  --repo Givdul/atoll
+gh release edit "v${MARKETING_VERSION}" \
+  --repo Givdul/atoll \
+  --draft=false
+```
+
+Fetch the now-public asset and compare it with the verified local ZIP before
+publishing any appcast reference:
+
+```sh
+curl --fail --location --proto '=https' --proto-redir '=https' \
+  --connect-timeout 10 --max-time 120 --max-filesize 1073741824 \
+  "https://github.com/Givdul/atoll/releases/download/v${MARKETING_VERSION}/Skerry-${MARKETING_VERSION}.zip" \
+  -o "$RELEASE_DIR/public.zip"
+test "$(shasum -a 256 "$RELEASE_DIR/Skerry-${MARKETING_VERSION}.zip" | awk '{print $1}')" = \
+  "$(shasum -a 256 "$RELEASE_DIR/public.zip" | awk '{print $1}')"
+```
+
+Commit the generated appcast and advanced ledger together. They must always
+land on `main` in the same commit:
+
+```sh
+cp "$RELEASE_DIR/appcast.xml" appcast.xml
+printf '%s\n' "$BUILD_NUMBER" > latest-build.txt
+git add appcast.xml latest-build.txt
+git commit -m "release: publish Skerry ${MARKETING_VERSION}"
+git push origin main
+```
+
+Poll the raw URLs until both files expose that exact commit; stop after two
+minutes and retry later rather than publishing another build:
+
+```sh
+for attempt in $(seq 1 24); do
+  curl --fail --silent --show-error --location \
+    --proto '=https' --proto-redir '=https' \
+    --connect-timeout 5 --max-time 10 --max-filesize 1048576 \
+    'https://raw.githubusercontent.com/Givdul/atoll/main/appcast.xml' \
+    -o "$RELEASE_DIR/public-appcast.xml" || true
+  public_build="$(curl --fail --silent --show-error --location \
+    --proto '=https' --proto-redir '=https' \
+    --connect-timeout 5 --max-time 10 --max-filesize 32 \
+    'https://raw.githubusercontent.com/Givdul/atoll/main/latest-build.txt' || true)"
+  if cmp -s appcast.xml "$RELEASE_DIR/public-appcast.xml" &&
+     test "$public_build" = "$BUILD_NUMBER"; then
+    break
+  fi
+  test "$attempt" -lt 24 || exit 1
+  sleep 5
+done
+```
 
 ## Acceptance
 
 - On a clean supported Mac, download the public ZIP and open Skerry without a
   Gatekeeper bypass. Confirm the menu, trial, purchase, license, privacy,
   support, terms, and third-party notices.
-- Install the previous signed release, create representative settings,
-  trial/license state, lifecycle state, and unrelated agent configuration.
-  Use **Check for Updates…** to install the new build. Confirm Sparkle verifies,
-  installs, relaunches, reports the new versions, preserves all intended state,
+- Install the previous signed release and create representative settings,
+  trial/license state, lifecycle state, and unrelated agent configuration. Use
+  **Check for Updates…** to install the new build. Confirm Sparkle verifies,
+  installs, relaunches, reports the new versions, preserves intended state,
   and does not alter unrelated provider configuration.
 - Confirm a revoked/wrong Polar key is rejected and a valid production key
-  licenses Skerry. Repeat the revocation path against Polar sandbox before
-  production changes.
+  licenses Skerry. Repeat revocation against Polar sandbox before production
+  changes.
 
 Clean-Mac Gatekeeper behavior, Apple notarization, public hosting, Polar, and a
-real older-to-newer Sparkle update require external services and cannot be
-proved by an ad-hoc local build.
+real older-to-newer update require their external services; an ad-hoc local
+build cannot prove them.
 
 ## Rollback
 
-Do not decrease or reuse a build number. Restore the previous appcast and
-archive on the update host, then publish a fixed build with a new, greater build
-number. Keep the failed artifact, checksum, appcast, and notarization log for
-diagnosis.
+Restore only the previous known-good `appcast.xml` in a new commit. Never
+decrease or revert `latest-build.txt`, reuse a build number, or edit the
+published archive in place. Diagnose the failed artifact, then release a fixed
+archive with a build number greater than the retained ledger.

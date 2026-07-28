@@ -6,6 +6,8 @@ APP_NAME="Skerry"
 DIST_DIR="$ROOT/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 ZIP_PATH="$DIST_DIR/$APP_NAME.zip"
+PRODUCTION_SPARKLE_FEED_URL="https://raw.githubusercontent.com/Givdul/atoll/main/appcast.xml"
+PRODUCTION_BUILD_LEDGER_URL="https://raw.githubusercontent.com/Givdul/atoll/main/latest-build.txt"
 INSTALLED_APP="/Applications/$APP_NAME.app"
 INSTALLED_EXECUTABLE="$INSTALLED_APP/Contents/MacOS/$APP_NAME"
 LEGACY_APP_NAME="Atoll"
@@ -21,7 +23,6 @@ POLAR_ORGANIZATION_ID="${POLAR_ORGANIZATION_ID:-}"
 POLAR_BENEFIT_ID="${POLAR_BENEFIT_ID:-}"
 MARKETING_VERSION="${MARKETING_VERSION:-}"
 BUILD_NUMBER="${BUILD_NUMBER:-}"
-PREVIOUS_BUILD_NUMBER="${PREVIOUS_BUILD_NUMBER:-}"
 DEVELOPER_TEAM_ID="${DEVELOPER_TEAM_ID:-}"
 ARCHITECTURES=(arm64 x86_64)
 MODE="build"
@@ -152,6 +153,26 @@ latest_appcast_build() {
   echo "$latest"
 }
 
+fetch_release_metadata() {
+  local url=$1
+  local destination=$2
+  local maximum_size=$3
+  local label=$4
+
+  curl \
+    --fail \
+    --silent \
+    --show-error \
+    --location \
+    --proto '=https' \
+    --proto-redir '=https' \
+    --connect-timeout 10 \
+    --max-time 30 \
+    --max-filesize "$maximum_size" \
+    "$url" > "$destination" \
+    || fail "Could not fetch $label"
+}
+
 if [[ $# -gt 1 ]]; then
   fail "Usage: $0 [--install|--distribution]"
 fi
@@ -190,7 +211,6 @@ if [[ "$MODE" == "distribution" ]]; then
     "$POLAR_BENEFIT_ID"
     "$MARKETING_VERSION"
     "$BUILD_NUMBER"
-    "$PREVIOUS_BUILD_NUMBER"
   )
   required_names=(
     SIGN_IDENTITY
@@ -203,7 +223,6 @@ if [[ "$MODE" == "distribution" ]]; then
     POLAR_BENEFIT_ID
     MARKETING_VERSION
     BUILD_NUMBER
-    PREVIOUS_BUILD_NUMBER
   )
   for index in "${!required_values[@]}"; do
     [[ -n "${required_values[$index]}" && "${required_values[$index]}" != "-" ]] \
@@ -248,36 +267,31 @@ if [[ "$MODE" == "distribution" ]]; then
     || fail "SPARKLE_PUBLIC_ED_KEY must be a base64-encoded Ed25519 public key"
   [[ "$SKERRY_PURCHASE_URL" =~ ^https://buy\.polar\.sh/polar_cl_[A-Za-z0-9]+$ ]] \
     || fail "SKERRY_PURCHASE_URL must use the production Polar checkout in --distribution"
-  [[ "$PREVIOUS_BUILD_NUMBER" =~ ^(0|[1-9][0-9]*)$ ]] \
-    || fail "PREVIOUS_BUILD_NUMBER must be zero or a positive integer"
+  [[ "$SPARKLE_FEED_URL" == "$PRODUCTION_SPARKLE_FEED_URL" ]] \
+    || fail "SPARKLE_FEED_URL must be $PRODUCTION_SPARKLE_FEED_URL in --distribution"
   [[ "$SIGN_IDENTITY" == Developer\ ID\ Application:*"($DEVELOPER_TEAM_ID)" ]] \
     || fail "SIGN_IDENTITY must be the Developer ID Application identity for DEVELOPER_TEAM_ID"
 
   APPCAST_TEMP="$(mktemp -d "$DIST_DIR/.Skerry.appcast.XXXXXX")"
   TEMP_DIRS+=("$APPCAST_TEMP")
   APPCAST_PATH="$APPCAST_TEMP/appcast.xml"
-  curl \
-    --fail \
-    --silent \
-    --show-error \
-    --location \
-    --proto '=https' \
-    --proto-redir '=https' \
-    --connect-timeout 10 \
-    --max-time 30 \
-    --max-filesize 10485760 \
-    "$SPARKLE_FEED_URL" > "$APPCAST_PATH" \
-    || fail "Could not fetch SPARKLE_FEED_URL"
+  BUILD_LEDGER_PATH="$APPCAST_TEMP/latest-build.txt"
+  fetch_release_metadata "$SPARKLE_FEED_URL" "$APPCAST_PATH" 1048576 SPARKLE_FEED_URL
+  fetch_release_metadata "$PRODUCTION_BUILD_LEDGER_URL" "$BUILD_LEDGER_PATH" 32 build-ledger
+
+  LATEST_RECORDED_BUILD="$(cat "$BUILD_LEDGER_PATH")"
+  [[ "$LATEST_RECORDED_BUILD" =~ ^(0|[1-9][0-9]*)$ ]] \
+    || fail "The production build ledger must contain one non-negative integer"
   LATEST_PUBLISHED_BUILD="$(latest_appcast_build "$APPCAST_PATH")"
   if [[ "$LATEST_PUBLISHED_BUILD" == "0" ]]; then
-    [[ "$PREVIOUS_BUILD_NUMBER" == "0" ]] \
-      || fail "An empty Sparkle feed requires PREVIOUS_BUILD_NUMBER=0"
-  else
-    [[ "$PREVIOUS_BUILD_NUMBER" == "$LATEST_PUBLISHED_BUILD" ]] \
-      || fail "PREVIOUS_BUILD_NUMBER must match latest published build $LATEST_PUBLISHED_BUILD"
+    [[ "$LATEST_RECORDED_BUILD" == "0" ]] \
+      || fail "An empty Sparkle feed requires a zero production build ledger"
   fi
-  decimal_greater_than "$BUILD_NUMBER" "$LATEST_PUBLISHED_BUILD" \
-    || fail "BUILD_NUMBER must be greater than latest published build $LATEST_PUBLISHED_BUILD"
+  if decimal_greater_than "$LATEST_PUBLISHED_BUILD" "$LATEST_RECORDED_BUILD"; then
+    fail "Sparkle appcast build $LATEST_PUBLISHED_BUILD exceeds production build ledger $LATEST_RECORDED_BUILD"
+  fi
+  decimal_greater_than "$BUILD_NUMBER" "$LATEST_RECORDED_BUILD" \
+    || fail "BUILD_NUMBER must be greater than production build ledger $LATEST_RECORDED_BUILD"
   security find-identity -v -p codesigning | grep -F "\"$SIGN_IDENTITY\"" >/dev/null \
     || fail "SIGN_IDENTITY is not available in the current keychain"
 
