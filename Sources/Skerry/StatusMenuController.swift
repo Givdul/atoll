@@ -123,6 +123,27 @@ final class StatusMenuController {
         updates.isEnabled = delegate?.canCheckForUpdates == true
         menu.addItem(updates)
 
+        let information = NSMenuItem(title: "Information", action: nil, keyEquivalent: "")
+        let informationMenu = NSMenu()
+        informationMenu.addItem(linkItem(
+            title: "Privacy Policy…",
+            action: #selector(openPrivacyPolicy(_:))
+        ))
+        informationMenu.addItem(linkItem(
+            title: "Support…",
+            action: #selector(openSupport(_:))
+        ))
+        informationMenu.addItem(linkItem(
+            title: "License Terms…",
+            action: #selector(openTerms(_:))
+        ))
+        informationMenu.addItem(linkItem(
+            title: "Third-Party Notices…",
+            action: #selector(openThirdPartyNotices(_:))
+        ))
+        information.submenu = informationMenu
+        menu.addItem(information)
+
         let quit = NSMenuItem(title: "Quit Skerry", action: #selector(quit(_:)), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
@@ -186,6 +207,17 @@ final class StatusMenuController {
         return SkerryIcon.stateColor(for: .waitingForInput)
     }
 
+    private func linkItem(title: String, action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        return item
+    }
+
+    private func open(_ value: String) {
+        guard let url = URL(string: value) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     @objc private func toggleEnabled(_ sender: NSMenuItem) {
         delegate?.setEnabled(!state.settings.enabled)
     }
@@ -220,6 +252,26 @@ final class StatusMenuController {
 
     @objc private func checkForUpdates(_ sender: NSMenuItem) {
         delegate?.checkForUpdates()
+    }
+
+    @objc private func openPrivacyPolicy(_ sender: NSMenuItem) {
+        open("https://github.com/Givdul/atoll/blob/main/PRIVACY.md")
+    }
+
+    @objc private func openSupport(_ sender: NSMenuItem) {
+        open("https://github.com/Givdul/atoll/issues")
+    }
+
+    @objc private func openTerms(_ sender: NSMenuItem) {
+        open("https://github.com/Givdul/atoll/blob/main/TERMS.md")
+    }
+
+    @objc private func openThirdPartyNotices(_ sender: NSMenuItem) {
+        guard let url = Bundle.module.url(
+            forResource: "THIRD_PARTY_NOTICES",
+            withExtension: "txt"
+        ) else { return }
+        NSWorkspace.shared.open(url)
     }
 
     @objc private func quit(_ sender: NSMenuItem) {

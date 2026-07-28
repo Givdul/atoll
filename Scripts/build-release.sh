@@ -6,6 +6,8 @@ APP_NAME="Skerry"
 DIST_DIR="$ROOT/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 ZIP_PATH="$DIST_DIR/$APP_NAME.zip"
+PRODUCTION_SPARKLE_FEED_URL="https://raw.githubusercontent.com/Givdul/atoll/main/appcast.xml"
+PRODUCTION_BUILD_LEDGER_URL="https://raw.githubusercontent.com/Givdul/atoll/main/latest-build.txt"
 INSTALLED_APP="/Applications/$APP_NAME.app"
 INSTALLED_EXECUTABLE="$INSTALLED_APP/Contents/MacOS/$APP_NAME"
 LEGACY_APP_NAME="Atoll"
@@ -19,7 +21,11 @@ SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-}"
 SKERRY_PURCHASE_URL="${SKERRY_PURCHASE_URL:-}"
 POLAR_ORGANIZATION_ID="${POLAR_ORGANIZATION_ID:-}"
 POLAR_BENEFIT_ID="${POLAR_BENEFIT_ID:-}"
+MARKETING_VERSION="${MARKETING_VERSION:-}"
+BUILD_NUMBER="${BUILD_NUMBER:-}"
+DEVELOPER_TEAM_ID="${DEVELOPER_TEAM_ID:-}"
 ARCHITECTURES=(arm64 x86_64)
+MODE="build"
 
 # Bash 3.2 treats an empty array expansion as unset under `set -u`.
 TEMP_DIRS=("")
@@ -80,17 +86,160 @@ fail() {
   exit 1
 }
 
-if [[ $# -gt 1 || ( $# -eq 1 && "$1" != "--install" ) ]]; then
-  fail "Usage: $0 [--install]"
+is_valid_https_url() {
+  SPARKLE_FEED_URL="$1" /usr/bin/osascript -l JavaScript -e '
+    ObjC.import("Foundation");
+    var value = ObjC.unwrap($.NSProcessInfo.processInfo.environment.objectForKey("SPARKLE_FEED_URL"));
+    var components = $.NSURLComponents.componentsWithString(value);
+    var scheme = components ? ObjC.unwrap(components.scheme) : undefined;
+    var host = components ? ObjC.unwrap(components.host) : undefined;
+    var user = components ? ObjC.unwrap(components.user) : undefined;
+    var password = components ? ObjC.unwrap(components.password) : undefined;
+    if (!components ||
+        scheme !== "https" ||
+        typeof host !== "string" ||
+        host.length === 0 ||
+        user !== undefined ||
+        password !== undefined) {
+      throw new Error("invalid URL");
+    }
+  ' >/dev/null 2>&1
+}
+
+decimal_greater_than() {
+  local LC_ALL=C
+  if (( ${#1} != ${#2} )); then
+    (( ${#1} > ${#2} ))
+  else
+    [[ "$1" > "$2" ]]
+  fi
+}
+
+latest_appcast_build() {
+  local appcast=$1
+  local channel_count
+  local item_count
+  local index
+  local element_version
+  local enclosure_version
+  local version
+  local latest=0
+
+  /usr/bin/xmllint --nonet --noout "$appcast" 2>/dev/null \
+    || fail "SPARKLE_FEED_URL did not return valid XML"
+  channel_count="$(/usr/bin/xmllint --nonet --xpath \
+    'count(/*[local-name()="rss"]/*[local-name()="channel"])' "$appcast")"
+  [[ "$channel_count" == "1" ]] \
+    || fail "SPARKLE_FEED_URL must contain one RSS channel"
+  item_count="$(/usr/bin/xmllint --nonet --xpath \
+    'count(/*[local-name()="rss"]/*[local-name()="channel"]/*[local-name()="item"])' "$appcast")"
+  [[ "$item_count" =~ ^[0-9]+$ ]] \
+    || fail "SPARKLE_FEED_URL has an invalid item count"
+
+  for (( index = 1; index <= item_count; index++ )); do
+    element_version="$(/usr/bin/xmllint --nonet --xpath \
+      "normalize-space(string((/*[local-name()='rss']/*[local-name()='channel']/*[local-name()='item'])[$index]/*[local-name()='version'][1]))" \
+      "$appcast")"
+    enclosure_version="$(/usr/bin/xmllint --nonet --xpath \
+      "normalize-space(string((/*[local-name()='rss']/*[local-name()='channel']/*[local-name()='item'])[$index]/*[local-name()='enclosure'][1]/@*[local-name()='version']))" \
+      "$appcast")"
+    if [[ -n "$element_version" && -n "$enclosure_version" && "$element_version" != "$enclosure_version" ]]; then
+      fail "Sparkle appcast item has conflicting build versions"
+    fi
+    version="${enclosure_version:-$element_version}"
+    [[ "$version" =~ ^[1-9][0-9]*$ ]] \
+      || fail "Every Sparkle appcast item must have a positive integer build version"
+    if decimal_greater_than "$version" "$latest"; then
+      latest="$version"
+    fi
+  done
+
+  echo "$latest"
+}
+
+fetch_release_metadata() {
+  local url=$1
+  local destination=$2
+  local maximum_size=$3
+  local label=$4
+
+  curl \
+    --fail \
+    --silent \
+    --show-error \
+    --location \
+    --proto '=https' \
+    --proto-redir '=https' \
+    --connect-timeout 10 \
+    --max-time 30 \
+    --max-filesize "$maximum_size" \
+    "$url" > "$destination" \
+    || fail "Could not fetch $label"
+}
+
+if [[ $# -gt 1 ]]; then
+  fail "Usage: $0 [--install|--distribution]"
+fi
+case "${1:-}" in
+  "")
+    ;;
+  --install)
+    MODE="install"
+    ;;
+  --distribution)
+    MODE="distribution"
+    ;;
+  *)
+    fail "Usage: $0 [--install|--distribution]"
+    ;;
+esac
+
+if [[ -n "$MARKETING_VERSION" && ! "$MARKETING_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  fail "MARKETING_VERSION must contain three dot-separated integers"
+fi
+if [[ -n "$BUILD_NUMBER" && ! "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+  fail "BUILD_NUMBER must be a positive integer"
+fi
+
+mkdir -p "$DIST_DIR"
+
+if [[ "$MODE" == "distribution" ]]; then
+  required_values=(
+    "$SIGN_IDENTITY"
+    "$DEVELOPER_TEAM_ID"
+    "$NOTARY_KEYCHAIN_PROFILE"
+    "$SPARKLE_FEED_URL"
+    "$SPARKLE_PUBLIC_ED_KEY"
+    "$SKERRY_PURCHASE_URL"
+    "$POLAR_ORGANIZATION_ID"
+    "$POLAR_BENEFIT_ID"
+    "$MARKETING_VERSION"
+    "$BUILD_NUMBER"
+  )
+  required_names=(
+    SIGN_IDENTITY
+    DEVELOPER_TEAM_ID
+    NOTARY_KEYCHAIN_PROFILE
+    SPARKLE_FEED_URL
+    SPARKLE_PUBLIC_ED_KEY
+    SKERRY_PURCHASE_URL
+    POLAR_ORGANIZATION_ID
+    POLAR_BENEFIT_ID
+    MARKETING_VERSION
+    BUILD_NUMBER
+  )
+  for index in "${!required_values[@]}"; do
+    [[ -n "${required_values[$index]}" && "${required_values[$index]}" != "-" ]] \
+      || fail "${required_names[$index]} is required for --distribution"
+  done
 fi
 
 if [[ -n "$SPARKLE_FEED_URL" || -n "$SPARKLE_PUBLIC_ED_KEY" ]]; then
   if [[ -z "$SPARKLE_FEED_URL" || -z "$SPARKLE_PUBLIC_ED_KEY" ]]; then
     fail "SPARKLE_FEED_URL and SPARKLE_PUBLIC_ED_KEY must be set together"
   fi
-  if [[ "$SPARKLE_FEED_URL" != https://* ]]; then
-    fail "SPARKLE_FEED_URL must use HTTPS"
-  fi
+  is_valid_https_url "$SPARKLE_FEED_URL" \
+    || fail "SPARKLE_FEED_URL must be a valid HTTPS URL with a host"
 fi
 
 if [[ "$SIGN_IDENTITY" == "-" && ( -n "$SKERRY_PURCHASE_URL" || -n "$POLAR_ORGANIZATION_ID" || -n "$POLAR_BENEFIT_ID" ) ]]; then
@@ -113,6 +262,50 @@ fi
 
 if [[ -n "$NOTARY_KEYCHAIN_PROFILE" && "$SIGN_IDENTITY" == "-" ]]; then
   fail "NOTARY_KEYCHAIN_PROFILE requires a Developer ID signing identity"
+fi
+
+if [[ "$MODE" == "distribution" ]]; then
+  [[ "$DEVELOPER_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] \
+    || fail "DEVELOPER_TEAM_ID must be a 10-character Apple team identifier"
+  [[ "$SPARKLE_PUBLIC_ED_KEY" =~ ^[A-Za-z0-9+/]{43}=$ ]] \
+    || fail "SPARKLE_PUBLIC_ED_KEY must be a base64-encoded Ed25519 public key"
+  [[ "$SKERRY_PURCHASE_URL" =~ ^https://buy\.polar\.sh/polar_cl_[A-Za-z0-9]+$ ]] \
+    || fail "SKERRY_PURCHASE_URL must use the production Polar checkout in --distribution"
+  [[ "$SPARKLE_FEED_URL" == "$PRODUCTION_SPARKLE_FEED_URL" ]] \
+    || fail "SPARKLE_FEED_URL must be $PRODUCTION_SPARKLE_FEED_URL in --distribution"
+  [[ "$SIGN_IDENTITY" == Developer\ ID\ Application:*"($DEVELOPER_TEAM_ID)" ]] \
+    || fail "SIGN_IDENTITY must be the Developer ID Application identity for DEVELOPER_TEAM_ID"
+
+  APPCAST_TEMP="$(mktemp -d "$DIST_DIR/.Skerry.appcast.XXXXXX")"
+  TEMP_DIRS+=("$APPCAST_TEMP")
+  APPCAST_PATH="$APPCAST_TEMP/appcast.xml"
+  BUILD_LEDGER_PATH="$APPCAST_TEMP/latest-build.txt"
+  fetch_release_metadata "$SPARKLE_FEED_URL" "$APPCAST_PATH" 1048576 SPARKLE_FEED_URL
+  fetch_release_metadata "$PRODUCTION_BUILD_LEDGER_URL" "$BUILD_LEDGER_PATH" 32 build-ledger
+
+  LATEST_RECORDED_BUILD="$(cat "$BUILD_LEDGER_PATH")"
+  [[ "$LATEST_RECORDED_BUILD" =~ ^(0|[1-9][0-9]*)$ ]] \
+    || fail "The production build ledger must contain one non-negative integer"
+  LATEST_PUBLISHED_BUILD="$(latest_appcast_build "$APPCAST_PATH")"
+  if [[ "$LATEST_PUBLISHED_BUILD" == "0" ]]; then
+    [[ "$LATEST_RECORDED_BUILD" == "0" ]] \
+      || fail "An empty Sparkle feed requires a zero production build ledger"
+  fi
+  if decimal_greater_than "$LATEST_PUBLISHED_BUILD" "$LATEST_RECORDED_BUILD"; then
+    fail "Sparkle appcast build $LATEST_PUBLISHED_BUILD exceeds production build ledger $LATEST_RECORDED_BUILD"
+  fi
+  decimal_greater_than "$BUILD_NUMBER" "$LATEST_RECORDED_BUILD" \
+    || fail "BUILD_NUMBER must be greater than production build ledger $LATEST_RECORDED_BUILD"
+  security find-identity -v -p codesigning | grep -F "\"$SIGN_IDENTITY\"" >/dev/null \
+    || fail "SIGN_IDENTITY is not available in the current keychain"
+
+  EXPECTED_TEAM_IDENTIFIER="$DEVELOPER_TEAM_ID"
+  xcrun notarytool history --keychain-profile "$NOTARY_KEYCHAIN_PROFILE" >/dev/null \
+    || fail "NOTARY_KEYCHAIN_PROFILE could not authenticate with Apple's notary service"
+fi
+
+if [[ "$MODE" == "distribution" ]]; then
+  echo "Production preflight passed"
 fi
 
 release_directory() {
@@ -318,7 +511,48 @@ install_app() {
   echo "Installed $INSTALLED_APP"
 }
 
-mkdir -p "$DIST_DIR"
+verify_distribution_archive() {
+  local verify_temp
+  local extracted_app
+  local extracted_plist
+  local embedded_sparkle
+  local sparkle_binary
+
+  verify_temp="$(mktemp -d "$DIST_DIR/.Skerry.verify.XXXXXX")"
+  TEMP_DIRS+=("$verify_temp")
+  ditto -x -k "$ZIP_PATH" "$verify_temp"
+  extracted_app="$verify_temp/$APP_NAME.app"
+  [[ -d "$extracted_app" ]] || fail "Release archive does not contain $APP_NAME.app"
+
+  extracted_plist="$extracted_app/Contents/Info.plist"
+  [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$extracted_plist")" == "$MARKETING_VERSION" ]] \
+    || fail "Release archive has the wrong marketing version"
+  [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$extracted_plist")" == "$BUILD_NUMBER" ]] \
+    || fail "Release archive has the wrong build number"
+  [[ "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$extracted_plist")" == "$SPARKLE_FEED_URL" ]] \
+    || fail "Release archive has the wrong Sparkle feed URL"
+  [[ "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$extracted_plist")" == "$SPARKLE_PUBLIC_ED_KEY" ]] \
+    || fail "Release archive has the wrong Sparkle public key"
+
+  codesign --verify --deep --strict --verbose=2 "$extracted_app"
+  verify_signature_metadata "$extracted_app"
+  xcrun stapler validate "$extracted_app"
+  spctl --assess --type execute --verbose=2 "$extracted_app"
+  verify_universal_binary "$extracted_app/Contents/MacOS/$APP_NAME"
+
+  embedded_sparkle="$extracted_app/Contents/Frameworks/Sparkle.framework/Versions/B"
+  for sparkle_binary in \
+    "$embedded_sparkle/Sparkle" \
+    "$embedded_sparkle/Autoupdate" \
+    "$embedded_sparkle/XPCServices/Downloader.xpc/Contents/MacOS/Downloader" \
+    "$embedded_sparkle/XPCServices/Installer.xpc/Contents/MacOS/Installer" \
+    "$embedded_sparkle/Updater.app/Contents/MacOS/Updater"; do
+    verify_universal_binary "$sparkle_binary"
+  done
+
+  shasum -a 256 "$ZIP_PATH"
+}
+
 rm -f "$ZIP_PATH"
 
 for architecture in "${ARCHITECTURES[@]}"; do
@@ -355,6 +589,11 @@ cp "$ROOT/Bundle/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy \
   -c "Set :CFBundleVersion ${BUILD_NUMBER:-$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)}" \
   "$APP_BUNDLE/Contents/Info.plist"
+if [[ -n "$MARKETING_VERSION" ]]; then
+  /usr/libexec/PlistBuddy \
+    -c "Set :CFBundleShortVersionString $MARKETING_VERSION" \
+    "$APP_BUNDLE/Contents/Info.plist"
+fi
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
   /usr/libexec/PlistBuddy -c "Add :SkerryEntitlementStorage string trial-file-v1" "$APP_BUNDLE/Contents/Info.plist"
 else
@@ -434,11 +673,22 @@ if [[ -n "$NOTARY_KEYCHAIN_PROFILE" ]]; then
   NOTARY_TEMP="$(mktemp -d "$DIST_DIR/.Skerry.notary.XXXXXX")"
   TEMP_DIRS+=("$NOTARY_TEMP")
   NOTARY_UPLOAD="$NOTARY_TEMP/$APP_NAME.zip"
+  NOTARY_RESULT="$DIST_DIR/$APP_NAME-notarization.json"
+  NOTARY_LOG="$DIST_DIR/$APP_NAME-notarization-log.json"
   ditto -c -k --keepParent "$APP_BUNDLE" "$NOTARY_UPLOAD"
   xcrun notarytool submit \
     "$NOTARY_UPLOAD" \
     --keychain-profile "$NOTARY_KEYCHAIN_PROFILE" \
-    --wait
+    --wait \
+    --output-format json > "$NOTARY_RESULT"
+  cat "$NOTARY_RESULT"
+  NOTARY_SUBMISSION_ID="$(plutil -extract id raw -o - "$NOTARY_RESULT")"
+  [[ "$(plutil -extract status raw -o - "$NOTARY_RESULT")" == "Accepted" ]] \
+    || fail "Apple did not accept the notarization submission"
+  xcrun notarytool log \
+    "$NOTARY_SUBMISSION_ID" \
+    "$NOTARY_LOG" \
+    --keychain-profile "$NOTARY_KEYCHAIN_PROFILE"
   xcrun stapler staple "$APP_BUNDLE"
   xcrun stapler validate "$APP_BUNDLE"
   codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
@@ -446,10 +696,13 @@ fi
 
 # The distributable archive must contain the stapled app, so always create it
 # after the optional notarization and stapling workflow has finished.
-ditto -c -k --keepParent "$APP_BUNDLE" "$ZIP_PATH"
+ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$ZIP_PATH"
 [[ -s "$ZIP_PATH" ]] || fail "Release archive was not created: $ZIP_PATH"
 
-if [[ "${1:-}" == "--install" ]]; then
+if [[ "$MODE" == "distribution" ]]; then
+  verify_distribution_archive
+  echo "Built and verified $ZIP_PATH"
+elif [[ "$MODE" == "install" ]]; then
   install_app
 else
   echo "Built $APP_BUNDLE and $ZIP_PATH"
