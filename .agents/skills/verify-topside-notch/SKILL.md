@@ -34,7 +34,7 @@ Create two screen-space artifacts: an untouched top-band capture and a diagnosti
      Screenshots/<name>-physical-notch.png
    ```
 
-5. Inspect both images. With the current 190×35-point overlay shifted 0.5 point right for optical calibration against the glass, expect 2 points or 4 backing pixels on the left, 3 points or 6 backing pixels on the right, and 3 points or 6 backing pixels below this Mac's 185×32-point obstruction.
+5. Inspect both images. With the current 189×35-point overlay shifted 0.5 point right for optical calibration against the glass, expect 1.5 points or 3 backing pixels on the left, 2.5 points or 5 backing pixels on the right, and 3 points or 6 backing pixels below this Mac's 185×32-point obstruction.
 6. Treat differences from those calibrated margins as a screen-space placement failure. Keep the window centered on AppKit's bounds; the visual asymmetry is intentional hardware calibration.
 7. End the synthetic session:
 
