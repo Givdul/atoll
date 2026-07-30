@@ -27,7 +27,7 @@ struct IslandMetrics: Equatable {
         detailFontSize = min(11 * factor, rowHeight * 0.34)
         topGap = 0
         rowSpacing = 3 * factor
-        notchWidth = notch.width + 8
+        notchWidth = notch.width + 7
         notchHeight = notch.height + 4
     }
 
