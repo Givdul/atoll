@@ -48,7 +48,7 @@ enum TopsideIcon {
         NSRect(x: 0, y: 0, width: 22, height: 22).fill()
 
         drawGlyph(
-            in: NSRect(x: 3.5, y: 5.5, width: 15, height: 11),
+            in: NSRect(x: 2, y: 4, width: 18, height: 14),
             color: attentionColor ?? .labelColor
         )
 
