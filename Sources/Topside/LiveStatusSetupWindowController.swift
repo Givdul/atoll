@@ -43,7 +43,9 @@ final class LiveStatusSetupWindowController {
         panel.standardWindowButton(.zoomButton)?.isHidden = true
         panel.collectionBehavior = [.moveToActiveSpace, .transient]
         panel.hidesOnDeactivate = false
-        panel.contentView = NSHostingView(rootView: content)
+        let hostingView = NSHostingView(rootView: content)
+        hostingView.sizingOptions = []
+        panel.contentView = hostingView
         self.panel = panel
 
         NSApp.activate(ignoringOtherApps: true)
