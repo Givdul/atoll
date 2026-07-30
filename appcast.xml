@@ -2,9 +2,9 @@
 <rss version="2.0"
   xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
-    <title>Skerry updates</title>
+    <title>Topside updates</title>
     <link>https://github.com/Givdul/atoll/releases</link>
-    <description>Skerry releases</description>
+    <description>Topside releases</description>
     <language>en</language>
   </channel>
 </rss>

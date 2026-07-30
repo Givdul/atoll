@@ -2,9 +2,9 @@
 
 set -euo pipefail
 
-BINARY="${1:-.build/debug/Skerry}"
+BINARY="${1:-.build/debug/Topside}"
 if [[ ! -x "$BINARY" ]]; then
-  echo "Build Skerry first or pass its executable path." >&2
+  echo "Build Topside first or pass its executable path." >&2
   exit 1
 fi
 
@@ -30,13 +30,13 @@ enqueue_concurrently() {
 
 enqueue_concurrently 1 100
 
-QUEUE="$TEST_HOME/.skerry/lifecycle-events"
+QUEUE="$TEST_HOME/.topside/lifecycle-events"
 if [[ "$(find "$QUEUE" -type f -name '*.json' | wc -l | tr -d ' ')" != "100" ]]; then
   echo "Concurrent enqueue did not preserve 100/100 events." >&2
   exit 1
 fi
-if [[ -e "$TEST_HOME/.skerry/.atoll-beta-migration-v1-complete" ]]; then
-  echo "Lifecycle hooks unexpectedly ran beta migration." >&2
+if [[ -e "$TEST_HOME/.topside/.legacy-identity-migration-v1-complete" ]]; then
+  echo "Lifecycle hooks unexpectedly ran legacy migration." >&2
   exit 1
 fi
 

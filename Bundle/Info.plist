@@ -5,15 +5,15 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>
-	<string>Skerry</string>
+	<string>Topside</string>
 	<key>CFBundleIconFile</key>
-	<string>Skerry.icns</string>
+	<string>Topside.icns</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.givdul.skerry</string>
+	<string>com.givdul.topside</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Skerry</string>
+	<string>Topside</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

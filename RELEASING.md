@@ -1,6 +1,6 @@
-# Releasing Skerry
+# Releasing Topside
 
-Skerry uses one manual direct-sale release path: a universal Developer ID
+Topside uses one manual direct-sale release path: a universal Developer ID
 archive, Apple notarization, a version-tagged GitHub Release asset, and the
 Sparkle feed committed to `main`.
 
@@ -8,7 +8,7 @@ Production locations are fixed:
 
 - Feed: `https://raw.githubusercontent.com/Givdul/atoll/main/appcast.xml`
 - Build ledger: `https://raw.githubusercontent.com/Givdul/atoll/main/latest-build.txt`
-- Archive: `https://github.com/Givdul/atoll/releases/download/vVERSION/Skerry-VERSION.zip`
+- Archive: `https://github.com/Givdul/atoll/releases/download/vVERSION/Topside-VERSION.zip`
 
 ## One-time prerequisites
 
@@ -23,7 +23,7 @@ Production locations are fixed:
      --password YOUR_APP_SPECIFIC_PASSWORD
    ```
 
-3. Generate the Sparkle key once under Skerry's dedicated Keychain account:
+3. Generate the Sparkle key once under Topside's dedicated Keychain account:
 
    ```sh
    SPARKLE_KEYCHAIN_ACCOUNT='givdul-skerry'
@@ -70,7 +70,7 @@ DEVELOPER_TEAM_ID='YOURTEAMID' \
 NOTARY_KEYCHAIN_PROFILE='skerry-notary' \
 SPARKLE_FEED_URL='https://raw.githubusercontent.com/Givdul/atoll/main/appcast.xml' \
 SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY" \
-SKERRY_PURCHASE_URL='https://buy.polar.sh/polar_cl_YOUR_LINK' \
+TOPSIDE_PURCHASE_URL='https://buy.polar.sh/polar_cl_YOUR_LINK' \
 POLAR_ORGANIZATION_ID='YOUR_ORGANIZATION_UUID' \
 POLAR_BENEFIT_ID='YOUR_BENEFIT_UUID' \
 MARKETING_VERSION="$MARKETING_VERSION" \
@@ -89,7 +89,7 @@ The script builds both architectures, signs Sparkle and the app inside-out with
 hardened runtime and timestamps, notarizes, staples, creates the final ZIP
 after stapling, extracts that ZIP, and verifies signatures, the notarization
 ticket, Gatekeeper, and required universal executables. Record the printed
-SHA-256 and keep `dist/Skerry-notarization*.json`.
+SHA-256 and keep `dist/Topside-notarization*.json`.
 
 ## Generate one update item
 
@@ -99,9 +99,9 @@ same-basename release notes:
 ```sh
 set -e
 export RELEASE_DIR="$(mktemp -d)"
-cp dist/Skerry.zip "$RELEASE_DIR/Skerry-${MARKETING_VERSION}.zip"
+cp dist/Topside.zip "$RELEASE_DIR/Topside-${MARKETING_VERSION}.zip"
 # Optional:
-# cp RELEASE_NOTES.md "$RELEASE_DIR/Skerry-${MARKETING_VERSION}.md"
+# cp RELEASE_NOTES.md "$RELEASE_DIR/Topside-${MARKETING_VERSION}.md"
 
 test "$(
   .build/artifacts/sparkle/Sparkle/bin/generate_keys \
@@ -130,14 +130,14 @@ xmllint --nonet --noout "$RELEASE_DIR/appcast.xml"
 test "$(xmllint --nonet --xpath 'count(/*[local-name()="rss"]/*[local-name()="channel"]/*[local-name()="item"])' "$RELEASE_DIR/appcast.xml")" = 1
 test "$(xmllint --nonet --xpath 'string((//*[local-name()="item"]/*[local-name()="enclosure"])[1]/@*[local-name()="version"])' "$RELEASE_DIR/appcast.xml")" = "$BUILD_NUMBER"
 test "$(xmllint --nonet --xpath 'string((//*[local-name()="item"]/*[local-name()="enclosure"])[1]/@url)' "$RELEASE_DIR/appcast.xml")" = \
-  "https://github.com/Givdul/atoll/releases/download/v${MARKETING_VERSION}/Skerry-${MARKETING_VERSION}.zip"
+  "https://github.com/Givdul/atoll/releases/download/v${MARKETING_VERSION}/Topside-${MARKETING_VERSION}.zip"
 test -n "$(xmllint --nonet --xpath 'normalize-space(string((//*[local-name()="item"]/*[local-name()="enclosure"])[1]/@*[local-name()="edSignature"]))' "$RELEASE_DIR/appcast.xml")"
 test "$(xmllint --nonet --xpath 'count(//*[local-name()="deltas"])' "$RELEASE_DIR/appcast.xml")" = 0
 ```
 
 Any failed key or XML check stops before upload. The appcast is not itself
 signed. `generate_appcast` puts the archive's EdDSA signature in
-`sparkle:edSignature`; Skerry verifies that signature with the exact public key
+`sparkle:edSignature`; Topside verifies that signature with the exact public key
 embedded in the app.
 
 ## Publish the archive before the feed
@@ -149,10 +149,10 @@ then publish the Release:
 gh release create "v${MARKETING_VERSION}" \
   --repo Givdul/atoll \
   --draft \
-  --title "Skerry ${MARKETING_VERSION}" \
+  --title "Topside ${MARKETING_VERSION}" \
   --generate-notes
 gh release upload "v${MARKETING_VERSION}" \
-  "$RELEASE_DIR/Skerry-${MARKETING_VERSION}.zip" \
+  "$RELEASE_DIR/Topside-${MARKETING_VERSION}.zip" \
   --repo Givdul/atoll
 gh release edit "v${MARKETING_VERSION}" \
   --repo Givdul/atoll \
@@ -165,9 +165,9 @@ publishing any appcast reference:
 ```sh
 curl --fail --location --proto '=https' --proto-redir '=https' \
   --connect-timeout 10 --max-time 120 --max-filesize 1073741824 \
-  "https://github.com/Givdul/atoll/releases/download/v${MARKETING_VERSION}/Skerry-${MARKETING_VERSION}.zip" \
+  "https://github.com/Givdul/atoll/releases/download/v${MARKETING_VERSION}/Topside-${MARKETING_VERSION}.zip" \
   -o "$RELEASE_DIR/public.zip"
-test "$(shasum -a 256 "$RELEASE_DIR/Skerry-${MARKETING_VERSION}.zip" | awk '{print $1}')" = \
+test "$(shasum -a 256 "$RELEASE_DIR/Topside-${MARKETING_VERSION}.zip" | awk '{print $1}')" = \
   "$(shasum -a 256 "$RELEASE_DIR/public.zip" | awk '{print $1}')"
 ```
 
@@ -178,7 +178,7 @@ land on `main` in the same commit:
 cp "$RELEASE_DIR/appcast.xml" appcast.xml
 printf '%s\n' "$BUILD_NUMBER" > latest-build.txt
 git add appcast.xml latest-build.txt
-git commit -m "release: publish Skerry ${MARKETING_VERSION}"
+git commit -m "release: publish Topside ${MARKETING_VERSION}"
 git push origin main
 ```
 
@@ -207,7 +207,7 @@ done
 
 ## Acceptance
 
-- On a clean supported Mac, download the public ZIP and open Skerry without a
+- On a clean supported Mac, download the public ZIP and open Topside without a
   Gatekeeper bypass. Confirm the menu, trial, purchase, license, privacy,
   support, terms, and third-party notices.
 - Install the previous signed release and create representative settings,
@@ -216,7 +216,7 @@ done
   installs, relaunches, reports the new versions, preserves intended state,
   and does not alter unrelated provider configuration.
 - Confirm a revoked/wrong Polar key is rejected and a valid production key
-  licenses Skerry. Repeat revocation against Polar sandbox before production
+  licenses Topside. Repeat revocation against Polar sandbox before production
   changes.
 
 Clean-Mac Gatekeeper behavior, Apple notarization, public hosting, Polar, and a

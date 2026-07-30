@@ -1,12 +1,12 @@
-# Skerry licensing
+# Topside licensing
 
 Checked 2026-07-28.
 
 ## Decision
 
-Skerry uses one concrete direct-sale mechanism: a $7.99 one-time Polar product
-with one dedicated perpetual License Keys benefit attached only to Skerry.
-Polar hosts checkout and Skerry calls the public HTTPS validation endpoint
+Topside uses one concrete direct-sale mechanism: a $7.99 one-time Polar product
+with one dedicated perpetual License Keys benefit attached only to Topside.
+Polar hosts checkout and Topside calls the public HTTPS validation endpoint
 directly.
 
 This follows Polar's documented flow:
@@ -15,7 +15,7 @@ This follows Polar's documented flow:
 - [License Keys benefits](https://polar.sh/docs/features/benefits/license-keys)
 - [sandbox environment](https://polar.sh/docs/integrate/sandbox)
 
-There is no provider abstraction, Skerry account, subscription, custom payment
+There is no provider abstraction, Topside account, subscription, custom payment
 backend, telemetry, usage metering, device activation, or deactivation.
 
 ## Polar configuration
@@ -33,7 +33,7 @@ benefit UUIDs used to scope every validation:
 
 ```sh
 SIGN_IDENTITY="Developer ID Application: ..." \
-SKERRY_PURCHASE_URL="https://buy.polar.sh/polar_cl_..." \
+TOPSIDE_PURCHASE_URL="https://buy.polar.sh/polar_cl_..." \
 POLAR_ORGANIZATION_ID="..." \
 POLAR_BENEFIT_ID="..." \
 ./Scripts/build-release.sh
@@ -60,14 +60,14 @@ revoking or disabling it in Polar.
 
 Initial key entry and daily revalidation both send JSON to
 `POST /v1/customer-portal/license-keys/validate`. Polar documents this endpoint
-as public-client safe, so Skerry sends no `Authorization` header. The request
+as public-client safe, so Topside sends no `Authorization` header. The request
 contains only:
 
 - the license key
 - the configured public Polar organization UUID
 - the configured public Polar benefit UUID
 
-Skerry accepts only a response with the same key, organization, and benefit,
+Topside accepts only a response with the same key, organization, and benefit,
 `status: "granted"`, and null expiration, activation limit, and usage limit.
 A missing key, revocation, disablement, wrong identifier or key, expiration, or
 limit is definitive. Network failures, HTTP 408/425/422/429/5xx responses, and
@@ -77,14 +77,14 @@ daily.
 
 The release script writes the entitlement-storage mode into the signed
 `Info.plist`. Ad-hoc local builds are trial-only: they save the immutable trial
-start and maximum observed wall time in `~/.skerry/trial-entitlement-v1.json`
-using a `0700` directory and `0600` file. Rebuilding or replacing `Skerry.app`
+start and maximum observed wall time in `~/.topside/trial-entitlement-v1.json`
+using a `0700` directory and `0600` file. Rebuilding or replacing `Topside.app`
 keeps that file. This mode refuses to read or save license material and never
 queries Keychain.
 
 Developer ID builds use the macOS Keychain with
 `AfterFirstUnlockThisDeviceOnly` accessibility. They use the
-`com.givdul.skerry.entitlement.v2` / `device-v2` record; Skerry intentionally
+`com.givdul.skerry.entitlement.v2` / `device-v2` record; Topside intentionally
 does not query, delete, or migrate the orphaned development record. Local
 ad-hoc trial state and production Developer ID entitlement state are separate.
 Proving persistence across a real stable-signing update remains part of release
@@ -103,7 +103,7 @@ an active license exists. Prompts, transcripts, commands, project content,
 paths, agent events, device identifiers, and device names never cross the
 licensing boundary.
 
-After expiry Skerry hides product output and notifications, while hook delivery
+After expiry Topside hides product output and notifications, while hook delivery
 continues to acknowledge quickly. The shared local lifecycle queue retains at
-most 256 events, including when Skerry is not running, so an expired
+most 256 events, including when Topside is not running, so an expired
 installation cannot grow it without bound.
