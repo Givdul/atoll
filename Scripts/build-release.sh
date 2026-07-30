@@ -2,23 +2,28 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="Skerry"
+APP_NAME="Topside"
 DIST_DIR="$ROOT/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 ZIP_PATH="$DIST_DIR/$APP_NAME.zip"
 PRODUCTION_SPARKLE_FEED_URL="https://raw.githubusercontent.com/Givdul/atoll/main/appcast.xml"
 PRODUCTION_BUILD_LEDGER_URL="https://raw.githubusercontent.com/Givdul/atoll/main/latest-build.txt"
+BUNDLE_IDENTIFIER="com.givdul.topside"
 INSTALLED_APP="/Applications/$APP_NAME.app"
 INSTALLED_EXECUTABLE="$INSTALLED_APP/Contents/MacOS/$APP_NAME"
-LEGACY_APP_NAME="Atoll"
-LEGACY_BUNDLE_IDENTIFIER="dev.atoll.Atoll"
-LEGACY_INSTALLED_APP="/Applications/$LEGACY_APP_NAME.app"
-LEGACY_INSTALLED_EXECUTABLE="$LEGACY_INSTALLED_APP/Contents/MacOS/$LEGACY_APP_NAME"
+SKERRY_APP_NAME="Skerry"
+SKERRY_BUNDLE_IDENTIFIER="com.givdul.skerry"
+SKERRY_INSTALLED_APP="/Applications/$SKERRY_APP_NAME.app"
+SKERRY_INSTALLED_EXECUTABLE="$SKERRY_INSTALLED_APP/Contents/MacOS/$SKERRY_APP_NAME"
+ATOLL_APP_NAME="Atoll"
+ATOLL_BUNDLE_IDENTIFIER="dev.atoll.Atoll"
+ATOLL_INSTALLED_APP="/Applications/$ATOLL_APP_NAME.app"
+ATOLL_INSTALLED_EXECUTABLE="$ATOLL_INSTALLED_APP/Contents/MacOS/$ATOLL_APP_NAME"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 NOTARY_KEYCHAIN_PROFILE="${NOTARY_KEYCHAIN_PROFILE:-}"
 SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-}"
 SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-}"
-SKERRY_PURCHASE_URL="${SKERRY_PURCHASE_URL:-}"
+TOPSIDE_PURCHASE_URL="${TOPSIDE_PURCHASE_URL:-}"
 POLAR_ORGANIZATION_ID="${POLAR_ORGANIZATION_ID:-}"
 POLAR_BENEFIT_ID="${POLAR_BENEFIT_ID:-}"
 MARKETING_VERSION="${MARKETING_VERSION:-}"
@@ -32,10 +37,13 @@ TEMP_DIRS=("")
 INSTALL_ROLLBACK_REQUIRED=0
 INSTALL_HAD_PREVIOUS_APP=0
 INSTALL_PREVIOUS_WAS_RUNNING=0
-INSTALL_HAD_LEGACY_APP=0
-INSTALL_LEGACY_WAS_RUNNING=0
+INSTALL_HAD_SKERRY_APP=0
+INSTALL_SKERRY_WAS_RUNNING=0
+INSTALL_HAD_ATOLL_APP=0
+INSTALL_ATOLL_WAS_RUNNING=0
 INSTALL_BACKUP=""
-INSTALL_LEGACY_BACKUP=""
+INSTALL_SKERRY_BACKUP=""
+INSTALL_ATOLL_BACKUP=""
 INSTALL_TEMP=""
 EXPECTED_TEAM_IDENTIFIER=""
 
@@ -47,32 +55,17 @@ cleanup() {
 
   if [[ "$INSTALL_ROLLBACK_REQUIRED" == "1" ]]; then
     if ! stop_installed_processes_for_rollback; then
-      echo "Rollback stopped because the failed installed Skerry process would not exit; the previous app remains at $INSTALL_BACKUP" >&2
+      echo "Rollback stopped because the failed installed Topside process would not exit; backups remain in $INSTALL_TEMP" >&2
       exit "$status"
     fi
     rm -rf "$INSTALLED_APP"
-    if [[ "$INSTALL_HAD_PREVIOUS_APP" == "1" && -d "$INSTALL_BACKUP" ]]; then
-      if mv "$INSTALL_BACKUP" "$INSTALLED_APP"; then
-        if [[ "$INSTALL_PREVIOUS_WAS_RUNNING" == "1" ]]; then
-          open "$INSTALLED_APP" >/dev/null 2>&1 || true
-        fi
-      else
-        echo "Rollback could not restore the previous app; it remains at $INSTALL_BACKUP" >&2
-      fi
-    fi
-    if [[ "$INSTALL_HAD_LEGACY_APP" == "1" && -d "$INSTALL_LEGACY_BACKUP" ]]; then
-      if mv "$INSTALL_LEGACY_BACKUP" "$LEGACY_INSTALLED_APP"; then
-        if [[ "$INSTALL_LEGACY_WAS_RUNNING" == "1" ]]; then
-          open "$LEGACY_INSTALLED_APP" >/dev/null 2>&1 || true
-        fi
-      else
-        echo "Rollback could not restore the beta app; it remains at $INSTALL_LEGACY_BACKUP" >&2
-      fi
-    fi
+    restore_installed_backup "$INSTALL_HAD_PREVIOUS_APP" "$INSTALL_BACKUP" "$INSTALLED_APP" "$INSTALL_PREVIOUS_WAS_RUNNING" "previous Topside app"
+    restore_installed_backup "$INSTALL_HAD_SKERRY_APP" "$INSTALL_SKERRY_BACKUP" "$SKERRY_INSTALLED_APP" "$INSTALL_SKERRY_WAS_RUNNING" "Skerry app"
+    restore_installed_backup "$INSTALL_HAD_ATOLL_APP" "$INSTALL_ATOLL_BACKUP" "$ATOLL_INSTALLED_APP" "$INSTALL_ATOLL_WAS_RUNNING" "Atoll app"
   fi
 
   for temp_dir in "${TEMP_DIRS[@]}"; do
-    if [[ -n "$temp_dir" && "$temp_dir" == "$INSTALL_TEMP" && ( -d "$INSTALL_BACKUP" || -d "$INSTALL_LEGACY_BACKUP" ) ]]; then
+    if [[ -n "$temp_dir" && "$temp_dir" == "$INSTALL_TEMP" && ( -d "$INSTALL_BACKUP" || -d "$INSTALL_SKERRY_BACKUP" || -d "$INSTALL_ATOLL_BACKUP" ) ]]; then
       continue
     fi
     [[ -n "$temp_dir" ]] && rm -rf "$temp_dir"
@@ -210,7 +203,7 @@ if [[ "$MODE" == "distribution" ]]; then
     "$NOTARY_KEYCHAIN_PROFILE"
     "$SPARKLE_FEED_URL"
     "$SPARKLE_PUBLIC_ED_KEY"
-    "$SKERRY_PURCHASE_URL"
+    "$TOPSIDE_PURCHASE_URL"
     "$POLAR_ORGANIZATION_ID"
     "$POLAR_BENEFIT_ID"
     "$MARKETING_VERSION"
@@ -222,7 +215,7 @@ if [[ "$MODE" == "distribution" ]]; then
     NOTARY_KEYCHAIN_PROFILE
     SPARKLE_FEED_URL
     SPARKLE_PUBLIC_ED_KEY
-    SKERRY_PURCHASE_URL
+    TOPSIDE_PURCHASE_URL
     POLAR_ORGANIZATION_ID
     POLAR_BENEFIT_ID
     MARKETING_VERSION
@@ -242,16 +235,16 @@ if [[ -n "$SPARKLE_FEED_URL" || -n "$SPARKLE_PUBLIC_ED_KEY" ]]; then
     || fail "SPARKLE_FEED_URL must be a valid HTTPS URL with a host"
 fi
 
-if [[ "$SIGN_IDENTITY" == "-" && ( -n "$SKERRY_PURCHASE_URL" || -n "$POLAR_ORGANIZATION_ID" || -n "$POLAR_BENEFIT_ID" ) ]]; then
+if [[ "$SIGN_IDENTITY" == "-" && ( -n "$TOPSIDE_PURCHASE_URL" || -n "$POLAR_ORGANIZATION_ID" || -n "$POLAR_BENEFIT_ID" ) ]]; then
   fail "Ad-hoc builds cannot contain Polar configuration"
 fi
 
-if [[ -n "$SKERRY_PURCHASE_URL" || -n "$POLAR_ORGANIZATION_ID" || -n "$POLAR_BENEFIT_ID" ]]; then
-  if [[ -z "$SKERRY_PURCHASE_URL" || -z "$POLAR_ORGANIZATION_ID" || -z "$POLAR_BENEFIT_ID" ]]; then
-    fail "SKERRY_PURCHASE_URL, POLAR_ORGANIZATION_ID, and POLAR_BENEFIT_ID must be set together"
+if [[ -n "$TOPSIDE_PURCHASE_URL" || -n "$POLAR_ORGANIZATION_ID" || -n "$POLAR_BENEFIT_ID" ]]; then
+  if [[ -z "$TOPSIDE_PURCHASE_URL" || -z "$POLAR_ORGANIZATION_ID" || -z "$POLAR_BENEFIT_ID" ]]; then
+    fail "TOPSIDE_PURCHASE_URL, POLAR_ORGANIZATION_ID, and POLAR_BENEFIT_ID must be set together"
   fi
-  if [[ ! "$SKERRY_PURCHASE_URL" =~ ^https://buy\.polar\.sh/polar_cl_[A-Za-z0-9]+$ && ! "$SKERRY_PURCHASE_URL" =~ ^https://sandbox-api\.polar\.sh/v1/checkout-links/polar_cl_[A-Za-z0-9]+/redirect$ ]]; then
-    fail "SKERRY_PURCHASE_URL must be an exact Polar production or sandbox checkout link"
+  if [[ ! "$TOPSIDE_PURCHASE_URL" =~ ^https://buy\.polar\.sh/polar_cl_[A-Za-z0-9]+$ && ! "$TOPSIDE_PURCHASE_URL" =~ ^https://sandbox-api\.polar\.sh/v1/checkout-links/polar_cl_[A-Za-z0-9]+/redirect$ ]]; then
+    fail "TOPSIDE_PURCHASE_URL must be an exact Polar production or sandbox checkout link"
   fi
   for identifier in "$POLAR_ORGANIZATION_ID" "$POLAR_BENEFIT_ID"; do
     if [[ ! "$identifier" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
@@ -269,14 +262,14 @@ if [[ "$MODE" == "distribution" ]]; then
     || fail "DEVELOPER_TEAM_ID must be a 10-character Apple team identifier"
   [[ "$SPARKLE_PUBLIC_ED_KEY" =~ ^[A-Za-z0-9+/]{43}=$ ]] \
     || fail "SPARKLE_PUBLIC_ED_KEY must be a base64-encoded Ed25519 public key"
-  [[ "$SKERRY_PURCHASE_URL" =~ ^https://buy\.polar\.sh/polar_cl_[A-Za-z0-9]+$ ]] \
-    || fail "SKERRY_PURCHASE_URL must use the production Polar checkout in --distribution"
+  [[ "$TOPSIDE_PURCHASE_URL" =~ ^https://buy\.polar\.sh/polar_cl_[A-Za-z0-9]+$ ]] \
+    || fail "TOPSIDE_PURCHASE_URL must use the production Polar checkout in --distribution"
   [[ "$SPARKLE_FEED_URL" == "$PRODUCTION_SPARKLE_FEED_URL" ]] \
     || fail "SPARKLE_FEED_URL must be $PRODUCTION_SPARKLE_FEED_URL in --distribution"
   [[ "$SIGN_IDENTITY" == Developer\ ID\ Application:*"($DEVELOPER_TEAM_ID)" ]] \
     || fail "SIGN_IDENTITY must be the Developer ID Application identity for DEVELOPER_TEAM_ID"
 
-  APPCAST_TEMP="$(mktemp -d "$DIST_DIR/.Skerry.appcast.XXXXXX")"
+  APPCAST_TEMP="$(mktemp -d "$DIST_DIR/.Topside.appcast.XXXXXX")"
   TEMP_DIRS+=("$APPCAST_TEMP")
   APPCAST_PATH="$APPCAST_TEMP/appcast.xml"
   BUILD_LEDGER_PATH="$APPCAST_TEMP/latest-build.txt"
@@ -310,7 +303,7 @@ fi
 
 release_directory() {
   local architecture=$1
-  echo "$ROOT/.build/skerry-release-$architecture/$architecture-apple-macosx/release"
+  echo "$ROOT/.build/topside-release-$architecture/$architecture-apple-macosx/release"
 }
 
 verify_universal_binary() {
@@ -379,6 +372,56 @@ app_pids() {
   done
 }
 
+verify_app_identity() {
+  local app=$1
+  local expected_name=$2
+  local expected_bundle_identifier=$3
+  local plist="$app/Contents/Info.plist"
+  local executable_name
+  local bundle_identifier
+
+  [[ -d "$app" && ! -L "$app" && -f "$plist" ]] || return 1
+  bundle_identifier="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist" 2>/dev/null || true)"
+  executable_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist" 2>/dev/null || true)"
+  [[ "$bundle_identifier" == "$expected_bundle_identifier" ]] || return 1
+  [[ "$executable_name" == "$expected_name" ]] || return 1
+  [[ -x "$app/Contents/MacOS/$expected_name" ]] || return 1
+}
+
+verify_topside_bundle_layout() {
+  local app=$1
+  local plist="$app/Contents/Info.plist"
+  verify_app_identity "$app" "$APP_NAME" "$BUNDLE_IDENTIFIER" \
+    || fail "Application has the wrong Topside identity: $app"
+  [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$plist")" == "$APP_NAME" ]] \
+    || fail "Application has the wrong bundle name: $app"
+  [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$plist")" == "$APP_NAME.icns" ]] \
+    || fail "Application has the wrong icon declaration: $app"
+  [[ -f "$app/Contents/Resources/$APP_NAME.icns" ]] \
+    || fail "Application is missing $APP_NAME.icns: $app"
+  [[ -d "$app/Contents/Resources/${APP_NAME}_${APP_NAME}.bundle" ]] \
+    || fail "Application is missing ${APP_NAME}_${APP_NAME}.bundle: $app"
+  [[ ! -e "$app/Contents/Resources/Skerry.icns" ]] \
+    || fail "Application contains the legacy Skerry icon: $app"
+  verify_universal_binary "$app/Contents/MacOS/$APP_NAME"
+}
+
+restore_installed_backup() {
+  local had_app=$1
+  local backup=$2
+  local destination=$3
+  local was_running=$4
+  local label=$5
+  [[ "$had_app" == "1" && -d "$backup" ]] || return 0
+  if mv "$backup" "$destination"; then
+    if [[ "$was_running" == "1" ]]; then
+      open "$destination" >/dev/null 2>&1 || true
+    fi
+  else
+    echo "Rollback could not restore the $label; it remains at $backup" >&2
+  fi
+}
+
 installed_app_pids() {
   app_pids "$APP_NAME" "$INSTALLED_EXECUTABLE"
 }
@@ -423,7 +466,7 @@ stop_app_processes() {
 }
 
 stop_installed_processes_for_rollback() {
-  stop_app_processes "$APP_NAME" "$INSTALLED_EXECUTABLE" "com.givdul.skerry"
+  stop_app_processes "$APP_NAME" "$INSTALLED_EXECUTABLE" "$BUNDLE_IDENTIFIER"
 }
 
 wait_for_new_process() {
@@ -435,79 +478,88 @@ wait_for_new_process() {
     [[ -n "$pids" ]] && break
     sleep 0.2
   done
-  [[ -n "$pids" ]] || fail "Installed Skerry did not start within 10 seconds"
+  [[ -n "$pids" ]] || fail "Installed Topside did not start within 10 seconds"
 
   sleep 0.5
   pids="$(installed_app_pids)"
   set -- $pids
   if [[ $# -ne 1 ]]; then
-    fail "Expected one installed Skerry process after launch, found $#"
+    fail "Expected one installed Topside process after launch, found $#"
   fi
 }
 
 install_app() {
-  local install_temp
   local install_candidate
-  local legacy_bundle_identifier
   local previous_pids
-  local legacy_pids
+  local skerry_pids
+  local atoll_pids
 
-  install_temp="$(mktemp -d "/Applications/.$APP_NAME.install.XXXXXX")"
-  INSTALL_TEMP="$install_temp"
+  INSTALL_TEMP="$(mktemp -d "/Applications/.$APP_NAME.install.XXXXXX")"
   TEMP_DIRS+=("$INSTALL_TEMP")
   install_candidate="$INSTALL_TEMP/$APP_NAME.app"
   INSTALL_BACKUP="$INSTALL_TEMP/$APP_NAME.app.previous"
-  INSTALL_LEGACY_BACKUP="$INSTALL_TEMP/$LEGACY_APP_NAME.app.previous"
+  INSTALL_SKERRY_BACKUP="$INSTALL_TEMP/$SKERRY_APP_NAME.app.previous"
+  INSTALL_ATOLL_BACKUP="$INSTALL_TEMP/$ATOLL_APP_NAME.app.previous"
 
   ditto "$APP_BUNDLE" "$install_candidate"
+  verify_app_identity "$install_candidate" "$APP_NAME" "$BUNDLE_IDENTIFIER" \
+    || fail "Built install candidate does not have the expected Topside identity"
   codesign --verify --deep --strict --verbose=2 "$install_candidate"
   verify_universal_binary "$install_candidate/Contents/MacOS/$APP_NAME"
 
   if [[ -e "$INSTALLED_APP" && ! -d "$INSTALLED_APP" ]]; then
     fail "Install target exists but is not an application bundle: $INSTALLED_APP"
   fi
+  if [[ -d "$INSTALLED_APP" ]] && ! verify_app_identity "$INSTALLED_APP" "$APP_NAME" "$BUNDLE_IDENTIFIER"; then
+    fail "Refusing to replace an application that does not have the expected Topside identity: $INSTALLED_APP"
+  fi
+
+  if [[ -d "$SKERRY_INSTALLED_APP" ]] && ! verify_app_identity "$SKERRY_INSTALLED_APP" "$SKERRY_APP_NAME" "$SKERRY_BUNDLE_IDENTIFIER"; then
+    echo "Preserving unverified legacy application: $SKERRY_INSTALLED_APP" >&2
+  elif [[ -d "$SKERRY_INSTALLED_APP" ]]; then
+    INSTALL_HAD_SKERRY_APP=1
+  fi
+  if [[ -d "$ATOLL_INSTALLED_APP" ]] && ! verify_app_identity "$ATOLL_INSTALLED_APP" "$ATOLL_APP_NAME" "$ATOLL_BUNDLE_IDENTIFIER"; then
+    echo "Preserving unverified legacy application: $ATOLL_INSTALLED_APP" >&2
+  elif [[ -d "$ATOLL_INSTALLED_APP" ]]; then
+    INSTALL_HAD_ATOLL_APP=1
+  fi
+  [[ -d "$INSTALLED_APP" ]] && INSTALL_HAD_PREVIOUS_APP=1
 
   previous_pids="$(installed_app_pids)"
-  if [[ -n "$previous_pids" ]]; then
-    INSTALL_PREVIOUS_WAS_RUNNING=1
-    stop_app_processes "$APP_NAME" "$INSTALLED_EXECUTABLE" "com.givdul.skerry" \
-      || fail "Installed Skerry would not quit"
-  fi
+  [[ -n "$previous_pids" ]] && INSTALL_PREVIOUS_WAS_RUNNING=1
+  skerry_pids="$(app_pids "$SKERRY_APP_NAME" "$SKERRY_INSTALLED_EXECUTABLE")"
+  [[ -n "$skerry_pids" && "$INSTALL_HAD_SKERRY_APP" == "1" ]] && INSTALL_SKERRY_WAS_RUNNING=1
+  atoll_pids="$(app_pids "$ATOLL_APP_NAME" "$ATOLL_INSTALLED_EXECUTABLE")"
+  [[ -n "$atoll_pids" && "$INSTALL_HAD_ATOLL_APP" == "1" ]] && INSTALL_ATOLL_WAS_RUNNING=1
 
-  if [[ -d "$INSTALLED_APP" ]]; then
-    INSTALL_HAD_PREVIOUS_APP=1
+  INSTALL_ROLLBACK_REQUIRED=1
+  if [[ "$INSTALL_HAD_PREVIOUS_APP" == "1" ]]; then
+    stop_app_processes "$APP_NAME" "$INSTALLED_EXECUTABLE" "$BUNDLE_IDENTIFIER" \
+      || fail "Installed Topside would not quit"
     mv "$INSTALLED_APP" "$INSTALL_BACKUP"
   fi
-  INSTALL_ROLLBACK_REQUIRED=1
-
-  if [[ -d "$LEGACY_INSTALLED_APP" ]]; then
-    legacy_bundle_identifier="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$LEGACY_INSTALLED_APP/Contents/Info.plist" 2>/dev/null || true)"
-    if [[ "$legacy_bundle_identifier" == "$LEGACY_BUNDLE_IDENTIFIER" ]]; then
-      legacy_pids="$(app_pids "$LEGACY_APP_NAME" "$LEGACY_INSTALLED_EXECUTABLE")"
-      if [[ -n "$legacy_pids" ]]; then
-        INSTALL_LEGACY_WAS_RUNNING=1
-        stop_app_processes "$LEGACY_APP_NAME" "$LEGACY_INSTALLED_EXECUTABLE" "$LEGACY_BUNDLE_IDENTIFIER" \
-          || fail "Installed Atoll beta would not quit"
-      fi
-      INSTALL_HAD_LEGACY_APP=1
-      mv "$LEGACY_INSTALLED_APP" "$INSTALL_LEGACY_BACKUP"
-    fi
+  if [[ "$INSTALL_HAD_SKERRY_APP" == "1" ]]; then
+    stop_app_processes "$SKERRY_APP_NAME" "$SKERRY_INSTALLED_EXECUTABLE" "$SKERRY_BUNDLE_IDENTIFIER" \
+      || fail "Installed Skerry would not quit"
+    mv "$SKERRY_INSTALLED_APP" "$INSTALL_SKERRY_BACKUP"
+  fi
+  if [[ "$INSTALL_HAD_ATOLL_APP" == "1" ]]; then
+    stop_app_processes "$ATOLL_APP_NAME" "$ATOLL_INSTALLED_EXECUTABLE" "$ATOLL_BUNDLE_IDENTIFIER" \
+      || fail "Installed Atoll would not quit"
+    mv "$ATOLL_INSTALLED_APP" "$INSTALL_ATOLL_BACKUP"
   fi
 
   mv "$install_candidate" "$INSTALLED_APP"
-
+  verify_app_identity "$INSTALLED_APP" "$APP_NAME" "$BUNDLE_IDENTIFIER" \
+    || fail "Installed application does not have the expected Topside identity"
   codesign --verify --deep --strict --verbose=2 "$INSTALLED_APP"
   verify_universal_binary "$INSTALLED_EXECUTABLE"
   open "$INSTALLED_APP"
   wait_for_new_process
 
   INSTALL_ROLLBACK_REQUIRED=0
-  if [[ "$INSTALL_HAD_PREVIOUS_APP" == "1" ]]; then
-    rm -rf "$INSTALL_BACKUP"
-  fi
-  if [[ "$INSTALL_HAD_LEGACY_APP" == "1" ]]; then
-    rm -rf "$INSTALL_LEGACY_BACKUP"
-  fi
+  rm -rf "$INSTALL_BACKUP" "$INSTALL_SKERRY_BACKUP" "$INSTALL_ATOLL_BACKUP"
   echo "Installed $INSTALLED_APP"
 }
 
@@ -518,13 +570,14 @@ verify_distribution_archive() {
   local embedded_sparkle
   local sparkle_binary
 
-  verify_temp="$(mktemp -d "$DIST_DIR/.Skerry.verify.XXXXXX")"
+  verify_temp="$(mktemp -d "$DIST_DIR/.Topside.verify.XXXXXX")"
   TEMP_DIRS+=("$verify_temp")
   ditto -x -k "$ZIP_PATH" "$verify_temp"
   extracted_app="$verify_temp/$APP_NAME.app"
   [[ -d "$extracted_app" ]] || fail "Release archive does not contain $APP_NAME.app"
 
   extracted_plist="$extracted_app/Contents/Info.plist"
+  verify_topside_bundle_layout "$extracted_app"
   [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$extracted_plist")" == "$MARKETING_VERSION" ]] \
     || fail "Release archive has the wrong marketing version"
   [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$extracted_plist")" == "$BUILD_NUMBER" ]] \
@@ -556,7 +609,7 @@ verify_distribution_archive() {
 rm -f "$ZIP_PATH"
 
 for architecture in "${ARCHITECTURES[@]}"; do
-  scratch_path="$ROOT/.build/skerry-release-$architecture"
+  scratch_path="$ROOT/.build/topside-release-$architecture"
   release_dir="$(release_directory "$architecture")"
   resource_bundle="$release_dir/${APP_NAME}_${APP_NAME}.bundle"
 
@@ -595,18 +648,18 @@ if [[ -n "$MARKETING_VERSION" ]]; then
     "$APP_BUNDLE/Contents/Info.plist"
 fi
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
-  /usr/libexec/PlistBuddy -c "Add :SkerryEntitlementStorage string trial-file-v1" "$APP_BUNDLE/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :TopsideEntitlementStorage string trial-file-v1" "$APP_BUNDLE/Contents/Info.plist"
 else
-  /usr/libexec/PlistBuddy -c "Add :SkerryEntitlementStorage string keychain-v2" "$APP_BUNDLE/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :TopsideEntitlementStorage string keychain-v2" "$APP_BUNDLE/Contents/Info.plist"
 fi
 if [[ -n "$SPARKLE_FEED_URL" ]]; then
   /usr/libexec/PlistBuddy -c "Add :SUFeedURL string $SPARKLE_FEED_URL" "$APP_BUNDLE/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $SPARKLE_PUBLIC_ED_KEY" "$APP_BUNDLE/Contents/Info.plist"
 fi
-if [[ -n "$SKERRY_PURCHASE_URL" ]]; then
-  /usr/libexec/PlistBuddy -c "Add :SkerryPurchaseURL string $SKERRY_PURCHASE_URL" "$APP_BUNDLE/Contents/Info.plist"
-  /usr/libexec/PlistBuddy -c "Add :SkerryPolarOrganizationID string $POLAR_ORGANIZATION_ID" "$APP_BUNDLE/Contents/Info.plist"
-  /usr/libexec/PlistBuddy -c "Add :SkerryPolarBenefitID string $POLAR_BENEFIT_ID" "$APP_BUNDLE/Contents/Info.plist"
+if [[ -n "$TOPSIDE_PURCHASE_URL" ]]; then
+  /usr/libexec/PlistBuddy -c "Add :TopsidePurchaseURL string $TOPSIDE_PURCHASE_URL" "$APP_BUNDLE/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :TopsidePolarOrganizationID string $POLAR_ORGANIZATION_ID" "$APP_BUNDLE/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :TopsidePolarBenefitID string $POLAR_BENEFIT_ID" "$APP_BUNDLE/Contents/Info.plist"
 fi
 
 lipo -create \
@@ -620,7 +673,7 @@ if ! otool -l "$APP_BUNDLE/Contents/MacOS/$APP_NAME" | grep -Fq "@executable_pat
   install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 fi
 
-cp "$ROOT/Bundle/Skerry.icns" "$APP_BUNDLE/Contents/Resources/Skerry.icns"
+cp "$ROOT/Bundle/Topside.icns" "$APP_BUNDLE/Contents/Resources/Topside.icns"
 ditto "$RESOURCE_BUNDLE" "$APP_BUNDLE/Contents/Resources/$(basename "$RESOURCE_BUNDLE")"
 ditto "$SPARKLE_FRAMEWORK" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
 
@@ -667,10 +720,13 @@ done
 
 codesign "${SIGN_ARGUMENTS[@]}" "$APP_BUNDLE"
 verify_signature_metadata "$APP_BUNDLE"
+[[ "$(signature_field "$APP_BUNDLE" Identifier)" == "$BUNDLE_IDENTIFIER" ]] \
+  || fail "Outer application signature has the wrong identifier"
 codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+verify_topside_bundle_layout "$APP_BUNDLE"
 
 if [[ -n "$NOTARY_KEYCHAIN_PROFILE" ]]; then
-  NOTARY_TEMP="$(mktemp -d "$DIST_DIR/.Skerry.notary.XXXXXX")"
+  NOTARY_TEMP="$(mktemp -d "$DIST_DIR/.Topside.notary.XXXXXX")"
   TEMP_DIRS+=("$NOTARY_TEMP")
   NOTARY_UPLOAD="$NOTARY_TEMP/$APP_NAME.zip"
   NOTARY_RESULT="$DIST_DIR/$APP_NAME-notarization.json"

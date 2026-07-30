@@ -3,37 +3,37 @@
 import PackageDescription
 
 let package = Package(
-    name: "Skerry",
+    name: "Topside",
     defaultLocalization: "en",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "Skerry", targets: ["Skerry"])
+        .executable(name: "Topside", targets: ["Topside"])
     ],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.4")
     ],
     targets: [
         .target(
-            name: "SkerryCore",
-            path: "Sources/SkerryCore"
+            name: "TopsideCore",
+            path: "Sources/TopsideCore"
         ),
         .executableTarget(
-            name: "Skerry",
+            name: "Topside",
             dependencies: [
-                "SkerryCore",
+                "TopsideCore",
                 .product(name: "Sparkle", package: "Sparkle")
             ],
-            path: "Sources/Skerry",
+            path: "Sources/Topside",
             resources: [
                 .process("Resources")
             ]
         ),
         .testTarget(
-            name: "SkerryCoreTests",
-            dependencies: ["SkerryCore"],
-            path: "Tests/SkerryCoreTests"
+            name: "TopsideCoreTests",
+            dependencies: ["TopsideCore"],
+            path: "Tests/TopsideCoreTests"
         )
     ]
 )
