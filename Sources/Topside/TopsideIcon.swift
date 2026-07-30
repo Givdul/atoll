@@ -49,7 +49,7 @@ enum TopsideIcon {
 
         drawGlyph(
             in: NSRect(x: 2, y: 4, width: 18, height: 14),
-            color: attentionColor ?? .labelColor
+            color: attentionColor ?? .black
         )
 
         image.isTemplate = attentionColor == nil
