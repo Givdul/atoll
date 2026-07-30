@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify Topside Notch"
+  short_description: "Capture screen-space notch alignment evidence"
+  default_prompt: "Use $verify-topside-notch to capture and verify Topside against the live physical notch bounds."

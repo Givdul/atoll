@@ -11,6 +11,7 @@
 - Always verify UI changes in the installed app with screenshots as well; capture and inspect the relevant states before considering the change complete.
 - Add screenshots or recordings that confirm user-visible fixes to the pull request and share them in the active chat.
 - Prefer video when motion, transitions, or a multi-step flow shows the fix better than still screenshots.
+- For notch sizing or centering, use `.agents/skills/verify-topside-notch`; app-window-only crops cannot prove screen-space alignment.
 
 ## Commit and Publish Workflow
 
