@@ -24,7 +24,7 @@ final class IslandWindowController {
     private let availabilityDidChange: () -> Void
     private let window: IslandPanel
     private var hostingView: NSHostingView<IslandView>?
-    private let hostSize = NSSize(width: 440, height: 340)
+    private let hostSize = NSSize(width: 439, height: 340)
     private var pendingHideToken = UUID()
     private let rowExitDuration: TimeInterval = 0.26
     private var globalMouseMonitor: Any?

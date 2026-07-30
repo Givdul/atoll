@@ -88,7 +88,7 @@ struct IslandView: View {
             ZStack(alignment: .top) {
                 islandStack(metrics: metrics, sessions: visibleSessions)
             }
-            .frame(width: 440, height: 340, alignment: .top)
+            .frame(width: 439, height: 340, alignment: .top)
             .clipped()
             .onAppear {
                 if state.islandHoverState.expandsList || hasFloatingTerminalRows {
@@ -110,7 +110,7 @@ struct IslandView: View {
                 }
             }
         } else {
-            Color.clear.frame(width: 440, height: 340)
+            Color.clear.frame(width: 439, height: 340)
         }
     }
 
