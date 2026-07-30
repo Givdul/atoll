@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  swift-tests-and-lifecycle-queue-stress:
+    name: Swift tests and lifecycle queue stress
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Report toolchain
+        run: |
+          sw_vers
+          uname -m
+          xcode-select -p
+          xcodebuild -version
+          swift --version
+
+      - name: Build Topside
+        run: swift build --product Topside
+
+      - name: Run Swift tests
+        run: swift test
+
+      - name: Stress lifecycle queue concurrency
+        run: ./Scripts/test-lifecycle-queue-concurrency.sh

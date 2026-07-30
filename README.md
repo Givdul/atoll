@@ -57,8 +57,17 @@ Use `finished`, `failed`, `cancelled`, `needsInput`, or `needsPermission` as the
 
 ## Build
 
+Run the same checks as CI:
+
 ```sh
+swift build --product Topside
 swift test
+./Scripts/test-lifecycle-queue-concurrency.sh
+```
+
+Build and install the universal local app:
+
+```sh
 ./Scripts/build-release.sh --install
 ```
 
