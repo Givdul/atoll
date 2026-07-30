@@ -159,7 +159,7 @@ func pngData(for image: CGImage, annotate: Bool) -> Data? {
         outline.stroke()
 
         let delta = centerDeltaPixels >= 0 ? "+\(centerDeltaPixels)" : "\(centerDeltaPixels)"
-        let label = "LIVE BOUNDS \(Int(physicalWidth))×\(Int(physicalHeight)) PT · CENTER Δ \(delta) PX" as NSString
+        let label = "LIVE BOUNDS \(Int(physicalWidth))×\(Int(physicalHeight)) PT · WINDOW Δ \(delta) PX" as NSString
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedSystemFont(ofSize: 9 * scaleX, weight: .semibold),
             .foregroundColor: NSColor.white

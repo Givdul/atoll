@@ -27,7 +27,7 @@ struct IslandMetrics: Equatable {
         detailFontSize = min(11 * factor, rowHeight * 0.34)
         topGap = 0
         rowSpacing = 3 * factor
-        notchWidth = notch.width + 7
+        notchWidth = notch.width + 6
         notchHeight = notch.height + 4
     }
 
@@ -140,6 +140,7 @@ struct IslandView: View {
                 metrics: metrics,
                 glassNamespace: glassNamespace
             )
+            .offset(x: 0.5)
             .allowsHitTesting(false)
             .zIndex(10)
 

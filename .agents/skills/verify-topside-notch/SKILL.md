@@ -34,8 +34,8 @@ Create two screen-space artifacts: an untouched top-band capture and a diagnosti
      Screenshots/<name>-physical-notch.png
    ```
 
-5. Inspect both images. In the annotated copy, confirm that Topside remains equally visible outside the magenta physical bounds on the left and right. With the current 192×36-point overlay on this Mac's 185×32-point obstruction, expect 3.5 points or 7 backing pixels per side and 4 points or 8 backing pixels below.
-6. Treat any unequal left/right exposure as a real screen-space centering failure, even if a window-only screenshot looked symmetric.
+5. Inspect both images. With the current 191×36-point overlay shifted 0.5 point right for optical calibration against the glass, expect 2.5 points or 5 backing pixels on the left, 3.5 points or 7 backing pixels on the right, and 4 points or 8 backing pixels below this Mac's 185×32-point obstruction.
+6. Treat differences from those calibrated margins as a screen-space placement failure. Keep the window centered on AppKit's bounds; the visual asymmetry is intentional hardware calibration.
 7. End the synthetic session:
 
    ```sh

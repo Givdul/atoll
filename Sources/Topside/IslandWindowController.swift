@@ -252,7 +252,7 @@ final class IslandWindowController {
     }
 
     private func notchTriggerFrame(metrics: IslandMetrics) -> NSRect {
-        let x = window.frame.minX + (hostSize.width - metrics.notchWidth) / 2
+        let x = window.frame.minX + (hostSize.width - metrics.notchWidth) / 2 + 0.5
         let y = window.frame.maxY - metrics.notchHeight
         return NSRect(x: x, y: y, width: metrics.notchWidth, height: metrics.notchHeight)
     }
