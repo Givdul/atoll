@@ -27,8 +27,8 @@ struct IslandMetrics: Equatable {
         detailFontSize = min(11 * factor, rowHeight * 0.34)
         topGap = 0
         rowSpacing = 3 * factor
-        notchWidth = notch.width + 6
-        notchHeight = notch.height + 4
+        notchWidth = notch.width + 5
+        notchHeight = notch.height + 3
     }
 
     func listHeight(forRowCount rowCount: Int) -> CGFloat {
