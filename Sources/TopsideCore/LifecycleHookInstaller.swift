@@ -1,4 +1,3 @@
-import CryptoKit
 import Darwin
 import Foundation
 
@@ -124,7 +123,6 @@ public struct LifecycleHookInstaller {
         case commandFailed(String)
         case unsupportedPiVersion(installed: String, minimum: String)
         case unreadablePiVersion(minimum: String, detail: String)
-        case invalidBackup(URL)
         case unsupportedAgent(AgentHarness)
         case configurationChanged(URL)
 
@@ -137,7 +135,6 @@ public struct LifecycleHookInstaller {
             case .commandFailed(let detail): "Cannot finish setup: \(detail)"
             case .unsupportedPiVersion(let installed, let minimum): "Pi \(minimum) or newer is required for Live Status; found \(installed)."
             case .unreadablePiVersion(let minimum, let detail): "Pi \(minimum) or newer is required for Live Status, but Topside could not verify it: \(detail)"
-            case .invalidBackup(let url): "Cannot update Live Status because its recovery backup at \(url.path) is invalid."
             case .unsupportedAgent(let agent): "\(agent.displayName) is not a supported Live Status integration."
             case .configurationChanged(let url): "\(url.path) changed during setup. Topside left it untouched; try again."
             }
@@ -170,32 +167,21 @@ public struct LifecycleHookInstaller {
         self.codexRequirementsURL = codexRequirementsURL
     }
 
-    public func install() throws {
-        try install(agents: Self.supportedAgents)
-    }
-
     public func install(agents: [AgentHarness]) throws {
         if agents.contains(.pi) { try requireSupportedPiVersion() }
         try writeBridge()
         for agent in agents {
             switch agent {
-            case .codex: try mergeCodexHooks()
-            case .claude: try mergeClaudeHooks()
-            case .pi: try writePiExtension()
-            case .opencode: try writeOpenCodePlugin()
-            case .cursor: try mergeFlatHooks(
-                at: configurationURL(for: .cursor),
-                agent: .cursor,
-                events: [("beforeSubmitPrompt", "started"), ("stop", "finished")],
-                removing: [("sessionStart", "started"), ("sessionEnd", "finished")]
-            )
-            default: break
+            case .claude, .codex, .cursor:
+                try mergeConfiguredHooks(for: agent)
+            case .pi:
+                try writePiExtension()
+            case .opencode:
+                try writeOpenCodePlugin()
+            default:
+                break
             }
         }
-    }
-
-    public func uninstall() -> [RemovalResult] {
-        uninstall(agents: Self.supportedAgents)
     }
 
     public func uninstall(agents: [AgentHarness]) -> [RemovalResult] {
@@ -270,33 +256,13 @@ public struct LifecycleHookInstaller {
     }
 
     public func readiness(for agent: AgentHarness) -> Readiness {
-        guard Self.supportedAgents.contains(agent) else { return .notConfigured }
-        if agent == .pi {
-            do {
-                try requireSupportedPiVersion()
-                return readiness(requiring:
-                    managedFileMatches(piExtensionSource, at: piExtensionURL)
-                        && !legacyPiExtensionURLs.contains(where: managedFileIsOurs)
-                )
-            } catch {
-                return .invalidConfiguration(error.localizedDescription)
-            }
-        }
-        if agent == .opencode {
-            return readiness(requiring:
-                managedFileMatches(openCodePluginSource, at: openCodePluginURL)
-                    && !([legacyOpenCodePluginURL] + legacyOpenCodePluginURLs)
-                        .contains(where: managedFileIsOurs)
-            )
-        }
-        do {
-            if agent == .codex { try validateCodexHooksEnabled() }
-            let url = configurationURL(for: agent)
-            let root = try jsonObject(at: url)
-            try validateHookConfiguration(root, for: agent, at: url)
-            return readiness(requiring: hasAllCommands(in: root, for: agent))
-        } catch {
-            return .invalidConfiguration(error.localizedDescription)
+        switch integrationState(for: agent) {
+        case .current:
+            return bridgeIsReady ? .configured : .notConfigured
+        case .invalid(let detail), .disabled(let detail), .unowned(let detail):
+            return .invalidConfiguration(detail)
+        case .missing, .outdated:
+            return .notConfigured
         }
     }
 
@@ -323,17 +289,6 @@ public struct LifecycleHookInstaller {
             homeDirectory.appendingPathComponent(".skerry/bin/skerry-hook"),
             homeDirectory.appendingPathComponent(".atoll/bin/atoll-hook")
         ]
-    }
-
-    private struct SharedConfigurationIdentity: Codable {
-        let provider: String
-        let originalPath: String
-    }
-
-    private struct SharedConfigurationBackup: Codable {
-        let provider: String
-        let originalPath: String
-        let contents: Data
     }
 
     private struct JSONConfigurationSnapshot {
@@ -414,41 +369,74 @@ public struct LifecycleHookInstaller {
         }
     }
 
-    private func requiredHooks(for agent: AgentHarness) -> [HookRequirement] {
+    private struct HookContract {
+        enum Style: Equatable {
+            case grouped
+            case flat
+        }
+
+        let style: Style
+        let requirements: [HookRequirement]
+        let obsolete: [HookRequirement]
+    }
+
+    private func hookContract(for agent: AgentHarness) -> HookContract? {
         switch agent {
         case .claude:
-            [
-                HookRequirement("UserPromptSubmit", "started"),
-                HookRequirement("Stop", "finished"),
-                HookRequirement("StopFailure", "failed"),
-                HookRequirement("Notification", "needsPermission", matcher: "permission_prompt"),
-                HookRequirement("Notification", "needsInput", matcher: "elicitation_dialog"),
-                HookRequirement("Notification", "needsInput", matcher: "agent_needs_input"),
-                HookRequirement("Notification", "started", matcher: "elicitation_complete"),
-                HookRequirement("Notification", "started", matcher: "elicitation_response"),
-                HookRequirement("PostToolUse", "started", matcher: "*"),
-                HookRequirement("PostToolUseFailure", "started", matcher: "*"),
-                HookRequirement("PermissionDenied", "started", matcher: "*")
-            ]
+            HookContract(
+                style: .grouped,
+                requirements: [
+                    HookRequirement("UserPromptSubmit", "started"),
+                    HookRequirement("Stop", "finished"),
+                    HookRequirement("StopFailure", "failed"),
+                    HookRequirement("Notification", "needsPermission", matcher: "permission_prompt"),
+                    HookRequirement("Notification", "needsInput", matcher: "elicitation_dialog"),
+                    HookRequirement("Notification", "needsInput", matcher: "agent_needs_input"),
+                    HookRequirement("Notification", "started", matcher: "elicitation_complete"),
+                    HookRequirement("Notification", "started", matcher: "elicitation_response"),
+                    HookRequirement("PostToolUse", "started", matcher: "*"),
+                    HookRequirement("PostToolUseFailure", "started", matcher: "*"),
+                    HookRequirement("PermissionDenied", "started", matcher: "*")
+                ],
+                obsolete: [HookRequirement("SessionEnd", "finished")]
+            )
         case .codex:
-            [HookRequirement("UserPromptSubmit", "started"), HookRequirement("Stop", "finished")]
+            HookContract(
+                style: .grouped,
+                requirements: [
+                    HookRequirement("UserPromptSubmit", "started"),
+                    HookRequirement("Stop", "finished")
+                ],
+                obsolete: []
+            )
         case .cursor:
-            [HookRequirement("beforeSubmitPrompt", "started"), HookRequirement("stop", "finished")]
+            HookContract(
+                style: .flat,
+                requirements: [
+                    HookRequirement("beforeSubmitPrompt", "started"),
+                    HookRequirement("stop", "finished")
+                ],
+                obsolete: [
+                    HookRequirement("sessionStart", "started"),
+                    HookRequirement("sessionEnd", "finished")
+                ]
+            )
         default:
-            []
+            nil
         }
     }
 
     private func hasAllCommands(in root: [String: Any], for agent: AgentHarness) -> Bool {
-        let requirements = requiredHooks(for: agent)
-        guard !requirements.isEmpty else { return false }
-        guard let hooks = root["hooks"] as? [String: Any] else { return false }
-        let hasRequiredHooks = requirements.allSatisfy { requirement in
+        guard let contract = hookContract(for: agent),
+              let hooks = root["hooks"] as? [String: Any] else {
+            return false
+        }
+        let hasRequiredHooks = contract.requirements.allSatisfy { requirement in
             let command = hookCommand(harness: agent.rawValue, kind: requirement.kind)
-            switch agent {
-            case .cursor:
+            switch contract.style {
+            case .flat:
                 return containsFlatCommand(hooks[requirement.event], command: command)
-            default:
+            case .grouped:
                 return containsGroupedCommand(
                     hooks[requirement.event],
                     command: command,
@@ -457,29 +445,19 @@ public struct LifecycleHookInstaller {
             }
         }
         guard hasRequiredHooks else { return false }
-
-        if let cleanupEvent = legacyCleanupEvent(for: agent) {
-            let command = hookCommand(harness: agent.rawValue, kind: "finished")
-            let containsCleanup = agent == .cursor
-                ? containsFlatCommand(hooks[cleanupEvent], command: command)
-                : containsGroupedCommand(hooks[cleanupEvent], command: command, matcher: nil, matchingAnyMatcher: true)
-            if containsCleanup { return false }
-        }
-
-        if agent == .cursor {
-            return !containsFlatCommand(
-                hooks["sessionStart"],
-                command: hookCommand(harness: "cursor", kind: "started")
-            )
-        }
-        return true
-    }
-
-    private func legacyCleanupEvent(for agent: AgentHarness) -> String? {
-        switch agent {
-        case .cursor: "sessionEnd"
-        case .claude: "SessionEnd"
-        default: nil
+        return !contract.obsolete.contains { requirement in
+            let command = hookCommand(harness: agent.rawValue, kind: requirement.kind)
+            switch contract.style {
+            case .flat:
+                return containsFlatCommand(hooks[requirement.event], command: command)
+            case .grouped:
+                return containsGroupedCommand(
+                    hooks[requirement.event],
+                    command: command,
+                    matcher: requirement.matcher,
+                    matchingAnyMatcher: true
+                )
+            }
         }
     }
 
@@ -696,37 +674,55 @@ public struct LifecycleHookInstaller {
         case timedOut(output: String)
     }
 
-    private func mergeFlatHooks(
-        at url: URL,
-        agent: AgentHarness,
-        events: [(String, String)],
-        removing removedEvents: [(String, String)] = []
-    ) throws {
+    private func mergeConfiguredHooks(for agent: AgentHarness) throws {
+        guard let contract = hookContract(for: agent) else {
+            throw Error.unsupportedAgent(agent)
+        }
+        if agent == .codex { try validateCodexHooksEnabled() }
+        let url = configurationURL(for: agent)
         let snapshot = try jsonConfiguration(at: url)
         var root = snapshot.root
         try validateHookConfiguration(root, for: agent, at: url)
         let value = root["hooks"] ?? [String: Any]()
-        guard var hooks = value as? [String: Any] else { throw Error.invalidHookConfiguration(url) }
+        guard var hooks = value as? [String: Any] else {
+            throw Error.invalidHookConfiguration(url)
+        }
         for event in Array(hooks.keys) {
             for command in ownedCommands(for: agent) {
-                try removeFlatCommand(from: &hooks, event: event, command: command)
+                switch contract.style {
+                case .flat:
+                    try removeFlatCommand(from: &hooks, event: event, command: command)
+                case .grouped:
+                    try removeGroupedCommand(from: &hooks, event: event, command: command)
+                }
             }
         }
-        for (event, kind) in removedEvents {
-            try removeFlatCommand(from: &hooks, event: event, command: hookCommand(harness: agent.rawValue, kind: kind))
-        }
-        for (event, kind) in events {
-            let command = hookCommand(harness: agent.rawValue, kind: kind)
-            let value = hooks[event] ?? []
-            guard var entries = value as? [Any] else { throw Error.invalidHookConfiguration(url) }
-            if !containsFlatCommand(entries, command: command) {
-                entries.append(["command": command])
-                hooks[event] = entries
+        for requirement in contract.requirements {
+            let command = hookCommand(harness: agent.rawValue, kind: requirement.kind)
+            switch contract.style {
+            case .flat:
+                let value = hooks[requirement.event] ?? []
+                guard var entries = value as? [Any] else {
+                    throw Error.invalidHookConfiguration(url)
+                }
+                if !containsFlatCommand(entries, command: command) {
+                    entries.append(["command": command])
+                    hooks[requirement.event] = entries
+                }
+            case .grouped:
+                try addGroupedCommand(
+                    to: &hooks,
+                    event: requirement.event,
+                    command: command,
+                    matcher: requirement.matcher
+                )
             }
         }
-        root["version"] = root["version"] ?? 1
+        if contract.style == .flat {
+            root["version"] = root["version"] ?? 1
+        }
         root["hooks"] = hooks
-        try writeMergedConfiguration(root, snapshot: snapshot, for: agent, at: url)
+        try write(root, snapshot: snapshot, at: url)
     }
 
     private func writePiExtension() throws {
@@ -891,10 +887,6 @@ public struct LifecycleHookInstaller {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count > 1_000 else { return trimmed }
         return String(trimmed.prefix(1_000)) + "…"
-    }
-
-    private func readiness(requiring integrationIsCurrent: Bool) -> Readiness {
-        integrationIsCurrent && bridgeIsReady ? .configured : .notConfigured
     }
 
     private func integrationState(for agent: AgentHarness) -> Diagnostic.Integration {
@@ -1141,9 +1133,11 @@ public struct LifecycleHookInstaller {
     }
 
     private func ownedCommands(for agent: AgentHarness) -> Set<String> {
-        Set(LifecycleEventKind.allCases.flatMap { kind in
-            [hookCommand(harness: agent.rawValue, kind: kind.rawValue)]
-                + legacyHookCommands(harness: agent.rawValue, kind: kind.rawValue)
+        let currentKinds = hookContract(for: agent)?.requirements.map(\.kind) ?? []
+        let historicalKinds = LifecycleEventKind.allCases.map(\.rawValue)
+        return Set((currentKinds + historicalKinds).flatMap { kind in
+            [hookCommand(harness: agent.rawValue, kind: kind)]
+                + legacyHookCommands(harness: agent.rawValue, kind: kind)
         })
     }
 
@@ -1207,33 +1201,6 @@ public struct LifecycleHookInstaller {
 
     private func javaScriptString(_ value: String) -> String {
         "\"\(value.replacingOccurrences(of: "\\\\", with: "\\\\\\\\").replacingOccurrences(of: "\"", with: "\\\\\""))\""
-    }
-
-    private func mergeClaudeHooks() throws {
-        let url = configurationURL(for: .claude)
-        try mergeSettings(at: url, agent: .claude) { hooks in
-            try removeGroupedCommand(from: &hooks, event: "SessionEnd", command: hookCommand(harness: "claude", kind: "finished"))
-            try addGroupedCommand(to: &hooks, event: "UserPromptSubmit", command: hookCommand(harness: "claude", kind: "started"), matcher: nil)
-            try addGroupedCommand(to: &hooks, event: "Stop", command: hookCommand(harness: "claude", kind: "finished"), matcher: nil)
-            try addGroupedCommand(to: &hooks, event: "StopFailure", command: hookCommand(harness: "claude", kind: "failed"), matcher: nil)
-            try addGroupedCommand(to: &hooks, event: "Notification", command: hookCommand(harness: "claude", kind: "needsPermission"), matcher: "permission_prompt")
-            try addGroupedCommand(to: &hooks, event: "Notification", command: hookCommand(harness: "claude", kind: "needsInput"), matcher: "elicitation_dialog")
-            try addGroupedCommand(to: &hooks, event: "Notification", command: hookCommand(harness: "claude", kind: "needsInput"), matcher: "agent_needs_input")
-            try addGroupedCommand(to: &hooks, event: "Notification", command: hookCommand(harness: "claude", kind: "started"), matcher: "elicitation_complete")
-            try addGroupedCommand(to: &hooks, event: "Notification", command: hookCommand(harness: "claude", kind: "started"), matcher: "elicitation_response")
-            try addGroupedCommand(to: &hooks, event: "PostToolUse", command: hookCommand(harness: "claude", kind: "started"), matcher: "*")
-            try addGroupedCommand(to: &hooks, event: "PostToolUseFailure", command: hookCommand(harness: "claude", kind: "started"), matcher: "*")
-            try addGroupedCommand(to: &hooks, event: "PermissionDenied", command: hookCommand(harness: "claude", kind: "started"), matcher: "*")
-        }
-    }
-
-    private func mergeCodexHooks() throws {
-        try validateCodexHooksEnabled()
-        let url = configurationURL(for: .codex)
-        try mergeSettings(at: url, agent: .codex) { hooks in
-            try addGroupedCommand(to: &hooks, event: "UserPromptSubmit", command: hookCommand(harness: "codex", kind: "started"), matcher: nil)
-            try addGroupedCommand(to: &hooks, event: "Stop", command: hookCommand(harness: "codex", kind: "finished"), matcher: nil)
-        }
     }
 
     private func validateCodexHooksEnabled() throws {
@@ -1313,103 +1280,6 @@ public struct LifecycleHookInstaller {
                 }
             }
         }
-        return nil
-    }
-
-    private func mergeSettings(at url: URL, agent: AgentHarness, update: (inout [String: Any]) throws -> Void) throws {
-        let snapshot = try jsonConfiguration(at: url)
-        var root = snapshot.root
-        try validateHookConfiguration(root, for: agent, at: url)
-        let value = root["hooks"] ?? [String: Any]()
-        guard var hooks = value as? [String: Any] else { throw Error.invalidHookConfiguration(url) }
-        for event in Array(hooks.keys) {
-            for command in ownedCommands(for: agent) {
-                try removeGroupedCommand(from: &hooks, event: event, command: command)
-            }
-        }
-        try update(&hooks)
-        root["hooks"] = hooks
-        try writeMergedConfiguration(root, snapshot: snapshot, for: agent, at: url)
-    }
-
-    private func writeMergedConfiguration(
-        _ root: [String: Any],
-        snapshot: JSONConfigurationSnapshot,
-        for agent: AgentHarness,
-        at url: URL
-    ) throws {
-        let newAbsenceMarker = try backupSharedConfigurationIfNeeded(
-            for: agent,
-            at: url,
-            originalContents: snapshot.contents
-        )
-        do {
-            try write(root, snapshot: snapshot, at: url)
-        } catch {
-            if let newAbsenceMarker { try? fileManager.removeItem(at: newAbsenceMarker) }
-            throw error
-        }
-    }
-
-    private func backupSharedConfigurationIfNeeded(
-        for agent: AgentHarness,
-        at url: URL,
-        originalContents: Data?
-    ) throws -> URL? {
-        let pathDigest = SHA256.hash(data: Data(url.path.utf8))
-            .map { String(format: "%02x", $0) }
-            .joined()
-        let directory = homeDirectory.appendingPathComponent(".topside/backups/live-status", isDirectory: true)
-        let backupURL = directory.appendingPathComponent("\(agent.rawValue)-\(pathDigest).json")
-        let absentURL = directory.appendingPathComponent("\(agent.rawValue)-\(pathDigest).absent")
-
-        if fileManager.fileExists(atPath: backupURL.path) {
-            try PrivateStorage.ensureDirectory(at: directory, fileManager: fileManager)
-            try PrivateStorage.hardenFile(at: backupURL, fileManager: fileManager)
-            guard let data = try? Data(contentsOf: backupURL),
-                  let backup = try? JSONDecoder().decode(SharedConfigurationBackup.self, from: data),
-                  backup.provider == agent.rawValue,
-                  backup.originalPath == url.path else {
-                throw Error.invalidBackup(backupURL)
-            }
-            return nil
-        }
-
-        if fileManager.fileExists(atPath: absentURL.path) {
-            try PrivateStorage.ensureDirectory(at: directory, fileManager: fileManager)
-            try PrivateStorage.hardenFile(at: absentURL, fileManager: fileManager)
-            guard let data = try? Data(contentsOf: absentURL),
-                  let identity = try? JSONDecoder().decode(SharedConfigurationIdentity.self, from: data),
-                  identity.provider == agent.rawValue,
-                  identity.originalPath == url.path else {
-                throw Error.invalidBackup(absentURL)
-            }
-            return nil
-        }
-
-        guard let originalContents else {
-            try PrivateStorage.writeAtomically(
-                try JSONEncoder().encode(
-                    SharedConfigurationIdentity(provider: agent.rawValue, originalPath: url.path)
-                ),
-                to: absentURL,
-                fileManager: fileManager,
-                hardenDirectory: true
-            )
-            return absentURL
-        }
-
-        let backup = SharedConfigurationBackup(
-            provider: agent.rawValue,
-            originalPath: url.path,
-            contents: originalContents
-        )
-        try PrivateStorage.writeAtomically(
-            try JSONEncoder().encode(backup),
-            to: backupURL,
-            fileManager: fileManager,
-            hardenDirectory: true
-        )
         return nil
     }
 

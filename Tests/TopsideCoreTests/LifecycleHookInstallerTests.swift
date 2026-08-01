@@ -25,9 +25,9 @@ final class LifecycleHookInstallerTests: XCTestCase {
         try "// Topside Live Status managed integration\n// stale".write(to: legacyOpenCodePlugin, atomically: true, encoding: .utf8)
 
         let installer = makeInstaller()
-        try installer.install()
+        try installer.install(agents: LifecycleHookInstaller.supportedAgents)
         let firstClaudeConfiguration = try Data(contentsOf: claudeURL)
-        try installer.install()
+        try installer.install(agents: LifecycleHookInstaller.supportedAgents)
         XCTAssertEqual(firstClaudeConfiguration, try Data(contentsOf: claudeURL))
 
         let bridgeURL = home.appendingPathComponent(".topside/bin/topside-hook")
@@ -56,6 +56,21 @@ final class LifecycleHookInstallerTests: XCTestCase {
             commands(in: claude, event: "Notification", matcher: "elicitation_dialog"),
             [hook("claude", "needsInput")]
         )
+        XCTAssertEqual(
+            commands(in: claude, event: "Notification", matcher: "agent_needs_input"),
+            [hook("claude", "needsInput")]
+        )
+        XCTAssertEqual(
+            commands(in: claude, event: "Notification", matcher: "elicitation_complete"),
+            [hook("claude", "started")]
+        )
+        XCTAssertEqual(
+            commands(in: claude, event: "Notification", matcher: "elicitation_response"),
+            [hook("claude", "started")]
+        )
+        XCTAssertEqual(commands(in: claude, event: "PostToolUse", matcher: "*"), [hook("claude", "started")])
+        XCTAssertEqual(commands(in: claude, event: "PostToolUseFailure", matcher: "*"), [hook("claude", "started")])
+        XCTAssertEqual(commands(in: claude, event: "PermissionDenied", matcher: "*"), [hook("claude", "started")])
         XCTAssertTrue(commands(in: claude, event: "SessionEnd").isEmpty)
 
         let cursor = try read(home.appendingPathComponent(".cursor/hooks.json"))
@@ -92,6 +107,27 @@ final class LifecycleHookInstallerTests: XCTestCase {
         for agent in LifecycleHookInstaller.supportedAgents {
             XCTAssertEqual(installer.readiness(for: agent), .configured, "\(agent.rawValue) should be configured")
         }
+    }
+
+    func testReadinessAndDoctorShareTheSameContractClassification() throws {
+        let installer = makeInstaller()
+        let claudeURL = home.appendingPathComponent(".claude/settings.json")
+        try installer.install(agents: [.claude])
+        var claude = try read(claudeURL)
+        var hooks = try XCTUnwrap(claude["hooks"] as? [String: Any])
+        hooks.removeValue(forKey: "PostToolUseFailure")
+        claude["hooks"] = hooks
+        try write(claude, to: claudeURL)
+
+        XCTAssertEqual(installer.readiness(for: .claude), .notConfigured)
+        XCTAssertEqual(
+            installer.diagnostic(
+                for: .claude,
+                socketAvailable: true,
+                lastValidEventAt: nil
+            ).integration,
+            .outdated
+        )
     }
 
     func testRepairMigratesEveryOwnedAtollIntegrationAndPreservesUnrelatedConfiguration() throws {
@@ -175,7 +211,7 @@ final class LifecycleHookInstallerTests: XCTestCase {
             XCTAssertEqual(installer.readiness(for: agent), .notConfigured, agent.rawValue)
         }
 
-        try installer.install()
+        try installer.install(agents: LifecycleHookInstaller.supportedAgents)
 
         XCTAssertEqual(try read(codex)["keep"] as? Bool, true)
         XCTAssertTrue(commands(in: try read(codex), event: "UserPromptSubmit").contains("keep-codex"))
@@ -461,54 +497,25 @@ final class LifecycleHookInstallerTests: XCTestCase {
         XCTAssertEqual(installer.readiness(for: .pi), .notConfigured)
     }
 
-    func testFirstSharedConfigurationBackupIsExactPrivateAndNeverOverwritten() throws {
+    func testInstallDoesNotCreateRecoveryBackups() throws {
         let claude = home.appendingPathComponent(".claude/settings.json")
-        try FileManager.default.createDirectory(at: claude.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let original = Data(#"{"theme":"dark","hooks":{"Stop":[]}}"#.utf8)
-        try original.write(to: claude)
+        try write(["theme": "dark"], to: claude)
         let installer = makeInstaller()
 
         try installer.install(agents: [.claude, .codex])
-        let backupDirectory = home.appendingPathComponent(".topside/backups/live-status")
-        let backupURLs = try FileManager.default.contentsOfDirectory(
-            at: backupDirectory,
-            includingPropertiesForKeys: nil
-        )
-        let claudeBackupURL = try XCTUnwrap(backupURLs.first { $0.lastPathComponent.hasPrefix("claude-") })
-        let codexMarkerURL = try XCTUnwrap(backupURLs.first { $0.lastPathComponent.hasPrefix("codex-") })
-        XCTAssertEqual(claudeBackupURL.pathExtension, "json")
-        XCTAssertEqual(codexMarkerURL.pathExtension, "absent")
 
-        let backupData = try Data(contentsOf: claudeBackupURL)
-        let backup = try JSONDecoder().decode(SharedConfigurationBackupFixture.self, from: backupData)
-        XCTAssertEqual(backup.provider, "claude")
-        XCTAssertEqual(backup.originalPath, claude.path)
-        XCTAssertEqual(backup.contents, original)
-        XCTAssertEqual(
-            (try FileManager.default.attributesOfItem(atPath: backupDirectory.path)[.posixPermissions] as? NSNumber)?.intValue,
-            0o700
-        )
-        XCTAssertEqual(
-            (try FileManager.default.attributesOfItem(atPath: claudeBackupURL.path)[.posixPermissions] as? NSNumber)?.intValue,
-            0o600
-        )
-
-        try installer.install(agents: [.claude, .codex])
-        XCTAssertEqual(try Data(contentsOf: claudeBackupURL), backupData)
-        XCTAssertEqual(
-            try FileManager.default.contentsOfDirectory(at: backupDirectory, includingPropertiesForKeys: nil)
-                .filter { $0.lastPathComponent.hasPrefix("codex-") }
-                .map(\.pathExtension),
-            ["absent"]
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: home.appendingPathComponent(".topside/backups").path
+            )
         )
     }
 
-    func testSharedConfigurationMutationKeepsTheOriginalSnapshotAndDoesNotOverwriteConcurrentChanges() throws {
+    func testSharedConfigurationMutationDoesNotOverwriteConcurrentChanges() throws {
         let claude = home.appendingPathComponent(".claude/settings.json")
         try write(["theme": "before"], to: claude)
-        let original = try Data(contentsOf: claude)
         let replacement = try JSONSerialization.data(withJSONObject: ["theme": "concurrent"])
-        let fileManager = BackupMutationFileManager(
+        let fileManager = ConfigurationMutationFileManager(
             configurationURL: claude,
             replacement: replacement
         )
@@ -521,23 +528,16 @@ final class LifecycleHookInstallerTests: XCTestCase {
             XCTAssertEqual(url, claude)
         }
         XCTAssertEqual(try Data(contentsOf: claude), replacement)
-
-        let backupDirectory = home.appendingPathComponent(".topside/backups/live-status")
-        let backupURL = try XCTUnwrap(
-            try FileManager.default.contentsOfDirectory(at: backupDirectory, includingPropertiesForKeys: nil)
-                .first { $0.pathExtension == "json" }
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: home.appendingPathComponent(".topside/backups").path
+            )
         )
-        let backup = try JSONDecoder().decode(
-            SharedConfigurationBackupFixture.self,
-            from: Data(contentsOf: backupURL)
-        )
-        XCTAssertEqual(backup.contents, original)
     }
 
     func testInstallAndUninstallPreserveSharedConfigurationSymlink() throws {
         let target = home.appendingPathComponent("shared/claude-settings.json")
         try write(["theme": "dark"], to: target)
-        let original = try Data(contentsOf: target)
         let link = home.appendingPathComponent(".claude/settings.json")
         try FileManager.default.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: target.path)
@@ -549,18 +549,11 @@ final class LifecycleHookInstallerTests: XCTestCase {
         XCTAssertEqual(installer.uninstall(agents: [.claude]).map(\.outcome), [.removed])
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link.path), target.path)
         XCTAssertEqual(try read(target)["theme"] as? String, "dark")
-
-        let backupDirectory = home.appendingPathComponent(".topside/backups/live-status")
-        let backupURL = try XCTUnwrap(
-            try FileManager.default.contentsOfDirectory(at: backupDirectory, includingPropertiesForKeys: nil)
-                .first { $0.pathExtension == "json" }
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: home.appendingPathComponent(".topside/backups").path
+            )
         )
-        let backup = try JSONDecoder().decode(
-            SharedConfigurationBackupFixture.self,
-            from: Data(contentsOf: backupURL)
-        )
-        XCTAssertEqual(backup.originalPath, link.path)
-        XCTAssertEqual(backup.contents, original)
     }
 
     func testTargetedUninstallSubtractsEveryOwnedCommandAndPreservesUserChanges() throws {
@@ -629,8 +622,8 @@ final class LifecycleHookInstallerTests: XCTestCase {
 
     func testInstallUpdateUninstallAndReinstallAllProviders() throws {
         let installer = makeInstaller()
-        try installer.install()
-        try installer.install()
+        try installer.install(agents: LifecycleHookInstaller.supportedAgents)
+        try installer.install(agents: LifecycleHookInstaller.supportedAgents)
 
         XCTAssertEqual(installer.uninstall(agents: [.claude]).map(\.outcome), [.removed])
         XCTAssertFalse(installer.hasIntegration(for: .claude))
@@ -640,9 +633,9 @@ final class LifecycleHookInstallerTests: XCTestCase {
         let remaining: [AgentHarness] = [.codex, .cursor, .opencode, .pi]
         XCTAssertEqual(installer.uninstall(agents: remaining).map(\.outcome), Array(repeating: .removed, count: 4))
         XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".topside/bin/topside-hook").path))
-        XCTAssertEqual(installer.uninstall().map(\.outcome), Array(repeating: .notInstalled, count: 5))
+        XCTAssertEqual(installer.uninstall(agents: LifecycleHookInstaller.supportedAgents).map(\.outcome), Array(repeating: .notInstalled, count: 5))
 
-        try installer.install()
+        try installer.install(agents: LifecycleHookInstaller.supportedAgents)
         for agent in LifecycleHookInstaller.supportedAgents {
             XCTAssertEqual(installer.readiness(for: agent), .configured)
         }
@@ -663,7 +656,7 @@ final class LifecycleHookInstallerTests: XCTestCase {
 
     func testUninstallPreservesAndReportsUnownedOrMalformedFiles() throws {
         let installer = makeInstaller()
-        try installer.install()
+        try installer.install(agents: LifecycleHookInstaller.supportedAgents)
         let bridge = home.appendingPathComponent(".topside/bin/topside-hook")
         let pi = home.appendingPathComponent(".pi/agent/extensions/topside.ts")
         let openCode = home.appendingPathComponent(".config/opencode/plugins/topside.js")
@@ -675,7 +668,7 @@ final class LifecycleHookInstallerTests: XCTestCase {
         try unownedOpenCode.write(to: openCode, atomically: true, encoding: .utf8)
         try malformedCodex.write(to: codex, options: .atomic)
 
-        let results = installer.uninstall()
+        let results = installer.uninstall(agents: LifecycleHookInstaller.supportedAgents)
         XCTAssertEqual(results.count, 5)
         XCTAssertEqual(results.first(where: { $0.agent == .claude })?.outcome, .removed)
         XCTAssertEqual(results.first(where: { $0.agent == .cursor })?.outcome, .removed)
@@ -920,13 +913,7 @@ final class LifecycleHookInstallerTests: XCTestCase {
     }
 }
 
-private struct SharedConfigurationBackupFixture: Decodable {
-    let provider: String
-    let originalPath: String
-    let contents: Data
-}
-
-private final class BackupMutationFileManager: FileManager {
+private final class ConfigurationMutationFileManager: FileManager {
     private let configurationURL: URL
     private let replacement: Data
     private var didMutate = false
@@ -937,9 +924,17 @@ private final class BackupMutationFileManager: FileManager {
         super.init()
     }
 
-    override func setAttributes(_ attributes: [FileAttributeKey: Any], ofItemAtPath path: String) throws {
-        try super.setAttributes(attributes, ofItemAtPath: path)
-        if !didMutate, path.contains("/.topside/backups/live-status") {
+    override func createDirectory(
+        at url: URL,
+        withIntermediateDirectories createIntermediates: Bool,
+        attributes: [FileAttributeKey: Any]? = nil
+    ) throws {
+        try super.createDirectory(
+            at: url,
+            withIntermediateDirectories: createIntermediates,
+            attributes: attributes
+        )
+        if !didMutate, url.standardizedFileURL == configurationURL.deletingLastPathComponent().standardizedFileURL {
             didMutate = true
             try replacement.write(to: configurationURL, options: .atomic)
         }

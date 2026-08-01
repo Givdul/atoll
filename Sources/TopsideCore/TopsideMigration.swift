@@ -13,8 +13,7 @@ public enum TopsideMigration {
         "trial-entitlement-v1.json"
     ]
     private static let directories = [
-        "lifecycle-events",
-        "backups"
+        "lifecycle-events"
     ]
 
     /// Migrates known legacy state and defaults exactly once. Existing Topside
