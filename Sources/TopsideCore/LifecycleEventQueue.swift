@@ -20,7 +20,7 @@ public struct QueuedLifecycleEvent: Sendable {
 /// A durable handoff for hook events emitted while the menu-bar app is not running.
 public struct LifecycleEventQueue: Sendable {
     public static let maximumPendingEvents = 256
-    private static let overflowLockWaitNanoseconds: UInt64 = 350_000_000
+    private static let overflowLockWaitNanoseconds: UInt64 = 5_000_000_000
 
     private let rootDirectory: URL
     private let directory: URL
@@ -65,11 +65,7 @@ public struct LifecycleEventQueue: Sendable {
             }
 
             let files = queuedFiles()
-            guard files.count > Self.maximumPendingEvents else {
-                return files.contains(file) ? receipt : nil
-            }
-            try? FileManager.default.removeItem(at: file)
-            return nil
+            return files.contains(file) ? receipt : nil
         } catch {
             return nil
         }
