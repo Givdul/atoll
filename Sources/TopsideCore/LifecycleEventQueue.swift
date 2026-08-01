@@ -20,7 +20,7 @@ public struct QueuedLifecycleEvent: Sendable {
 /// A durable handoff for hook events emitted while the menu-bar app is not running.
 public struct LifecycleEventQueue: Sendable {
     public static let maximumPendingEvents = 256
-    private static let overflowLockWaitNanoseconds: UInt64 = 350_000_000
+    private static let overflowLockWaitNanoseconds: UInt64 = 750_000_000
 
     private let rootDirectory: URL
     private let directory: URL
@@ -46,30 +46,30 @@ public struct LifecycleEventQueue: Sendable {
                 return receipt
             }
 
-            for attempt in 0..<2 {
-                do {
-                    try withOverflowLock {
-                        try removeEventsBeyondCap(preserving: file)
-                    }
-                    return FileManager.default.fileExists(atPath: file.path) ? receipt : nil
-                } catch let error as POSIXError
-                    where error.code == .EWOULDBLOCK && attempt == 0 {
-                    let files = queuedFiles()
-                    if files.count <= Self.maximumPendingEvents {
-                        return files.contains(file) ? receipt : nil
-                    }
-                } catch {
-                    try? FileManager.default.removeItem(at: file)
-                    return nil
+            do {
+                try withOverflowLock {
+                    try removeEventsBeyondCap(preserving: file)
                 }
-            }
+                return FileManager.default.fileExists(atPath: file.path) ? receipt : nil
+            } catch let error as POSIXError where error.code == .EWOULDBLOCK {
+                let files = queuedFiles()
+                guard files.count > Self.maximumPendingEvents else {
+                    return files.contains(file) ? receipt : nil
+                }
+                guard files.count == Self.maximumPendingEvents + 1 else {
+                    return FileManager.default.fileExists(atPath: file.path) ? receipt : nil
+                }
 
-            let files = queuedFiles()
-            guard files.count > Self.maximumPendingEvents else {
-                return files.contains(file) ? receipt : nil
+                try? FileManager.default.removeItem(at: file)
+                if queuedFiles().count < Self.maximumPendingEvents {
+                    try? PrivateStorage.writeAtomically(Data(line.utf8), to: file)
+                    return FileManager.default.fileExists(atPath: file.path) ? receipt : nil
+                }
+                return nil
+            } catch {
+                try? FileManager.default.removeItem(at: file)
+                return nil
             }
-            try? FileManager.default.removeItem(at: file)
-            return nil
         } catch {
             return nil
         }
