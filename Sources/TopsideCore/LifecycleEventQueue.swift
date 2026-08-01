@@ -56,7 +56,15 @@ public struct LifecycleEventQueue: Sendable {
                 guard files.count > Self.maximumPendingEvents else {
                     return files.contains(file) ? receipt : nil
                 }
+                guard files.count == Self.maximumPendingEvents + 1 else {
+                    return FileManager.default.fileExists(atPath: file.path) ? receipt : nil
+                }
+
                 try? FileManager.default.removeItem(at: file)
+                if queuedFiles().count < Self.maximumPendingEvents {
+                    try? PrivateStorage.writeAtomically(Data(line.utf8), to: file)
+                    return FileManager.default.fileExists(atPath: file.path) ? receipt : nil
+                }
                 return nil
             } catch {
                 try? FileManager.default.removeItem(at: file)
