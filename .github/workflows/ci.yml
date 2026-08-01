@@ -12,7 +12,7 @@ permissions:
 jobs:
   swift-tests-and-lifecycle-queue-stress:
     name: Swift tests and lifecycle queue stress
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 20
 
     steps:
