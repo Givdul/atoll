@@ -481,6 +481,20 @@ final class TopsideEntitlementTests: XCTestCase {
     }
 
     @MainActor
+    func testMaintenanceDeadlineUsesObservationScheduleBeforeTrialExpiry() async {
+        let controller = TopsideEntitlementController(
+            store: makeStore(),
+            configuration: nil
+        )
+        _ = await controller.start(at: start)
+
+        XCTAssertEqual(
+            controller.nextMaintenanceDate(at: start),
+            start.addingTimeInterval(60)
+        )
+    }
+
+    @MainActor
     func testValidationMutationGateRejectsOverlappingLicenseEntry() async throws {
         let configuration = try XCTUnwrap(configuration())
         let sessionConfiguration = URLSessionConfiguration.ephemeral

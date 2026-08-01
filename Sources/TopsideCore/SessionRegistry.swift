@@ -296,6 +296,18 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         return sessionsLocked(now: now)
     }
 
+    public func nextVisibleExpiry(after now: Date = Date()) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return records.values
+            .map { record in
+                let ttl = record.state.isTerminal ? terminalTTL : activeTTL
+                return (record.observedAt ?? record.updatedAt).addingTimeInterval(ttl)
+            }
+            .filter { $0 > now }
+            .min()
+    }
+
     private func sessionsLocked(now: Date) -> [AgentSession] {
         records.values
         .filter { record in

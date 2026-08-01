@@ -1024,6 +1024,43 @@ final class LifecycleEventTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: legacyFile.path))
     }
 
+    func testRegistryReportsNearestVisibleExpiry() throws {
+        let registry = LifecycleSessionRegistry(
+            fileURL: directory.appendingPathComponent("deadline-registry.json"),
+            activeTTL: 60,
+            terminalTTL: 5
+        )
+        let now = Date(timeIntervalSince1970: 20_000)
+        XCTAssertNotNil(registry.ingestPersisting(
+            LifecycleEvent(
+                sessionID: "running",
+                harness: .codex,
+                kind: .started,
+                timestamp: now
+            ),
+            now: now
+        ))
+        XCTAssertNotNil(registry.ingestPersisting(
+            LifecycleEvent(
+                sessionID: "done",
+                harness: .claude,
+                kind: .finished,
+                timestamp: now.addingTimeInterval(1)
+            ),
+            now: now.addingTimeInterval(1)
+        ))
+
+        XCTAssertEqual(
+            registry.nextVisibleExpiry(after: now),
+            now.addingTimeInterval(6)
+        )
+        XCTAssertEqual(
+            registry.nextVisibleExpiry(after: now.addingTimeInterval(6)),
+            now.addingTimeInterval(60)
+        )
+        XCTAssertNil(registry.nextVisibleExpiry(after: now.addingTimeInterval(60)))
+    }
+
     func testDeliveryIdentityLedgerHasExplicitSizeAndTimeBounds() throws {
         let store = directory.appendingPathComponent("registry.json")
         let registry = LifecycleSessionRegistry(fileURL: store, activeTTL: 60, terminalTTL: 5)

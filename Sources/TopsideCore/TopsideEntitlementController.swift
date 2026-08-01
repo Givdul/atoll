@@ -30,15 +30,15 @@ public final class TopsideEntitlementController {
         defer { endMutation() }
         do {
             var loaded = try await store.loadOrCreateTrialBounded(at: now)
-            let previousLastSeenAt = loaded.lastSeenAt
+            let persistedLastSeenAt = loaded.lastSeenAt
             loaded.observe(now)
             record = loaded
-            lastSavedAt = loaded.lastSeenAt
+            lastSavedAt = persistedLastSeenAt
             message = nil
             canReplaceMalformedRecord = false
-            if loaded.lastSeenAt != previousLastSeenAt {
+            if loaded.lastSeenAt != persistedLastSeenAt {
                 do {
-                    try await store.saveBounded(loaded)
+                    try await persist(loaded, at: now, message: nil)
                 } catch {
                     message = error.localizedDescription
                 }
@@ -52,11 +52,7 @@ public final class TopsideEntitlementController {
     }
 
     public func observe(_ now: Date = Date()) -> TopsideEntitlementStatus {
-        guard !mutationInProgress else { return status(at: now) }
-        guard var record else {
-            return status(at: now)
-        }
-
+        guard !mutationInProgress, var record else { return status(at: now) }
         let previous = record.status(at: now)
         record.observe(now)
         self.record = record
@@ -64,9 +60,7 @@ public final class TopsideEntitlementController {
         let shouldSave = lastSavedAt.map {
             now.timeIntervalSince($0) >= Self.observationWriteInterval
         } ?? true
-
         if shouldSave || previous != current {
-            lastSavedAt = now
             Task { [weak self] in
                 await self?.persistObservation(at: now)
             }
@@ -75,24 +69,37 @@ public final class TopsideEntitlementController {
     }
 
     public func shouldValidate(at now: Date = Date()) -> Bool {
-        guard !mutationInProgress,
-              let license = record?.license else { return false }
+        guard !mutationInProgress, let license = record?.license else { return false }
         return now.timeIntervalSince(
             max(license.validatedAt, license.lastValidationAttemptAt ?? .distantPast)
-        )
-            >= Self.validationInterval
+        ) >= Self.validationInterval
+    }
+
+    public func nextMaintenanceDate(at now: Date = Date()) -> Date? {
+        guard let record else { return nil }
+        var deadlines = [
+            (lastSavedAt ?? record.lastSeenAt)
+                .addingTimeInterval(Self.observationWriteInterval)
+        ]
+        if let license = record.license {
+            deadlines.append(
+                max(license.validatedAt, license.lastValidationAttemptAt ?? .distantPast)
+                    .addingTimeInterval(Self.validationInterval)
+            )
+        } else {
+            deadlines.append(
+                record.trialStartedAt.addingTimeInterval(TopsideEntitlementRecord.trialDuration)
+            )
+        }
+        return deadlines.min().map { max($0, now) }
     }
 
     public func enter(key: String, at now: Date = Date()) async throws -> TopsideEntitlementStatus {
-        guard beginMutation() else {
-            throw LicenseError.busy
-        }
+        guard beginMutation() else { throw LicenseError.busy }
         defer { endMutation() }
-        guard let configuration else {
-            throw LicenseError.notConfigured
-        }
+        guard let configuration else { throw LicenseError.notConfigured }
         let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard var record = record ?? (canReplaceMalformedRecord
+        guard var proposed = record ?? (canReplaceMalformedRecord
             ? TopsideEntitlementRecord(
                 trialStartedAt: now.addingTimeInterval(-TopsideEntitlementRecord.trialDuration),
                 lastSeenAt: now
@@ -101,52 +108,45 @@ public final class TopsideEntitlementController {
             throw LicenseError.storageUnavailable
         }
 
-        if let existing = record.license {
-            guard existing.key == key else {
-                throw LicenseError.differentKey
-            }
+        if let existing = proposed.license {
+            guard existing.key == key else { throw LicenseError.differentKey }
             do {
-                record.license = try await client.validate(
+                proposed.license = try await client.validate(
                     key: existing.key,
                     configuration: configuration,
                     now: now
                 )
             } catch let error as PolarLicenseClient.Error where error.isDefinitive {
-                record.license = nil
-                record.observe(now)
-                try await store.saveBounded(record)
-                self.record = record
-                lastSavedAt = now
-                message = error.localizedDescription
+                proposed.license = nil
+                proposed.observe(now)
+                try await persist(proposed, at: now, message: error.localizedDescription)
                 throw error
             } catch let error as PolarLicenseClient.Error {
-                record.license?.lastValidationAttemptAt = now
-                try await store.saveBounded(record)
-                self.record = record
-                lastSavedAt = now
-                message = error.localizedDescription
+                proposed.license?.lastValidationAttemptAt = now
+                try await persist(proposed, at: now, message: error.localizedDescription)
                 throw error
             }
         } else {
-            record.license = try await client.validate(
+            proposed.license = try await client.validate(
                 key: key,
                 configuration: configuration,
                 now: now
             )
         }
-        record.observe(now)
-        try await store.saveBounded(record)
-        self.record = record
-        lastSavedAt = now
-        message = nil
-        canReplaceMalformedRecord = false
+        proposed.observe(now)
+        try await persist(
+            proposed,
+            at: now,
+            message: nil,
+            clearsMalformedRecord: true
+        )
         return status(at: now)
     }
 
     public func validate(at now: Date = Date()) async -> TopsideEntitlementStatus {
         guard beginMutation() else { return status(at: now) }
         defer { endMutation() }
-        guard let configuration, var record, let license = record.license else {
+        guard let configuration, var proposed = record, let license = proposed.license else {
             if record?.license != nil, configuration == nil {
                 message = LicenseError.notConfigured.localizedDescription
             }
@@ -154,40 +154,25 @@ public final class TopsideEntitlementController {
         }
 
         do {
-            record.license = try await client.validate(
+            proposed.license = try await client.validate(
                 key: license.key,
                 configuration: configuration,
                 now: now
             )
-            record.observe(now)
-            try await store.saveBounded(record)
-            self.record = record
-            lastSavedAt = now
-            message = nil
+            proposed.observe(now)
+            try await persist(proposed, at: now, message: nil)
         } catch let error as PolarLicenseClient.Error {
             if error.isDefinitive {
-                record.license = nil
-                record.observe(now)
-                do {
-                    try await store.saveBounded(record)
-                    self.record = record
-                    lastSavedAt = now
-                } catch {
-                    message = error.localizedDescription
-                    return status(at: now)
-                }
+                proposed.license = nil
+                proposed.observe(now)
             } else {
-                record.license?.lastValidationAttemptAt = now
-                do {
-                    try await store.saveBounded(record)
-                    self.record = record
-                    lastSavedAt = now
-                } catch {
-                    message = error.localizedDescription
-                    return status(at: now)
-                }
+                proposed.license?.lastValidationAttemptAt = now
             }
-            message = error.localizedDescription
+            do {
+                try await persist(proposed, at: now, message: error.localizedDescription)
+            } catch {
+                message = error.localizedDescription
+            }
         } catch {
             message = error.localizedDescription
         }
@@ -197,11 +182,10 @@ public final class TopsideEntitlementController {
     public func persistObservation(at now: Date = Date()) async {
         guard beginMutation() else { return }
         defer { endMutation() }
-        guard var record else { return }
-        record.observe(now)
-        self.record = record
+        guard var proposed = record else { return }
+        proposed.observe(now)
         do {
-            try await store.saveBounded(record)
+            try await persist(proposed, at: now, message: message)
         } catch {
             message = error.localizedDescription
         }
@@ -209,6 +193,21 @@ public final class TopsideEntitlementController {
 
     public var guidance: String? {
         message
+    }
+
+    private func persist(
+        _ proposed: TopsideEntitlementRecord,
+        at now: Date,
+        message: String?,
+        clearsMalformedRecord: Bool = false
+    ) async throws {
+        try await store.saveBounded(proposed)
+        record = proposed
+        lastSavedAt = now
+        self.message = message
+        if clearsMalformedRecord {
+            canReplaceMalformedRecord = false
+        }
     }
 
     private func status(at now: Date) -> TopsideEntitlementStatus {
