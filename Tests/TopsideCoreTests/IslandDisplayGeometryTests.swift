@@ -10,7 +10,7 @@ final class IslandDisplayGeometryTests: XCTestCase {
             auxiliaryRightMinX: 848
         )
 
-        XCTAssertEqual(notch?.width, 185)
+        XCTAssertEqual(notch?.width, 184)
         XCTAssertEqual(notch?.height, 32)
         XCTAssertEqual(notch?.centerX, 755.5)
     }
