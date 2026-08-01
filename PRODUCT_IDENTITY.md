@@ -10,10 +10,14 @@ Checked 2026-07-26.
 - Release archive: `Topside.zip`
 - App-owned state: `~/.topside`
 - Managed bridge: `~/.topside/bin/topside-hook`
+- Product page: `https://apps.givdul.com/topside`
+- Distribution: direct from Givdul
 - Support: [Givdul/atoll issues](https://github.com/Givdul/atoll/issues)
 - Updates: Sparkle metadata in `Topside.app`; release feeds must publish `Topside.zip`
 
-The source repository keeps its existing URL so current issues and links do not break. The shipped product, update artifact, bundle, process, resources, state, and managed integrations use Topside.
+The source repository keeps its existing URL so current issues and links do not break. The shipped product, update artifact, bundle, process, resources, state, and managed integrations use Topside. The external catalogue's canonical route is `/topside`; the former `/atoll` route should redirect there where the host supports redirects.
+
+The product mark is the shipped separated-T glyph: one wide upper capsule with two shorter centered capsules below it. It represents the Mac's top edge and agent-status rows without depicting a literal notch.
 
 ## Basic conflict checks
 
@@ -27,7 +31,7 @@ These are product-name due-diligence checks, not a clearance opinion. Search ind
 
 ## Legacy migration
 
-Topside recognizes **Skerry** as its immediate predecessor and **Atoll** as the older beta identity. It migrates known app-owned settings, sessions, runtime evidence, queued events, recovery backups, and ad-hoc trial state into `~/.topside` using per-item precedence: existing Topside state, then `~/.skerry`, then `~/.atoll`. The same precedence is applied per defaults key across `com.givdul.topside`, `com.givdul.skerry`, and `dev.atoll.Atoll`.
+Topside recognizes **Skerry** as its immediate predecessor and **Atoll** as the older beta identity. It migrates known app-owned settings, sessions, runtime evidence, queued events, and ad-hoc trial state into `~/.topside` using per-item precedence: existing Topside state, then `~/.skerry`, then `~/.atoll`. The same precedence is applied per defaults key across `com.givdul.topside`, `com.givdul.skerry`, and `dev.atoll.Atoll`.
 
 The migration never copies sockets, command bridges, locks, or old completion markers, and it leaves both legacy trees intact for rollback. The private marker `~/.topside/.legacy-identity-migration-v1-complete` is written only after state and defaults migration both succeed. The high-frequency lifecycle-event CLI path does not run migration, preventing acknowledged legacy queue events from being re-seeded.
 

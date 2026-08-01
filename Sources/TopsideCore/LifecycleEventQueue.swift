@@ -176,9 +176,7 @@ public struct LifecycleEventQueue: Sendable {
     private func removeEventsBeyondCap(preserving retainedFile: URL? = nil) throws {
         var files = queuedFiles()
         while files.count > Self.maximumPendingEvents {
-            guard let index = files.firstIndex(where: { $0 != retainedFile }) else {
-                throw POSIXError(.ENOSPC)
-            }
+            let index = files[0] == retainedFile ? 1 : 0
             let oldest = files.remove(at: index)
             do {
                 try FileManager.default.removeItem(at: oldest)

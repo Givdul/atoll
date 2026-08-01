@@ -30,7 +30,7 @@ Provider hook payloads may include prompts or other content on standard input. T
 
 On first launch, Topside offers setup only when it detects a supported agent that is not already configured. **Live Status Doctor…** in the menu always shows all five supported providers and checks agent detection, integration content, the private bridge, managed-policy blocking where locally visible, the app socket, and the last valid event separately. `Ready` requires runtime evidence; a matching file alone is never enough.
 
-The doctor changes nothing until you select a provider-specific **Repair** action. Repair rewrites only missing, stale, or partial Topside-owned content, reruns diagnostics in the same panel, and preserves malformed, disabled, project-level, policy-managed, or unowned configuration.
+The doctor changes nothing until you select a provider-specific **Repair** or **Remove** action. Those actions modify the selected provider's real user-level configuration; use isolated homes for automated checks. Repair rewrites only missing, stale, or partial Topside-owned content, reruns diagnostics in the same panel, and preserves malformed, disabled, project-level, policy-managed, or unowned configuration.
 
 The setup installs user-level hooks for:
 
@@ -53,7 +53,16 @@ printf '%s' '{"session_id":"session-123","cwd":"/path/to/project"}' \
   | /Applications/Topside.app/Contents/MacOS/Topside --lifecycle-event codex started
 ```
 
-Use `finished`, `failed`, `cancelled`, `needsInput`, or `needsPermission` as the final argument for the corresponding lifecycle transition.
+Use `finished`, `failed`, `cancelled`, `needsInput`, or `needsPermission` as the final argument for the corresponding lifecycle transition. For an isolated queue smoke test that cannot touch normal Topside state or provider configuration:
+
+```sh
+TEST_HOME="$(mktemp -d)"
+printf '%s' '{"session_id":"isolated","cwd":"/tmp/project"}' \
+  | CFFIXED_USER_HOME="$TEST_HOME" .build/debug/Topside \
+      --lifecycle-event codex started
+find "$TEST_HOME/.topside/lifecycle-events" -name '*.json' -type f
+rm -rf "$TEST_HOME"
+```
 
 ## Build
 
@@ -73,7 +82,4 @@ Build and install the universal local app:
 
 The release script builds and verifies a universal `arm64` + `x86_64` bundle, signs embedded Sparkle components inside-out, and installs `/Applications/Topside.app` with rollback on failure. The default signature is ad hoc for local builds. Distribution requires a Developer ID identity plus the external notarization and Sparkle feed credentials described by the script's environment variables.
 
-Release operators should follow [Releasing Topside](RELEASING.md). Buyers can
-read the [privacy policy](PRIVACY.md), [license and sale terms](TERMS.md),
-[support tracker](https://github.com/Givdul/atoll/issues), and bundled
-third-party notices from Topside's menu.
+Release operators should follow [Releasing Topside](RELEASING.md). The repository's original source is proprietary under the [source code notice](LICENSE); product purchases and use of distributed builds are governed separately by the [license and sale terms](TERMS.md), while bundled dependencies retain their own licenses. Buyers can also read the [privacy policy](PRIVACY.md), [support tracker](https://github.com/Givdul/atoll/issues), and bundled third-party notices from Topside's menu.

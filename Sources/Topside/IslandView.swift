@@ -501,7 +501,7 @@ private struct SessionBubbleRow: View {
                     liquidGlassRowDecoration
                 }
                 .contentShape(rowShape)
-                .glassEffect(.regular.tint(appearance.glassTint), in: rowShape)
+                .glassEffect(.regular.tint(Color.black.opacity(0.96)), in: rowShape)
                 .glassEffectID(glassID, in: glassNamespace)
                 .overlay {
                     RowActivityBorder(
@@ -608,7 +608,7 @@ private struct SessionBubbleRow: View {
 
     private var liquidGlassRowDecoration: some View {
         rowShape
-            .fill(appearance.surfaceWash)
+            .fill(Color.black)
             .overlay {
                 rowShape
                     .fill(rowTintSweep)
@@ -620,9 +620,9 @@ private struct SessionBubbleRow: View {
                         .stroke(
                             LinearGradient(
                                 colors: [
-                                    appearance.borderAccent.opacity(0.98),
+                                    appearance.accent.opacity(0.98),
                                     .white.opacity(0.12),
-                                    appearance.borderAccent.opacity(0.72)
+                                    appearance.accent.opacity(0.72)
                                 ],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
@@ -663,7 +663,7 @@ private struct SessionBubbleRow: View {
 
     private var fallbackRowDecoration: some View {
         rowShape
-            .fill(appearance.surfaceWash)
+            .fill(Color.black)
             .overlay {
                 rowShape
                     .fill(rowTintSweep.opacity(0.66))
@@ -671,7 +671,7 @@ private struct SessionBubbleRow: View {
             .overlay {
                 if session.state != .running {
                     rowShape
-                        .stroke(appearance.borderAccent.opacity(0.78), lineWidth: 1.1 * metrics.scale)
+                        .stroke(appearance.accent.opacity(0.78), lineWidth: 1.1 * metrics.scale)
                 }
             }
             .overlay {
@@ -686,7 +686,7 @@ private struct SessionBubbleRow: View {
         LinearGradient(
             colors: [
                 .white.opacity(0.015),
-                appearance.borderAccent.opacity(0.05),
+                appearance.accent.opacity(0.05),
                 .white.opacity(0.01)
             ],
             startPoint: .leading,
@@ -938,80 +938,56 @@ private struct RowActivityBorder: View {
 }
 
 private struct SessionRowAppearance {
-    let surfaceWash: Color
     let accent: Color
-    let borderAccent: Color
     let iconGlyph: Color
     let titleOpacity: Double
     let iconScale: CGFloat
     let titleWeight: Font.Weight
-    let glassTint: Color
 
     init(state: SessionState) {
         switch state {
         case .running:
-            surfaceWash = .black
             accent = SessionStateColor.working
-            borderAccent = SessionStateColor.working
             iconGlyph = .white
             titleOpacity = 0.95
             iconScale = 1
             titleWeight = .semibold
-            glassTint = .black.opacity(0.96)
         case .done:
-            surfaceWash = .black
             accent = SessionStateColor.done
-            borderAccent = SessionStateColor.done
             iconGlyph = accent
             titleOpacity = 0.78
             iconScale = 0.94
             titleWeight = .medium
-            glassTint = .black.opacity(0.96)
         case .failed:
-            surfaceWash = .black
             accent = SessionStateColor.failed
-            borderAccent = SessionStateColor.failed
             iconGlyph = accent
             titleOpacity = 0.88
             iconScale = 0.94
             titleWeight = .medium
-            glassTint = .black.opacity(0.96)
         case .cancelled:
-            surfaceWash = .black
             accent = SessionStateColor.cancelled
-            borderAccent = SessionStateColor.cancelled
             iconGlyph = accent
             titleOpacity = 0.72
             iconScale = 0.94
             titleWeight = .medium
-            glassTint = .black.opacity(0.96)
         case .waitingForInput:
-            surfaceWash = .black
             accent = SessionStateColor.question
-            borderAccent = SessionStateColor.question
             iconGlyph = accent
             titleOpacity = 1
             iconScale = 1.02
             titleWeight = .bold
-            glassTint = .black.opacity(0.96)
         case .waitingForPermission:
-            surfaceWash = .black
             accent = SessionStateColor.permission
-            borderAccent = SessionStateColor.permission
             iconGlyph = accent
             titleOpacity = 1
             iconScale = 1.02
             titleWeight = .bold
-            glassTint = .black.opacity(0.96)
         case .unknown:
-            surfaceWash = .black
             accent = .white.opacity(0.52)
-            borderAccent = .white.opacity(0.52)
             iconGlyph = .white.opacity(0.72)
             titleOpacity = 0.82
             iconScale = 0.96
             titleWeight = .medium
-            glassTint = .black.opacity(0.96)
         }
     }
 }
