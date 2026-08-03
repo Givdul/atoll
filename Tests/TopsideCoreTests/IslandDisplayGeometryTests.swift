@@ -15,6 +15,15 @@ final class IslandDisplayGeometryTests: XCTestCase {
         XCTAssertEqual(notch?.centerX, 755.5)
     }
 
+    func testFallbackDisplayGeometryIsCenteredAndStable() {
+        let geometry = IslandDisplayGeometry(fallbackFrame: CGRect(x: 100, y: 20, width: 500, height: 300))
+
+        XCTAssertEqual(geometry.width, 189)
+        XCTAssertEqual(geometry.height, 35)
+        XCTAssertEqual(geometry.centerX, 350)
+        XCTAssertEqual(geometry.scaleHeight, 32)
+    }
+
     func testPhysicalNotchRejectsMenuBarOnlyGeometry() {
         XCTAssertNil(PhysicalNotchGeometry(
             safeAreaTop: 0,

@@ -13,10 +13,10 @@ final class IslandWindowController {
     private struct TargetDisplay: Equatable {
         let id: UInt32?
         let frame: NSRect
-        let notch: PhysicalNotchGeometry?
+        let geometry: IslandDisplayGeometry
 
-        var metrics: IslandMetrics? {
-            notch.map { IslandMetrics(notch: $0) }
+        var metrics: IslandMetrics {
+            IslandMetrics(display: geometry)
         }
     }
 
@@ -75,7 +75,7 @@ final class IslandWindowController {
 
     func syncVisibility(mouseLocation: NSPoint = NSEvent.mouseLocation) {
         updateTargetDisplay(for: mouseLocation)
-        let canShowIsland = state.settings.enabled && targetDisplay?.metrics != nil
+        let canShowIsland = state.settings.enabled && targetDisplay != nil
         if state.isIslandAvailable != canShowIsland {
             state.isIslandAvailable = canShowIsland
             availabilityDidChange()
@@ -121,7 +121,8 @@ final class IslandWindowController {
             return TargetDisplay(
                 id: ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value,
                 frame: $0.frame,
-                notch: notch
+                geometry: notch.map { IslandDisplayGeometry(notch: $0) }
+                    ?? IslandDisplayGeometry(fallbackFrame: $0.frame)
             )
         }
         guard nextDisplay != targetDisplay else {
@@ -134,10 +135,10 @@ final class IslandWindowController {
         hostingView?.rootView = IslandView(state: state, metrics: nextDisplay?.metrics)
         hostingView?.frame = NSRect(origin: .zero, size: hostSize)
 
-        if let frame = nextDisplay?.frame, let notch = nextDisplay?.notch {
+        if let display = nextDisplay {
             let origin = NSPoint(
-                x: notch.centerX - hostSize.width / 2,
-                y: frame.maxY - hostSize.height
+                x: display.geometry.centerX - hostSize.width / 2,
+                y: display.frame.maxY - hostSize.height
             )
             window.setFrame(NSRect(origin: origin, size: hostSize), display: true)
         }

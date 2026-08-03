@@ -59,7 +59,7 @@ Panel/window:
 
 Default state:
 
-- Shows a black notch-shaped activity border at the top center only when the target display has a physical notch and there is island content.
+- Shows a black notch-shaped activity border at the top center when there is island content. Physical-notch displays use native geometry; other displays use a centered `189x35` mock notch.
 - Running sessions tint the notch with an animated orange dot trail.
 - Waiting states tint the notch edge as a thick colored outline.
 
@@ -258,7 +258,7 @@ Status item:
 - Variable length.
 - Image only by default.
 - When attention count is positive, title becomes the count and icon is tinted input-blue or permission-red.
-- When the target display has no physical notch, running work tints the icon orange; no replacement floating surface is drawn.
+- When the target display has no physical notch, running work tints the icon orange and the island uses the centered mock notch.
 
 ## Functionality
 

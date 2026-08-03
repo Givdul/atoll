@@ -23,6 +23,27 @@ public struct PhysicalNotchGeometry: Equatable, Sendable {
     }
 }
 
+public struct IslandDisplayGeometry: Equatable, Sendable {
+    public let width: CGFloat
+    public let height: CGFloat
+    public let centerX: CGFloat
+    public let scaleHeight: CGFloat
+
+    public init(notch: PhysicalNotchGeometry) {
+        width = notch.width + 4
+        height = notch.height + 3
+        centerX = notch.centerX
+        scaleHeight = notch.height
+    }
+
+    public init(fallbackFrame: CGRect) {
+        width = 189
+        height = 35
+        centerX = fallbackFrame.midX
+        scaleHeight = 32
+    }
+}
+
 public enum ScreenTargetResolver {
     public static func index(
         screenMode: String,
