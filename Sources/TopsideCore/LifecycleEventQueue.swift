@@ -100,10 +100,13 @@ public struct LifecycleEventQueue: Sendable {
                 guard let line = try? String(contentsOf: file, encoding: .utf8) else {
                     return nil
                 }
-                guard let event = LifecycleEvent.parse(jsonLine: line) else {
+                guard var event = LifecycleEvent.parse(jsonLine: line) else {
                     try? FileManager.default.removeItem(at: file)
                     return nil
                 }
+                // Task labels are live-only. A hand-written or older queue
+                // record must not revive presentation text after recovery.
+                event.taskLabel = nil
                 guard LifecycleHookInstaller.supportedAgents.contains(event.harness) else {
                     try? FileManager.default.removeItem(at: file)
                     return nil

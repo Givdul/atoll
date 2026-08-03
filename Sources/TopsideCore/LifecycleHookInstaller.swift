@@ -595,20 +595,32 @@ public struct LifecycleHookInstaller {
         import { spawn } from "node:child_process";
 
         const bridge = \(javaScriptString(bridgeURL.path));
-        function emit(kind, ctx) {
+        function emit(kind, ctx, prompt) {
           try {
             const child = spawn(bridge, ["pi", kind], { stdio: ["pipe", "ignore", "ignore"] });
             child.on("error", () => {});
             child.stdin.on("error", () => {});
-            child.stdin.end(JSON.stringify({ session_id: ctx.sessionManager.getSessionId(), cwd: ctx.cwd }));
+            const payload = {
+              session_id: ctx.sessionManager.getSessionId(),
+              cwd: ctx.cwd,
+              ...(typeof prompt === "string" && prompt.length > 0 ? { prompt } : {})
+            };
+            child.stdin.end(JSON.stringify(payload));
           } catch {}
         }
 
         export default function (pi) {
           let outcome = "finished";
+          let latestPrompt;
+          let promptSessionID;
+          const promptFor = ctx => promptSessionID === ctx.sessionManager.getSessionId() ? latestPrompt : undefined;
+          pi.on("before_agent_start", (event, ctx) => {
+            latestPrompt = typeof event.prompt === "string" ? event.prompt : undefined;
+            promptSessionID = ctx.sessionManager.getSessionId();
+          });
           pi.on("agent_start", (_event, ctx) => {
             outcome = "finished";
-            emit("started", ctx);
+            emit("started", ctx, promptFor(ctx));
           });
           pi.on("agent_end", event => {
             const stopReason = event.messages.findLast(message => message.role === "assistant")?.stopReason;
@@ -616,7 +628,11 @@ public struct LifecycleHookInstaller {
             else if (stopReason === "aborted") outcome = "cancelled";
             else outcome = "finished";
           });
-          pi.on("agent_settled", (_event, ctx) => emit(outcome, ctx));
+          pi.on("agent_settled", (_event, ctx) => {
+            emit(outcome, ctx, promptFor(ctx));
+            latestPrompt = undefined;
+            promptSessionID = undefined;
+          });
         }
         """
     }
@@ -627,10 +643,17 @@ public struct LifecycleHookInstaller {
         const bridge = \(javaScriptString(bridgeURL.path));
         export const TopsideLiveStatus = async ({ directory }) => {
           const terminalSessions = new Set();
+          const activeSessions = new Set();
+          const titles = new Map();
+          const prompts = new Map();
+          const userMessageIDs = new Set();
           const emit = (kind, sessionID) => {
             try {
               const child = Bun.spawn([bridge, "opencode", kind], { stdin: "pipe", stdout: "ignore", stderr: "ignore" });
-              child.stdin.write(JSON.stringify({ session_id: sessionID, cwd: directory }));
+              const payload = { session_id: sessionID, cwd: directory };
+              if (titles.get(sessionID)) payload.title = titles.get(sessionID);
+              if (prompts.get(sessionID)) payload.prompt = prompts.get(sessionID);
+              child.stdin.write(JSON.stringify(payload));
               child.stdin.end();
               child.exited.catch(() => {});
               child.unref();
@@ -639,34 +662,82 @@ public struct LifecycleHookInstaller {
           const finish = sessionID => {
             if (!sessionID || terminalSessions.has(sessionID)) return;
             terminalSessions.add(sessionID);
+            activeSessions.delete(sessionID);
             emit("finished", sessionID);
+            titles.delete(sessionID);
+            prompts.delete(sessionID);
           };
+          const sessionIDFor = event => event.properties?.sessionID
+            ?? event.properties?.session_id
+            ?? event.properties?.info?.sessionID
+            ?? event.properties?.info?.id;
+          const textFromParts = parts => Array.isArray(parts)
+            ? parts.filter(part => part.type === "text" && typeof part.text === "string").map(part => part.text).join(" ")
+            : undefined;
 
           return {
             event: async ({ event }) => {
-              const sessionID = event.properties?.sessionID ?? event.properties?.session_id;
+              const info = event.properties?.info;
+              const sessionID = sessionIDFor(event);
+              if (event.type === "session.created" || event.type === "session.updated") {
+                if (info?.id && typeof info.title === "string") titles.set(info.id, info.title);
+                if (sessionID && activeSessions.has(sessionID)) emit("started", sessionID);
+                return;
+              }
+              if (event.type === "message.updated") {
+                if (info?.role === "user" && info.id) {
+                  userMessageIDs.add(info.id);
+                  const prompt = textFromParts(info.parts) ?? info.prompt ?? info.text ?? info.content;
+                  if (typeof prompt === "string") prompts.set(sessionID, prompt);
+                  if (sessionID && activeSessions.has(sessionID)) emit("started", sessionID);
+                }
+                return;
+              }
+              if (event.type === "message.part.updated") {
+                const part = event.properties?.part;
+                if (part?.type === "text" && userMessageIDs.has(part.messageID) && typeof part.text === "string") {
+                  prompts.set(part.sessionID, part.text);
+                  if (activeSessions.has(part.sessionID)) emit("started", part.sessionID);
+                }
+                return;
+              }
               if (event.type === "permission.asked" || event.type === "permission.updated") {
-                if (sessionID && !terminalSessions.has(sessionID)) emit("needsPermission", sessionID);
+                if (sessionID && !terminalSessions.has(sessionID)) {
+                  activeSessions.add(sessionID);
+                  emit("needsPermission", sessionID);
+                }
                 return;
               }
               if (event.type === "permission.replied") {
-                if (sessionID && !terminalSessions.has(sessionID)) emit("started", sessionID);
+                if (sessionID && !terminalSessions.has(sessionID)) {
+                  activeSessions.add(sessionID);
+                  emit("started", sessionID);
+                }
                 return;
               }
               if (event.type === "question.asked") {
-                if (sessionID && !terminalSessions.has(sessionID)) emit("needsInput", sessionID);
+                if (sessionID && !terminalSessions.has(sessionID)) {
+                  activeSessions.add(sessionID);
+                  emit("needsInput", sessionID);
+                }
                 return;
               }
               if (event.type === "question.replied" || event.type === "question.rejected") {
-                if (sessionID && !terminalSessions.has(sessionID)) emit("started", sessionID);
+                if (sessionID && !terminalSessions.has(sessionID)) {
+                  activeSessions.add(sessionID);
+                  emit("started", sessionID);
+                }
                 return;
               }
               if (event.type === "session.error") {
                 const { error } = event.properties;
                 if (!sessionID) return;
                 terminalSessions.add(sessionID);
+                activeSessions.delete(sessionID);
                 const errorName = error?.name ?? error?.data?.name;
                 emit(errorName === "MessageAbortedError" ? "cancelled" : "failed", sessionID);
+                titles.delete(sessionID);
+                prompts.delete(sessionID);
                 return;
               }
               if (event.type === "session.idle") {
@@ -678,6 +749,7 @@ public struct LifecycleHookInstaller {
               if (!sessionID) return;
               if (status.type === "busy" || status.type === "retry") {
                 terminalSessions.delete(sessionID);
+                activeSessions.add(sessionID);
                 emit("started", sessionID);
               }
               if (status.type === "idle") finish(sessionID);

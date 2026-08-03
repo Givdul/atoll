@@ -180,7 +180,7 @@ struct IslandView: View {
         }
         .padding(.top, metrics.topGap)
         .animation(listRevealAnimation, value: state.islandHoverState)
-        .animation(rowAnimation, value: sessions.map { "\($0.id):\($0.state.rawValue)" })
+        .animation(rowAnimation, value: sessions.map { [$0.id, $0.state.rawValue, $0.taskLabel ?? ""].joined(separator: ":") })
     }
 
     private func rowListHeight(metrics: IslandMetrics, rowCount: Int, isVisible: Bool) -> CGFloat {
@@ -550,7 +550,7 @@ private struct SessionBubbleRow: View {
                 decoratedRow
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Open application for \(session.label)")
+            .accessibilityLabel(rowAccessibilityLabel)
         } else {
             decoratedRow
                 .allowsHitTesting(false)
@@ -628,11 +628,21 @@ private struct SessionBubbleRow: View {
             HStack(spacing: 9 * metrics.scale) {
                 iconWell
 
-                Text(session.label)
-                    .font(.system(size: metrics.titleFontSize, weight: appearance.titleWeight, design: .rounded))
-                    .foregroundStyle(titleForeground)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                VStack(alignment: .leading, spacing: -1 * metrics.scale) {
+                    Text(session.label)
+                        .font(.system(size: metrics.titleFontSize, weight: appearance.titleWeight, design: .rounded))
+                        .foregroundStyle(titleForeground)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
+                    if let taskLabel = session.taskLabel {
+                        Text(taskLabel)
+                            .font(.system(size: metrics.detailFontSize, weight: .medium, design: .rounded))
+                            .foregroundStyle(titleForeground.opacity(0.68))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, 1 * metrics.scale)
                     .padding(.trailing, statusSegmentWidth + 12 * metrics.scale)
@@ -766,6 +776,13 @@ private struct SessionBubbleRow: View {
 
     private var statusSegmentWidth: CGFloat {
         82 * metrics.scale
+    }
+
+    private var rowAccessibilityLabel: String {
+        guard let taskLabel = session.taskLabel else {
+            return "Open application for \(session.label)"
+        }
+        return "Open application for \(session.label), task \(taskLabel)"
     }
 
     private var titleForeground: Color {

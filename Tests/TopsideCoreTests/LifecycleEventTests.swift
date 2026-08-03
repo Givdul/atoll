@@ -68,6 +68,58 @@ final class LifecycleEventTests: XCTestCase {
         XCTAssertEqual(LifecycleEvent.parse(jsonLine: wire)?.kind, .failed)
     }
 
+    func testTaskLabelUsesProviderPrecedenceAndBoundedNormalization() throws {
+        let fixtures: [(AgentHarness, String, String)] = [
+            (.codex, #"{"session_id":"codex","prompt":"  fix   auth\n\tflow  "}"#, "fix auth flow"),
+            (.claude, #"{"session_id":"claude","prompt":"review  release"}"#, "review release"),
+            (.cursor, #"{"session_id":"cursor","title":"Cursor title","prompt":"ignored prompt"}"#, "Cursor title"),
+            (.opencode, #"{"session_id":"opencode","title":"OpenCode title","prompt":"ignored prompt"}"#, "OpenCode title"),
+            (.pi, #"{"session_id":"pi","prompt":"ship the fix"}"#, "ship the fix")
+        ]
+
+        for (harness, payload, expected) in fixtures {
+            let event = try XCTUnwrap(
+                LifecycleEvent.fromHookPayload(harness: harness, kind: .started, json: payload)
+            )
+            XCTAssertEqual(event.taskLabel, expected, harness.rawValue)
+        }
+
+        let fallback = try XCTUnwrap(
+            LifecycleEvent.fromHookPayload(
+                harness: .cursor,
+                kind: .started,
+                json: #"{"session_id":"cursor-fallback","prompt":"prompt fallback"}"#
+            )
+        )
+        XCTAssertEqual(fallback.taskLabel, "prompt fallback")
+
+        let long = String(repeating: "x", count: 80)
+        let bounded = try XCTUnwrap(
+            LifecycleEvent.fromHookPayload(
+                harness: .codex,
+                kind: .started,
+                json: #"{"session_id":"bounded","prompt":"\#(long)"}"#
+            )
+        )
+        XCTAssertEqual(bounded.taskLabel?.count, 48)
+        XCTAssertTrue(bounded.taskLabel?.hasSuffix("…") == true)
+    }
+
+    func testTaskLabelIsLiveSocketOnly() throws {
+        let event = LifecycleEvent(
+            sessionID: "live-only",
+            harness: .codex,
+            kind: .started,
+            taskLabel: "fresh task"
+        )
+        let canonical = try XCTUnwrap(event.jsonLine())
+        let live = try XCTUnwrap(event.socketLine())
+
+        XCTAssertFalse(canonical.contains("task_label"))
+        XCTAssertTrue(live.contains("task_label"))
+        XCTAssertEqual(LifecycleEvent.parse(jsonLine: live)?.taskLabel, "fresh task")
+    }
+
     func testHookPayloadUsesProviderFallbackForUnusableWorkingDirectories() throws {
         for workingDirectory in [nil, "", "/", "relative/project", "~"] as [String?] {
             var payload: [String: Any] = ["session_id": UUID().uuidString]
@@ -104,11 +156,42 @@ final class LifecycleEventTests: XCTestCase {
         let registryData = try XCTUnwrap(String(data: Data(contentsOf: store), encoding: .utf8))
 
         XCTAssertEqual(session.label, "Queue-Project")
+        XCTAssertEqual(session.taskLabel, sensitive)
+        XCTAssertNil(queue.pendingEvents().first?.event.taskLabel)
         for persisted in [queuedData, registryData] {
             XCTAssertFalse(persisted.contains(sensitive))
             XCTAssertFalse(persisted.contains(fullPath))
             XCTAssertTrue(persisted.contains("Queue-Project"))
         }
+
+        XCTAssertNil(LifecycleSessionRegistry(fileURL: store).sessions().first?.taskLabel)
+    }
+
+    func testTaskLabelUpdatesOnlyItsSessionAndDoesNotSurviveRecovery() throws {
+        let store = directory.appendingPathComponent("task-label-registry.json")
+        let now = Date(timeIntervalSince1970: 10_000)
+        let registry = LifecycleSessionRegistry(fileURL: store)
+
+        registry.ingest(
+            LifecycleEvent(sessionID: "one", harness: .codex, kind: .started, timestamp: now, taskLabel: "first task"),
+            now: now
+        )
+        registry.ingest(
+            LifecycleEvent(sessionID: "one", harness: .codex, kind: .started, timestamp: now.addingTimeInterval(1), taskLabel: "latest task"),
+            now: now.addingTimeInterval(1)
+        )
+        let sessions = registry.ingest(
+            LifecycleEvent(sessionID: "two", harness: .claude, kind: .started, timestamp: now.addingTimeInterval(2), taskLabel: "other task"),
+            now: now.addingTimeInterval(2)
+        )
+
+        XCTAssertEqual(sessions.first(where: { $0.id == "codex-one" })?.taskLabel, "latest task")
+        XCTAssertEqual(sessions.first(where: { $0.id == "claude-two" })?.taskLabel, "other task")
+
+        let persisted = try XCTUnwrap(String(data: Data(contentsOf: store), encoding: .utf8))
+        XCTAssertFalse(persisted.contains("latest task"))
+        XCTAssertFalse(persisted.contains("other task"))
+        XCTAssertNil(LifecycleSessionRegistry(fileURL: store).sessions(now: now.addingTimeInterval(2)).first?.taskLabel)
     }
 
     func testLegacyQueueRecordDecodesWithoutCopyingSensitiveContent() throws {

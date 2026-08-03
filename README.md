@@ -22,9 +22,9 @@ boundaries.
 
 ## Lifecycle privacy
 
-Topside retains only the agent provider, provider session ID, normalized state, provider and local ordering/delivery timestamps, a project-folder label (or `"<Provider> session"`), and the complete origin process-ID/bundle-ID pair used by click-to-return. Delivery identities are Topside-generated IDs or SHA-256 digests used for replay deduplication. Separately, the runtime doctor retains only each provider identity and its latest valid local event time; that evidence survives ordinary session expiry.
+Topside retains only the agent provider, provider session ID, normalized state, provider and local ordering/delivery timestamps, a project-folder label (or `"<Provider> session"`), and the complete origin process-ID/bundle-ID pair used by click-to-return. A bounded task label may appear in the live in-memory row only. Delivery identities are Topside-generated IDs or SHA-256 digests used for replay deduplication. Separately, the runtime doctor retains only each provider identity and its latest valid local event time; that evidence survives ordinary session expiry.
 
-Provider hook payloads may include prompts or other content on standard input. Topside discards that content while normalizing the event, so it never enters Topside's socket protocol, durable queue, registry, UI, logs, or uploads. This includes provider messages and reasons, responses, commands, transcripts, diffs, environment values, model identifiers, and full working-directory paths; the project label is derived locally from only the working directory's final component.
+Provider hook payloads may include prompts or other content on standard input. Topside normalizes only a short task label for the live socket and UI. Raw content never enters the canonical socket JSONL, durable queue, registry, logs, notifications, or uploads. Recovery restores project/state only and waits for a fresh live title or prompt. This includes provider messages and reasons, responses, commands, transcripts, diffs, environment values, model identifiers, and full working-directory paths; the project label is derived locally from only the working directory's final component.
 
 ## Native hook integrations
 
@@ -37,8 +37,8 @@ The setup installs user-level hooks for:
 - Codex: `UserPromptSubmit` and `Stop`
 - Claude Code: `UserPromptSubmit`, `Stop`, `StopFailure`, and typed permission/input notifications
 - Cursor Agent: `beforeSubmitPrompt` and `stop`
-- OpenCode: a global plugin observing session status/error plus current and legacy permission/question events
-- Pi 0.80.4 or newer: a global TypeScript extension using `agent_start`, `agent_end`, and `agent_settled`
+- OpenCode: a global plugin observing session status/error, session titles, latest user text, plus current and legacy permission/question events
+- Pi 0.80.4 or newer: a global TypeScript extension using `before_agent_start`, `agent_start`, `agent_end`, and `agent_settled`
 
 The installer preserves existing settings and hooks. It verifies the exact managed integration, bridge contents, and bridge permissions after writing, but that is static readiness rather than proof of runtime activation. Codex may still require `/hooks` review; extensions and plugins may need a reload or new session. Topside honors inherited custom user homes documented by Codex, Claude Code, OpenCode, and Pi, while leaving project and policy layers untouched.
 
