@@ -114,7 +114,7 @@ final class StatusMenuController {
         refresh.target = self
         menu.addItem(refresh)
 
-        let installHooks = NSMenuItem(title: "Live Status Doctor…", action: #selector(showLifecycleSetup(_:)), keyEquivalent: "")
+        let installHooks = NSMenuItem(title: "Provider Connections…", action: #selector(showLifecycleSetup(_:)), keyEquivalent: "")
         installHooks.target = self
         menu.addItem(installHooks)
 
@@ -153,7 +153,10 @@ final class StatusMenuController {
     }
 
     private var entitlementTitle: String {
-        switch state.entitlement {
+        if state.isDevelopmentBuild {
+            return "Development build — owner access"
+        }
+        return switch state.entitlement {
         case .activeTrial(let expiresAt, let currentTime):
             "Trial — \(Self.remainingTime(until: expiresAt, now: currentTime)) left"
         case .expired:

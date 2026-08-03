@@ -76,11 +76,11 @@ access. Licensed use remains local-first and validation is attempted at most
 daily.
 
 The release script writes the entitlement-storage mode into the signed
-`Info.plist`. Ad-hoc local builds are trial-only: they save the immutable trial
-start and maximum observed wall time in `~/.topside/trial-entitlement-v1.json`
-using a `0700` directory and `0600` file. Rebuilding or replacing `Topside.app`
-keeps that file. This mode refuses to read or save license material and never
-queries Keychain.
+`Info.plist`. Ad-hoc local builds are development builds with owner access: they
+may keep the immutable trial record in
+`~/.topside/trial-entitlement-v1.json` for diagnostics, but an expired local
+trial does not hide the island. They refuse to read or save license material and
+never query Keychain. Developer ID builds use the production license path.
 
 Developer ID builds use the macOS Keychain with
 `AfterFirstUnlockThisDeviceOnly` accessibility. They use the
@@ -90,10 +90,11 @@ ad-hoc trial state and production Developer ID entitlement state are separate.
 Proving persistence across a real stable-signing update remains part of release
 issue #9.
 
-The three-day boundary in either mode is derived from the immutable start, and
-the maximum observed wall time is saved so moving the clock backward expires
-rather than extends or freezes the trial. Keychain operations run off the app's
-main thread and stop waiting for a result after one second. At most one
+The three-day boundary is still derived from the immutable start for stored
+trial diagnostics, and the maximum observed wall time is saved so moving the
+clock backward expires rather than extends or freezes the trial. It does not
+gate an ad-hoc development build. Keychain operations run off the app's main
+thread and stop waiting for a result after one second. At most one
 uncancellable operation remains in flight; later work fails open until it
 finishes, so workers cannot accumulate or overwrite newer state.
 

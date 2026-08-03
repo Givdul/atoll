@@ -270,7 +270,7 @@ Lifecycle behavior:
 - A `1s` maintenance timer retries pending receipts and expires stale lifecycle state; it never scans agent transcripts, processes, or lock files.
 - Lifecycle wire, queue, and registry data retains only provider, session ID, normalized state, ordering/delivery timestamps, a final-component project label or provider fallback, replay identities, and the complete origin PID/bundle pair. Prompt, message, reason, response, command, transcript, diff, environment, model, and full working-directory content is discarded before serialization.
 - Active sessions expire after `10m` of local inactivity. Terminal records are visible to the registry for `5s`, receive a `3s` UI dwell from local observation, and remain as non-visible tombstones for `10m` to suppress late cleanup duplicates.
-- **Live Status Doctor…** shows all five providers and checks detection, integration content, bridge health, locally visible policy blocking, socket reachability, and last valid receipt separately.
+- **Provider Connections…** shows all five providers and checks detection, integration content, bridge health, locally visible policy blocking, socket reachability, and last valid receipt separately.
 - Provider-specific repair changes only missing, stale, or partial Topside-owned content, reruns checks in the same panel, and never treats static readiness alone as `Ready`.
 
 Settings:

@@ -649,6 +649,7 @@ if [[ -n "$MARKETING_VERSION" ]]; then
 fi
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
   /usr/libexec/PlistBuddy -c "Add :TopsideEntitlementStorage string trial-file-v1" "$APP_BUNDLE/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :TopsideDevelopmentBuild bool true" "$APP_BUNDLE/Contents/Info.plist"
 else
   /usr/libexec/PlistBuddy -c "Add :TopsideEntitlementStorage string keychain-v2" "$APP_BUNDLE/Contents/Info.plist"
 fi

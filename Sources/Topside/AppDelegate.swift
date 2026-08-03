@@ -318,7 +318,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
     }
 
     private func deliverNotifications(currentSessions: [AgentSession]) {
-        guard state.entitlement.allowsUse else { return }
+        guard state.entitlement.allowsUse || state.isDevelopmentBuild else { return }
         let frontmostApplication = NSWorkspace.shared.frontmostApplication.flatMap {
             ApplicationIdentity(
                 processID: $0.processIdentifier,

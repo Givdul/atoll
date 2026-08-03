@@ -12,6 +12,7 @@ final class ReleaseScriptTests: XCTestCase {
             "ATOLL_BUNDLE_IDENTIFIER=\"dev.atoll.Atoll\"",
             "Bundle/Topside.icns",
             "TopsideEntitlementStorage",
+            "TopsideDevelopmentBuild",
             "TOPSIDE_PURCHASE_URL"
         ] {
             XCTAssertTrue(script.contains(expected), expected)

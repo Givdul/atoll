@@ -36,6 +36,7 @@ final class AppState: ObservableObject {
     private static let maxVisibleSessions = 8
 
     private let settingsStore: SettingsStore
+    let isDevelopmentBuild = Bundle.main.object(forInfoDictionaryKey: "TopsideDevelopmentBuild") as? Bool == true
     private let terminalDisplayWindow: TimeInterval = 3
     private struct TerminalObservation {
         var state: SessionState
@@ -45,7 +46,7 @@ final class AppState: ObservableObject {
     private var terminalObservations: [String: TerminalObservation] = [:]
 
     private var displaySessions: [AgentSession] {
-        guard entitlement.allowsUse || settings.testMode else { return [] }
+        guard entitlement.allowsUse || settings.testMode || isDevelopmentBuild else { return [] }
         return settings.testMode ? Self.testModeSessions() : allSessions
     }
 

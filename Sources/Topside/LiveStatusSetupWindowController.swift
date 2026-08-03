@@ -260,10 +260,10 @@ private struct LiveStatusSetupView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.bottom, 10)
 
-                Text("Live Status Doctor")
+                Text("Provider Connections")
                     .font(.system(size: 27, weight: .semibold, design: .rounded))
 
-                Text("Checks each provider from installation through its last valid local event.")
+                Text("Topside listens for activity from your coding tools and shows it in the island. This checks the connection; it does not inspect or change your threads.")
                     .font(.system(size: 14))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -310,15 +310,15 @@ private struct LiveStatusSetupView: View {
     private var actions: some View {
         switch model.phase {
         case .checking:
-            Button("Running Diagnostics…") {}
+            Button("Checking Connections…") {}
                 .buttonStyle(LiveStatusPrimaryButtonStyle())
                 .disabled(true)
         case .repairing:
-            Button("Repairing and Rechecking…") {}
+            Button("Setting Up and Checking…") {}
                 .buttonStyle(LiveStatusPrimaryButtonStyle())
                 .disabled(true)
         case .confirmingRemoval:
-            Button("Remove Topside from \(model.removableAgents.count) \(model.removableAgents.count == 1 ? "Provider" : "Providers")", action: model.remove)
+            Button("Disconnect \(model.removableAgents.count) \(model.removableAgents.count == 1 ? "Provider" : "Providers")", action: model.remove)
                 .buttonStyle(LiveStatusPrimaryButtonStyle(color: .red))
             Button("Cancel", action: model.cancelRemoval)
                 .buttonStyle(LiveStatusSecondaryButtonStyle())
@@ -328,7 +328,7 @@ private struct LiveStatusSetupView: View {
                 .disabled(true)
         case .ready:
             if model.selectedDiagnostic?.canRepair == true, let agent = model.selectedAgent {
-                Button("Repair \(agent.displayName)", action: model.repairSelected)
+                Button("Set Up \(agent.displayName)", action: model.repairSelected)
                     .buttonStyle(LiveStatusPrimaryButtonStyle())
             } else {
                 Button("Check Again", action: model.recheck)
@@ -338,7 +338,7 @@ private struct LiveStatusSetupView: View {
                 Button("Done", action: onDismiss)
                     .buttonStyle(LiveStatusSecondaryButtonStyle())
                 if !model.removableAgents.isEmpty {
-                    Button("Remove Live Status…", action: model.beginRemoval)
+                    Button("Disconnect…", action: model.beginRemoval)
                         .buttonStyle(LiveStatusSecondaryButtonStyle())
                 }
             }
@@ -348,6 +348,7 @@ private struct LiveStatusSetupView: View {
 
 private struct ProviderDiagnosticView: View {
     let diagnostic: ProviderDiagnostic
+    @State private var showingDetails = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -357,28 +358,33 @@ private struct ProviderDiagnosticView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(diagnostic.agent.displayName)
                         .font(.system(size: 15, weight: .semibold))
-                    Label(diagnostic.statusTitle, systemImage: diagnostic.statusSymbol)
+                    Label(diagnostic.userStatusTitle, systemImage: diagnostic.statusSymbol)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
             }
 
-            Text(diagnostic.guidance)
+            Text(diagnostic.userSummary)
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Divider()
-
-            DiagnosticRow(label: "Agent", value: diagnostic.agentFound ? "Found" : "Not found")
-            DiagnosticRow(label: "Integration", value: diagnostic.integrationLabel)
-            DiagnosticRow(label: "Bridge", value: diagnostic.bridgeLabel)
-            DiagnosticRow(label: "Precedence", value: diagnostic.shadowingLabel)
-            DiagnosticRow(label: "App socket", value: diagnostic.socketAvailable ? "Reachable" : "Unavailable")
-            DiagnosticRow(label: "Runtime", value: diagnostic.runtimeLabel)
+            DisclosureGroup("Technical details", isExpanded: $showingDetails) {
+                VStack(alignment: .leading, spacing: 8) {
+                    DiagnosticRow(label: "Agent", value: diagnostic.agentFound ? "Found" : "Not found")
+                    DiagnosticRow(label: "Integration", value: diagnostic.integrationLabel)
+                    DiagnosticRow(label: "Bridge", value: diagnostic.bridgeLabel)
+                    DiagnosticRow(label: "Precedence", value: diagnostic.shadowingLabel)
+                    DiagnosticRow(label: "App socket", value: diagnostic.socketAvailable ? "Reachable" : "Unavailable")
+                    DiagnosticRow(label: "Runtime", value: diagnostic.runtimeLabel)
+                }
+                .padding(.top, 8)
+            }
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(.secondary)
         }
         .padding(16)
-        .frame(maxWidth: .infinity, minHeight: 224, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 176, alignment: .topLeading)
         .background(.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(diagnostic.agent.displayName) diagnostics")
@@ -430,6 +436,10 @@ private struct AgentDoctorTile: View {
                 Text(agent.displayName)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(status.shortLabel)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(status.tint)
                     .lineLimit(1)
             }
         }
@@ -500,17 +510,34 @@ private struct LiveStatusMark: View {
 }
 
 private extension ProviderDiagnostic {
-    var statusTitle: String {
+    var userStatusTitle: String {
         switch health {
-        case .agentNotFound: "Agent not found"
-        case .integrationMissing: "Integration missing"
-        case .integrationOutdated: "Integration needs repair"
-        case .externalConfiguration: "External configuration needs attention"
-        case .shadowed: "Managed policy blocks the integration"
-        case .bridgeUnavailable: "Bridge needs repair"
-        case .socketUnavailable: "Topside socket unavailable"
-        case .runtimeUnverified: "Runtime activation unverified"
-        case .ready: "Ready"
+        case .agentNotFound: "Not installed"
+        case .integrationMissing, .integrationOutdated, .bridgeUnavailable: "Needs setup"
+        case .externalConfiguration, .shadowed, .socketUnavailable: "Needs attention"
+        case .runtimeUnverified: "Not tested yet"
+        case .ready: "Connected"
+        }
+    }
+
+    var userSummary: String {
+        switch health {
+        case .agentNotFound:
+            "Topside cannot connect because \(agent.displayName) is not installed on this Mac."
+        case .integrationMissing:
+            "Topside can connect \(agent.displayName) without replacing its existing settings."
+        case .integrationOutdated:
+            "The Topside connection needs updating. Topside will change only its own integration."
+        case .externalConfiguration(let detail), .shadowed(let detail):
+            detail
+        case .bridgeUnavailable:
+            "The private Topside connection needs repair before it can receive activity."
+        case .socketUnavailable:
+            "Topside is running, but its local connection is unavailable. Restart Topside and check again."
+        case .runtimeUnverified:
+            "The connection is set up, but Topside has not heard from \(agent.displayName) yet. Start a new task there, then check again."
+        case .ready(let date):
+            "Connected. Topside last received activity from \(agent.displayName) \(date.formatted(date: .abbreviated, time: .shortened))."
         }
     }
 
@@ -521,27 +548,6 @@ private extension ProviderDiagnostic {
         case .runtimeUnverified: "questionmark.circle"
         case .integrationMissing, .integrationOutdated, .bridgeUnavailable: "wrench.and.screwdriver"
         case .externalConfiguration, .shadowed, .socketUnavailable: "exclamationmark.triangle"
-        }
-    }
-
-    var guidance: String {
-        switch health {
-        case .agentNotFound:
-            "Install \(agent.displayName), then check again. Topside does not create provider configuration for an absent agent."
-        case .integrationMissing:
-            "Topside can add its user-level integration without replacing existing valid settings."
-        case .integrationOutdated:
-            "Topside can replace only its own stale or partial integration content."
-        case .externalConfiguration(let detail), .shadowed(let detail):
-            detail
-        case .bridgeUnavailable:
-            "Topside can restore its private command bridge and required permissions."
-        case .socketUnavailable:
-            "Restart Topside. The integration cannot deliver events while its local app socket is unavailable."
-        case .runtimeUnverified:
-            agent.activationGuidance
-        case .ready(let date):
-            "Topside last accepted a valid local event \(date.formatted(date: .abbreviated, time: .shortened))."
         }
     }
 
@@ -577,14 +583,34 @@ private extension ProviderDiagnostic {
 }
 
 private extension AgentDoctorStatus {
+    var shortLabel: String {
+        switch self {
+        case .checking, .repairing: "Checking…"
+        case .notFound: "Not installed"
+        case .repairable: "Needs setup"
+        case .unverified: "Not tested yet"
+        case .ready: "Connected"
+        case .attention: "Needs attention"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .checking, .repairing, .notFound: .secondary
+        case .repairable, .unverified: .orange
+        case .ready: .green
+        case .attention: .red
+        }
+    }
+
     var accessibilityLabel: String {
         switch self {
         case .checking: "checking"
         case .repairing: "repairing"
         case .notFound: "agent not found"
         case .repairable: "repair available"
-        case .unverified: "runtime activation unverified"
-        case .ready(let date): "ready; last valid event \(date.formatted(date: .abbreviated, time: .shortened))"
+        case .unverified: "not tested yet"
+        case .ready(let date): "connected; last valid event \(date.formatted(date: .abbreviated, time: .shortened))"
         case .attention(let detail): detail
         }
     }

@@ -28,7 +28,7 @@ Provider hook payloads may include prompts or other content on standard input. T
 
 ## Native hook integrations
 
-On first launch, Topside offers setup only when it detects a supported agent that is not already configured. **Live Status Doctor…** in the menu always shows all five supported providers and checks agent detection, integration content, the private bridge, managed-policy blocking where locally visible, the app socket, and the last valid event separately. `Ready` requires runtime evidence; a matching file alone is never enough.
+On first launch, Topside offers setup only when it detects a supported agent that is not already configured. **Provider Connections…** in the menu always shows all five supported providers and checks agent detection, integration content, the private bridge, managed-policy blocking where locally visible, the app socket, and the last valid event separately. `Connected` requires runtime evidence; a matching file alone is never enough.
 
 The doctor changes nothing until you select a provider-specific **Repair** action. Repair rewrites only missing, stale, or partial Topside-owned content, reruns diagnostics in the same panel, and preserves malformed, disabled, project-level, policy-managed, or unowned configuration.
 
