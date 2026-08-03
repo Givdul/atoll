@@ -45,7 +45,7 @@ final class AppState: ObservableObject {
     private var terminalObservations: [String: TerminalObservation] = [:]
 
     private var displaySessions: [AgentSession] {
-        guard entitlement.allowsUse else { return [] }
+        guard entitlement.allowsUse || settings.testMode else { return [] }
         return settings.testMode ? Self.testModeSessions() : allSessions
     }
 

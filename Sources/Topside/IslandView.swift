@@ -15,8 +15,8 @@ struct IslandMetrics: Equatable {
     var notchWidth: CGFloat
     var notchHeight: CGFloat
 
-    init(notch: PhysicalNotchGeometry) {
-        let baseNotchHeight = notch.height
+    init(display: IslandDisplayGeometry) {
+        let baseNotchHeight = display.scaleHeight
         let factor = min(1.08, max(0.88, baseNotchHeight / 32))
         scale = factor
         rowWidth = 392 * factor
@@ -27,8 +27,8 @@ struct IslandMetrics: Equatable {
         detailFontSize = min(11 * factor, rowHeight * 0.34)
         topGap = 0
         rowSpacing = 3 * factor
-        notchWidth = notch.width + 4
-        notchHeight = notch.height + 3
+        notchWidth = display.width
+        notchHeight = display.height
     }
 
     func listHeight(forRowCount rowCount: Int) -> CGFloat {
