@@ -4,6 +4,23 @@ import XCTest
 @testable import TopsideCore
 
 final class LifecycleSocketTests: XCTestCase {
+    private final class EventBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: LifecycleEvent?
+
+        func set(_ event: LifecycleEvent) {
+            lock.lock()
+            value = event
+            lock.unlock()
+        }
+
+        var event: LifecycleEvent? {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+    }
+
     private var directory: URL!
     private var socketDirectory: URL!
 
@@ -79,6 +96,43 @@ final class LifecycleSocketTests: XCTestCase {
             socketPath: missing,
             queue: LifecycleEventQueue(homeDirectory: blockedHome)
         ))
+    }
+
+    func testLiveSocketCarriesTaskLabelWhileQueueRemainsSanitized() throws {
+        let queue = LifecycleEventQueue(
+            homeDirectory: directory.appendingPathComponent("live-task-home", isDirectory: true)
+        )
+        let path = socketPath("live-task")
+        let received = DispatchSemaphore(value: 0)
+        let receivedEvent = EventBox()
+        let server = LifecycleSocketServer(queue: queue, path: path) { receipt in
+            receivedEvent.set(receipt.event)
+            received.signal()
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let event = LifecycleEvent(
+            sessionID: "live-task",
+            harness: .codex,
+            kind: .started,
+            taskLabel: "fresh task"
+        )
+        XCTAssertTrue(LifecycleSocketClient.send(event, path: path))
+        XCTAssertEqual(received.wait(timeout: .now() + 0.5), .success)
+
+        let taskLabel = receivedEvent.event?.taskLabel
+        XCTAssertEqual(taskLabel, "fresh task")
+
+        let pending = try XCTUnwrap(queue.pendingEvents().first)
+        XCTAssertNil(pending.event.taskLabel)
+        let queuedFile = try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(
+                at: directory.appendingPathComponent("live-task-home/.topside/lifecycle-events"),
+                includingPropertiesForKeys: nil
+            ).first
+        )
+        XCTAssertFalse(String(data: try Data(contentsOf: queuedFile), encoding: .utf8)?.contains("task_label") == true)
     }
 
     func testServerRejectsMalformedAndOversizedBodiesWithoutPartialDelivery() throws {

@@ -48,6 +48,9 @@ public struct LifecycleEvent: Hashable, Sendable {
     public var kind: LifecycleEventKind
     public var timestamp: Date
     public var label: String
+    /// Ephemeral presentation text. It is accepted only on the live socket
+    /// path and is never part of the canonical queue or registry record.
+    public var taskLabel: String?
     public var originProcessID: Int32?
     public var originBundleIdentifier: String?
     /// Topside-generated transport identity. It remains stable through socket and
@@ -61,6 +64,7 @@ public struct LifecycleEvent: Hashable, Sendable {
         kind: LifecycleEventKind,
         timestamp: Date = Date(),
         label: String? = nil,
+        taskLabel: String? = nil,
         originProcessID: Int32? = nil,
         originBundleIdentifier: String? = nil,
         deliveryID: String? = UUID().uuidString
@@ -70,6 +74,7 @@ public struct LifecycleEvent: Hashable, Sendable {
         self.kind = kind
         self.timestamp = timestamp
         self.label = Self.sanitizedLabel(label) ?? "\(harness.displayName) session"
+        self.taskLabel = Self.normalizedTaskLabel(taskLabel)
         let normalizedBundleIdentifier = originBundleIdentifier?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if let originProcessID,
@@ -110,6 +115,7 @@ public struct LifecycleEvent: Hashable, Sendable {
                     in: dictionary,
                     keys: ["project_path", "projectPath", "cwd", "workspace"]
                 )),
+            taskLabel: JSONHelpers.directString(in: dictionary, keys: ["task_label", "taskLabel"]),
             originProcessID: JSONHelpers.directString(in: dictionary, keys: ["origin_process_id", "originProcessID"]).flatMap(Int32.init),
             originBundleIdentifier: JSONHelpers.directString(in: dictionary, keys: ["origin_bundle_identifier", "originBundleIdentifier"]),
             deliveryID: deliveryID
@@ -158,6 +164,7 @@ public struct LifecycleEvent: Hashable, Sendable {
                 in: dictionary,
                 keys: ["cwd", "project_path", "projectPath", "workspace"]
             )),
+            taskLabel: taskLabel(for: harness, payload: dictionary),
             originProcessID: originProcessID,
             originBundleIdentifier: originBundleIdentifier
         )
@@ -206,6 +213,37 @@ public struct LifecycleEvent: Hashable, Sendable {
         return label
     }
 
+    private static func taskLabel(for harness: AgentHarness, payload: [String: Any]) -> String? {
+        switch harness {
+        case .cursor, .opencode:
+            return normalizedTaskLabel(JSONHelpers.directString(in: payload, keys: ["title"]))
+                ?? normalizedTaskLabel(JSONHelpers.directString(in: payload, keys: ["prompt", "message", "text"]))
+        case .codex, .claude, .pi:
+            return normalizedTaskLabel(JSONHelpers.directString(in: payload, keys: ["prompt", "message", "text"]))
+        case .topside:
+            return nil
+        }
+    }
+
+    private static func normalizedTaskLabel(_ value: String?) -> String? {
+        guard let value else { return nil }
+
+        var cleaned = ""
+        cleaned.reserveCapacity(value.utf8.count)
+        for scalar in value.unicodeScalars {
+            if CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                cleaned.append(" ")
+            } else if !CharacterSet.controlCharacters.contains(scalar) {
+                cleaned.unicodeScalars.append(scalar)
+            }
+        }
+
+        let normalized = cleaned.split(separator: " ").joined(separator: " ")
+        guard !normalized.isEmpty else { return nil }
+        guard normalized.count > 48 else { return normalized }
+        return String(normalized.prefix(47)) + "…"
+    }
+
     private static func validatedDeliveryIdentity(_ value: String?) -> String? {
         guard let value,
               value.hasPrefix("sha256:"),
@@ -217,6 +255,16 @@ public struct LifecycleEvent: Hashable, Sendable {
     }
 
     public func jsonLine() -> String? {
+        jsonLine(includeTaskLabel: false)
+    }
+
+    /// The live-only socket representation. The queue calls `jsonLine()` and
+    /// therefore cannot persist this field.
+    package func socketLine() -> String? {
+        jsonLine(includeTaskLabel: true)
+    }
+
+    private func jsonLine(includeTaskLabel: Bool) -> String? {
         let timestampFormatter = ISO8601DateFormatter()
         timestampFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         var object: [String: Any] = [
@@ -230,6 +278,9 @@ public struct LifecycleEvent: Hashable, Sendable {
         object["origin_bundle_identifier"] = originBundleIdentifier
         object["delivery_id"] = deliveryID
         object["delivery_identity"] = deliveryID == nil ? legacyDeliveryIdentity : nil
+        if includeTaskLabel {
+            object["task_label"] = taskLabel
+        }
 
         guard JSONSerialization.isValidJSONObject(object),
               let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),

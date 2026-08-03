@@ -128,7 +128,8 @@ final class AppState: ObservableObject {
                 harness: harness,
                 label: "\(harness.displayName) test task",
                 state: .running,
-                updatedAt: now.addingTimeInterval(TimeInterval(-index))
+                updatedAt: now.addingTimeInterval(TimeInterval(-index)),
+                taskLabel: "Test task"
             )
         }
 
@@ -138,14 +139,16 @@ final class AppState: ObservableObject {
                 harness: .codex,
                 label: "Codex test question",
                 state: .waitingForInput,
-                updatedAt: now.addingTimeInterval(10)
+                updatedAt: now.addingTimeInterval(10),
+                taskLabel: "Test question"
             ),
             AgentSession(
                 id: "test-codex-permission",
                 harness: .codex,
                 label: "Codex test permission",
                 state: .waitingForPermission,
-                updatedAt: now.addingTimeInterval(11)
+                updatedAt: now.addingTimeInterval(11),
+                taskLabel: "Test permission"
             )
         ]
 
@@ -154,7 +157,8 @@ final class AppState: ObservableObject {
             harness: .codex,
             label: "Codex test done",
             state: .done,
-            updatedAt: now
+            updatedAt: now,
+            taskLabel: "Test done"
         )
 
         return (running + codexAttention + [doneSession]).sorted {

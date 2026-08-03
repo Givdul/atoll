@@ -255,7 +255,7 @@ package enum LifecycleSocketClient {
         _ event: LifecycleEvent,
         path: String = LifecycleSocketServer.path
     ) -> Bool {
-        guard let line = event.jsonLine()?.appending("\n"),
+        guard let line = event.socketLine()?.appending("\n"),
               let data = line.data(using: .utf8),
               data.count <= LifecycleHookInput.maximumBytes else {
             return false

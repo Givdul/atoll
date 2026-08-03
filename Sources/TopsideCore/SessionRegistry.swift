@@ -7,6 +7,10 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         var receivedAt: Date
     }
 
+    private struct EphemeralTaskLabel {
+        var value: String
+    }
+
     private struct Record: Codable {
         var sessionID: String
         var harness: AgentHarness
@@ -49,6 +53,7 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
     private let filePermissionSetter: PrivateStorage.FilePermissionSetter?
     private let lock = NSLock()
     private var records: [String: Record]
+    private var taskLabels: [String: EphemeralTaskLabel]
     private var needsRewrite: Bool
 
     /// Delivery identities remain deduplicated for one day, independently of
@@ -70,6 +75,7 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         self.filePermissionSetter = nil
         let loaded = Self.load(from: fileURL)
         self.records = loaded.records
+        self.taskLabels = [:]
         self.needsRewrite = loaded.needsRewrite
     }
 
@@ -86,6 +92,7 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         self.filePermissionSetter = filePermissionSetter
         let loaded = Self.load(from: fileURL)
         self.records = loaded.records
+        self.taskLabels = [:]
         self.needsRewrite = loaded.needsRewrite
     }
 
@@ -108,9 +115,11 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         defer { lock.unlock() }
 
         let previousRecords = records
+        let previousTaskLabels = taskLabels
         let sessions = ingestLocked(event, now: now)
         guard save() else {
             records = previousRecords
+            taskLabels = previousTaskLabels
             return nil
         }
         return sessions
@@ -210,6 +219,13 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
 
         let stateChanged = record.state != nextState
         let startsNewCycle = record.state.isTerminal && !nextState.isTerminal
+
+        if startsNewCycle {
+            taskLabels.removeValue(forKey: key)
+        }
+        if let taskLabel = event.taskLabel {
+            taskLabels[key] = EphemeralTaskLabel(value: taskLabel)
+        }
 
         record.state = nextState
         record.updatedAt = event.timestamp
@@ -311,6 +327,7 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
                 label: record.label ?? "\(record.harness.displayName) session",
                 state: record.state,
                 updatedAt: presentationUpdatedAt,
+                taskLabel: taskLabels[record.key]?.value,
                 observedAt: record.observedAt,
                 startedAt: record.startedAt,
                 originProcessID: record.originProcessID,
@@ -343,13 +360,22 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
 
             // State has a short semantic tombstone, while processed delivery
             // identities remain hidden and deduplicated for the longer policy.
-            if stateIsSemanticallyRetained(record, now: now) || !deliveries.isEmpty {
+            let semanticallyRetained = stateIsSemanticallyRetained(record, now: now)
+            if semanticallyRetained || !deliveries.isEmpty {
                 retained[key] = record
+                if !semanticallyRetained {
+                    taskLabels.removeValue(forKey: key)
+                }
             } else {
+                taskLabels.removeValue(forKey: key)
                 changed = true
             }
         }
         records = retained
+        for key in Array(taskLabels.keys) where retained[key] == nil {
+            taskLabels.removeValue(forKey: key)
+            changed = true
+        }
         return changed
     }
 
