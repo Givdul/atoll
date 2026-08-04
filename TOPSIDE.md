@@ -19,23 +19,13 @@ Primary source references:
 
 ## Screenshots
 
-Native collapsed notch capture:
+The maintained product captures are:
 
-- `Screenshots/skerry-test-collapsed.png`
-- Dimensions: `760x520`
+- `Screenshots/topside-installed-test-mode.png` — installed island/test-mode presentation.
+- `Screenshots/topside-installed-status-menu.png` — installed status menu.
+- `Screenshots/topside-installed-doctor-sized.jpeg` — installed five-provider Doctor.
 
-Installed release lifecycle smoke:
-
-- `Screenshots/issue-7-skerry-installed-running.jpeg`
-- Captured from `/Applications/Topside.app` after directly submitting normalized `started` events through its installed lifecycle CLI for Codex, Claude Code, Cursor Agent, OpenCode, and Pi.
-- The orange edge verifies installed CLI-to-socket delivery and notch rendering. It does not prove that each provider loaded or invoked its managed hook.
-
-Installed release Doctor:
-
-- `Screenshots/issue-7-skerry-installed-doctor.jpeg`
-- Captured from `/Applications/Topside.app`; all five provider tiles are visible.
-- Codex, Claude Code, Cursor Agent, and OpenCode have matching installed integrations plus stored last-event evidence from the direct lifecycle smoke above. Pi is shown truthfully as blocked because the capture machine has Pi `0.80.3`, below the required `0.80.4`.
-- The isolated installer tests use a supported Pi version and verify setup, idempotence, beta repair, and unrelated-configuration preservation for all five providers.
+These are intentional documentation assets. Raw screen crops, request/session data, runtime evidence, and iterative notch-calibration captures are temporary PR evidence and are not durable repository content.
 
 ## Native Shape
 
@@ -49,7 +39,7 @@ Topside runs as an accessory app:
 
 Panel/window:
 
-- Host size: `440x340`.
+- Host dimensions come from the shared `IslandMetrics.hostSize` authority.
 - Position: horizontally centered on target screen, aligned to screen top.
 - Target screen: primary by default; supports `"active"` or numeric screen index.
 - Background: fully transparent.
@@ -95,96 +85,11 @@ Animations:
 - Panel hide after row exit: `0.26s`.
 - Reduce Motion disables motion animations and uses opacity where possible.
 
-## Layout Metrics
+## Layout and color authority
 
-All dimensions derive from `IslandMetrics` in `Sources/Topside/IslandView.swift`.
+`Sources/TopsideCore/IslandPresentation.swift` is the single authority for host dimensions, notch scaling and optical offset, section spacing, row rectangles, and activation geometry. `IslandPresentationTests` contractually verify ordering, caps, section bounds, and visible-row geometry. The SwiftUI renderer and AppKit window controller consume that same result rather than copying formulas into this document.
 
-Scale:
-
-- The target display is resolved once for placement, rendering, hover regions, and click-through paths.
-- A physical notch requires a nonzero `safeAreaInsets.top` plus both native auxiliary top areas.
-- Notch width is the gap between the auxiliary top areas; notch height is `safeAreaInsets.top`.
-- `scale = min(1.08, max(0.88, baseNotchHeight / 32))`.
-
-Typical values at `scale = 1`:
-
-| Element | Value |
-| --- | ---: |
-| Host frame | `440x340` |
-| Row width | `392` |
-| Row height | `32...36`, usually `32` |
-| Row horizontal leading padding | `6.5` |
-| Row spacing | `3` |
-| Row corner radius | `rowHeight * 0.28` |
-| Icon image size | `rowHeight - 8` |
-| Icon well frame | `rowHeight - 4` |
-| Title font size | `min(12 * scale, rowHeight * 0.38)` |
-| Detail/timer font size | `min(11 * scale, rowHeight * 0.34)` |
-| Timer text frame | `28 * scale` wide |
-| Status symbol frame | `14 * scale` wide |
-| Status segment width | `82 * scale` |
-| Notch width | Native auxiliary-top gap |
-| Notch height | Native top safe-area inset |
-| Notch corner radius | `notchHeight * 0.46` |
-| Notch waiting border width | `max(4.8 * scale, notchHeight * 0.24)` |
-| Activity dot on notch | `10 * scale` |
-| Activity dot on row | `5 * scale` |
-| Row activity inset | `1.6 * scale` |
-| Row waiting border width | `0.9 * scale` |
-
-List height formula:
-
-- `rowCount * rowHeight + max(0, rowCount - 1) * rowSpacing`.
-
-Hover footprint formula:
-
-- `notchHeight + rowSpacing + listHeight`.
-
-## Colors
-
-Core state accents from `SessionStateColor`:
-
-| State | Swift RGB | Hex |
-| --- | --- | --- |
-| Running / working | `1.00, 0.52, 0.10` | `#FF851A` |
-| Waiting for input / question | `0.22, 0.78, 1.00` | `#38C7FF` |
-| Waiting for permission | `1.00, 0.20, 0.29` | `#FF334A` |
-| Done | `0.22, 0.95, 0.42` | `#38F26B` |
-| Failed | `1.00, 0.20, 0.29` | `#FF334A` |
-| Cancelled | white `0.52` opacity | `rgba(255,255,255,0.52)` |
-| Unknown | white `0.52` opacity | `rgba(255,255,255,0.52)` |
-
-Row status symbol accents:
-
-| State | Swift RGB | Hex |
-| --- | --- | --- |
-| Running | `1.00, 0.56, 0.09` | `#FF8F17` |
-| Waiting for input | `0.18, 0.80, 1.00` | `#2ECCFF` |
-| Waiting for permission | `1.00, 0.22, 0.34` | `#FF3857` |
-| Done | `0.24, 0.94, 0.44` | `#3DF070` |
-| Failed | `1.00, 0.22, 0.34` | `#FF3857` |
-| Cancelled | white `0.52` opacity | `rgba(255,255,255,0.52)` |
-| Unknown | white `0.07` opacity | `rgba(255,255,255,0.07)` |
-
-App/status icon colors:
-
-- App icon background: calibrated white `0.055`, approximately `#0E0E0E`.
-- App icon glyph: white.
-- Status bar default glyph: `NSColor.labelColor`, template image.
-- Status bar attention glyph: state color, non-template.
-
-Surface colors:
-
-- Notch fill: black.
-- Notch border: white `0.08` opacity, `0.8 * scale` line width.
-- Row surface wash: black.
-- Liquid glass tint: black `0.96` opacity.
-- Row title: white with state opacity.
-- Row top glint: white `0.18` opacity.
-- Row bottom trailing glow: white `0.045` opacity.
-- Row leading glow: white `0.025` opacity.
-- Row dark inner stroke: black `0.42` opacity.
-- Row sweep gradient: white `0.015`, accent `0.05`, white `0.01`.
+A physical notch requires a nonzero `safeAreaInsets.top` and both native auxiliary top areas. The app scales its layout within a narrow supported range around that native geometry. Running, input, permission, success, failure, and cancellation retain distinct semantic accents; exact color, typography, glass, border, and animation constants remain source-owned in `IslandView.swift` and `TopsideIcon.swift` so documentation cannot drift from the shipped UI.
 
 ## Typography
 
@@ -334,7 +239,7 @@ Fallback glyphs:
 
 For an accurate interactive demo:
 
-- Build a fixed `440x340` transparent overlay component.
+- Read the current host dimensions from `IslandMetrics.hostSize`; do not copy them into a separate web constant without a contract test.
 - Anchor it top-center.
 - Render a black notch first, then rows below it.
 - Use `scale = 1` for baseline desktop demos unless simulating a different macOS notch/safe-area height.

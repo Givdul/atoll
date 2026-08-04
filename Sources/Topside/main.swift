@@ -38,28 +38,6 @@ private func originatingApplication() -> (processID: pid_t, bundleIdentifier: St
 }
 
 let arguments = Array(CommandLine.arguments.dropFirst())
-if arguments == ["--install-lifecycle-hooks"] {
-    do {
-        try TopsideMigration.migrateIfNeeded()
-        let installer = LifecycleHookInstaller()
-        var failures: [String] = []
-        for agent in installer.detectedAgents() {
-            do {
-                try installer.install(agents: [agent])
-            } catch {
-                failures.append("\(agent.displayName): \(error.localizedDescription)")
-            }
-        }
-        if !failures.isEmpty {
-            throw LifecycleHookInstaller.Error.commandFailed(failures.joined(separator: "\n"))
-        }
-        exit(EXIT_SUCCESS)
-    } catch {
-        fputs("\(error.localizedDescription)\n", stderr)
-        exit(EXIT_FAILURE)
-    }
-}
-
 if arguments.first == "--lifecycle-event" {
     guard arguments.count == 3,
           let harness = AgentHarness.parse(arguments[1]),

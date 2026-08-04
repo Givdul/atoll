@@ -15,3 +15,8 @@ dist/
 *.pem
 release-secrets/
 sparkle-private-key*
+Screenshots/*.json
+Screenshots/*.log
+Screenshots/*-screen-raw.png
+Screenshots/*-physical-notch.png
+.topside-evidence/

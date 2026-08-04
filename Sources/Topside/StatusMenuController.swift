@@ -20,9 +20,21 @@ protocol StatusMenuControllerDelegate: AnyObject {
 
 @MainActor
 final class StatusMenuController {
+    private struct Snapshot: Equatable {
+        let settings: TopsideSettings
+        let entitlement: TopsideEntitlementStatus
+        let purchaseAvailable: Bool
+        let canCheckForUpdates: Bool
+        let attentionCount: Int
+        let permissionAttention: Bool
+        let runningCount: Int
+        let islandAvailable: Bool
+    }
+
     private let statusItem: NSStatusItem
     private let state: AppState
     private weak var delegate: StatusMenuControllerDelegate?
+    private var lastSnapshot: Snapshot?
 
     init(state: AppState, delegate: StatusMenuControllerDelegate) {
         self.state = state
@@ -39,6 +51,19 @@ final class StatusMenuController {
     }
 
     func refreshMenu() {
+        let snapshot = Snapshot(
+            settings: state.settings,
+            entitlement: state.entitlement,
+            purchaseAvailable: delegate?.purchaseAvailable == true,
+            canCheckForUpdates: delegate?.canCheckForUpdates == true,
+            attentionCount: state.activeAttentionCount,
+            permissionAttention: state.waitingSessions.contains { $0.state == .waitingForPermission },
+            runningCount: state.runningSessions.count,
+            islandAvailable: state.isIslandAvailable
+        )
+        guard snapshot != lastSnapshot else { return }
+        lastSnapshot = snapshot
+
         let menu = NSMenu()
         menu.autoenablesItems = false
 

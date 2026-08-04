@@ -24,7 +24,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
         updaterDelegate: nil,
         userDriverDelegate: nil
     )
-    private var refreshTimer: Timer?
+    private static let queueMaintenanceInterval: TimeInterval = 5
+
+    private var queueMaintenanceTimer: Timer?
+    private var sessionDeadlineTimer: Timer?
+    private var entitlementTimer: Timer?
     private var statusController: StatusMenuController?
     private var islandController: IslandWindowController?
     private let notificationCenter = UNUserNotificationCenter.current()
@@ -58,19 +62,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
         for receipt in restoredReceipts {
             guard accept(receipt) != nil else { break }
         }
-        notificationTracker.synchronize(lifecycleRegistry.sessions())
-        refreshNow()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.refreshNow()
-            }
-        }
+        let sessions = lifecycleRegistry.sessions()
+        notificationTracker.synchronize(sessions)
+        state.replaceSessions(sessions)
+        refreshPresentationSurfaces()
+        scheduleSessionDeadline()
+        scheduleQueueMaintenance()
         Task { [weak self] in
             guard let self else { return }
             self.state.entitlement = await self.entitlementController.start()
-            self.islandController?.syncVisibility()
-            self.statusController?.refreshMenu()
+            self.refreshPresentationSurfaces()
             self.validateLicenseIfNeeded()
+            self.scheduleEntitlementMaintenance()
         }
         DispatchQueue.main.async { [weak self] in
             self?.presentOnboardingIfNeeded()
@@ -78,39 +81,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        refreshTimer?.invalidate()
+        queueMaintenanceTimer?.invalidate()
+        sessionDeadlineTimer?.invalidate()
+        entitlementTimer?.invalidate()
         Task { await entitlementController.persistObservation() }
         lifecycleServer.stop()
         islandController?.shutdown()
     }
 
     func applicationDidChangeScreenParameters(_ notification: Notification) {
-        islandController?.syncVisibility()
-        statusController?.refreshMenu()
+        refreshPresentationSurfaces()
     }
 
     func refreshNow() {
+        drainLifecycleQueue()
+        refreshSessions()
         state.entitlement = entitlementController.observe()
-        for receipt in lifecycleQueue.pendingEvents() {
-            guard let sessions = accept(receipt) else { break }
-            deliverNotifications(currentSessions: sessions)
-        }
-        let sessions = lifecycleRegistry.sessions()
-        notificationTracker.synchronize(sessions)
-        state.allSessions = sessions
-        state.lastRefresh = Date()
-        islandController?.syncVisibility()
-        statusController?.refreshMenu()
+        refreshPresentationSurfaces()
         validateLicenseIfNeeded()
+        scheduleEntitlementMaintenance()
     }
 
     private func apply(_ receipt: QueuedLifecycleEvent) {
         guard let sessions = accept(receipt) else { return }
         deliverNotifications(currentSessions: sessions)
-        state.allSessions = sessions
-        state.lastRefresh = Date()
-        islandController?.syncVisibility()
-        statusController?.refreshMenu()
+        if state.replaceSessions(sessions) {
+            refreshPresentationSurfaces()
+        }
+        scheduleSessionDeadline()
     }
 
     private func accept(_ receipt: QueuedLifecycleEvent) -> [AgentSession]? {
@@ -122,12 +120,95 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
         return sessions
     }
 
+    private func drainLifecycleQueue() {
+        var latestSessions: [AgentSession]?
+        for receipt in lifecycleQueue.pendingEvents() {
+            guard let sessions = accept(receipt) else { break }
+            deliverNotifications(currentSessions: sessions)
+            latestSessions = sessions
+        }
+        if let latestSessions, state.replaceSessions(latestSessions) {
+            refreshPresentationSurfaces()
+        }
+        scheduleSessionDeadline()
+    }
+
+    private func refreshSessions(at now: Date = Date()) {
+        let sessions = lifecycleRegistry.sessions(now: now)
+        notificationTracker.synchronize(sessions)
+        let changed = state.replaceSessions(sessions, now: now)
+        if changed {
+            refreshPresentationSurfaces()
+        }
+        scheduleSessionDeadline(after: now)
+    }
+
+    private func refreshPresentationSurfaces() {
+        islandController?.syncVisibility()
+        statusController?.refreshMenu()
+    }
+
+    private func scheduleQueueMaintenance() {
+        queueMaintenanceTimer?.invalidate()
+        queueMaintenanceTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.queueMaintenanceInterval,
+            repeats: false
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.drainLifecycleQueue()
+                self.scheduleQueueMaintenance()
+            }
+        }
+    }
+
+    private func scheduleSessionDeadline(after now: Date = Date()) {
+        sessionDeadlineTimer?.invalidate()
+        let deadline = [
+            lifecycleRegistry.nextVisibleExpiry(after: now),
+            state.presentation.nextTerminalExpiry
+        ]
+        .compactMap { $0 }
+        .min()
+        guard let deadline else {
+            sessionDeadlineTimer = nil
+            return
+        }
+        sessionDeadlineTimer = Timer.scheduledTimer(
+            withTimeInterval: max(0.05, deadline.timeIntervalSince(now)),
+            repeats: false
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshSessions()
+            }
+        }
+    }
+
+    private func scheduleEntitlementMaintenance(after now: Date = Date()) {
+        entitlementTimer?.invalidate()
+        guard let deadline = entitlementController.nextMaintenanceDate(at: now) else {
+            entitlementTimer = nil
+            return
+        }
+        entitlementTimer = Timer.scheduledTimer(
+            withTimeInterval: max(0.1, deadline.timeIntervalSince(now)),
+            repeats: false
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.state.entitlement = self.entitlementController.observe()
+                self.refreshPresentationSurfaces()
+                self.validateLicenseIfNeeded()
+                self.scheduleEntitlementMaintenance()
+            }
+        }
+    }
+
     func setEnabled(_ enabled: Bool) {
         var settings = state.settings
         settings.enabled = enabled
         state.update(settings: settings)
-        islandController?.syncVisibility()
-        statusController?.refreshMenu()
+        refreshPresentationSurfaces()
     }
 
     private func removeLegacyNotifications() {
@@ -174,8 +255,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
         var settings = state.settings
         settings.testMode = testMode
         state.update(settings: settings)
-        islandController?.syncVisibility()
-        statusController?.refreshMenu()
+        refreshPresentationSurfaces()
     }
 
     func showLifecycleSetup() {
@@ -247,18 +327,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
             guard let self else { return }
             do {
                 self.state.entitlement = try await self.entitlementController.enter(key: key)
-                self.islandController?.syncVisibility()
-                self.statusController?.refreshMenu()
+                self.refreshPresentationSurfaces()
                 self.showAlert(
                     title: "Topside Is Licensed",
                     message: "This Mac can keep using Topside offline. The license is checked periodically when a connection is available."
                 )
             } catch {
                 self.state.entitlement = self.entitlementController.observe()
-                self.islandController?.syncVisibility()
-                self.statusController?.refreshMenu()
+                self.refreshPresentationSurfaces()
                 self.showAlert(title: "License Not Accepted", message: error.localizedDescription)
             }
+            self.scheduleEntitlementMaintenance()
         }
     }
 
@@ -350,8 +429,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusMenuControllerDe
             guard let self else { return }
             self.state.entitlement = await self.entitlementController.validate()
             self.isValidatingLicense = false
-            self.islandController?.syncVisibility()
-            self.statusController?.refreshMenu()
+            self.refreshPresentationSurfaces()
+            self.scheduleEntitlementMaintenance()
         }
     }
 
