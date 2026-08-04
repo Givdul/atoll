@@ -30,6 +30,28 @@ final class LifecycleEventTests: XCTestCase {
         try? FileManager.default.removeItem(at: directory)
     }
 
+    func testPresentationLabelPrefersTaskLabelAndFallsBackToStableLabel() {
+        let timestamp = Date(timeIntervalSince1970: 1_000)
+        let withTask = AgentSession(
+            id: "codex-task",
+            harness: .codex,
+            label: "Project",
+            state: .running,
+            updatedAt: timestamp,
+            taskLabel: "latest prompt"
+        )
+        let withoutTask = AgentSession(
+            id: "codex-fallback",
+            harness: .codex,
+            label: "Project",
+            state: .running,
+            updatedAt: timestamp
+        )
+
+        XCTAssertEqual(withTask.presentationLabel, "latest prompt")
+        XCTAssertEqual(withoutTask.presentationLabel, "Project")
+    }
+
     func testParsesCommonHookRecord() throws {
         let event = try XCTUnwrap(LifecycleEvent.parse(jsonLine: "{\"harness\":\"codex\",\"session_id\":\"abc\",\"event\":\"turn_started\",\"timestamp\":\"2026-07-10T12:00:00Z\"}"))
         XCTAssertEqual(event.harness, .codex)

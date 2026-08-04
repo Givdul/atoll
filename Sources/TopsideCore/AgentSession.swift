@@ -60,6 +60,12 @@ public struct AgentSession: Identifiable, Hashable, Codable, Sendable {
     public var state: SessionState
     /// Presentation-only task text. The durable registry never stores it.
     public var taskLabel: String? = nil
+
+    /// The single label shown for this session in the island row.
+    public var presentationLabel: String {
+        taskLabel ?? label
+    }
+
     /// Provider transition time clamped no later than Topside's receipt time for
     /// stable presentation and sorting. The registry retains the raw source time.
     public var updatedAt: Date

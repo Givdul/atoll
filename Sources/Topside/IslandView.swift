@@ -562,21 +562,11 @@ private struct SessionBubbleRow: View {
             HStack(spacing: 9 * metrics.scale) {
                 iconWell
 
-                VStack(alignment: .leading, spacing: -1 * metrics.scale) {
-                    Text(session.label)
-                        .font(.system(size: metrics.titleFontSize, weight: appearance.titleWeight, design: .rounded))
-                        .foregroundStyle(titleForeground)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-
-                    if let taskLabel = session.taskLabel {
-                        Text(taskLabel)
-                            .font(.system(size: metrics.detailFontSize, weight: .medium, design: .rounded))
-                            .foregroundStyle(titleForeground.opacity(0.68))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                }
+                Text(session.presentationLabel)
+                    .font(.system(size: metrics.titleFontSize, weight: appearance.titleWeight, design: .rounded))
+                    .foregroundStyle(titleForeground)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, 1 * metrics.scale)
                     .padding(.trailing, statusSegmentWidth + 12 * metrics.scale)
@@ -713,10 +703,7 @@ private struct SessionBubbleRow: View {
     }
 
     private var rowAccessibilityLabel: String {
-        guard let taskLabel = session.taskLabel else {
-            return "Open application for \(session.label)"
-        }
-        return "Open application for \(session.label), task \(taskLabel)"
+        "Open application for \(session.presentationLabel)"
     }
 
     private var titleForeground: Color {
