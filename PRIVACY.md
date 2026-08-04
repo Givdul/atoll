@@ -13,11 +13,9 @@ values, and full working-directory paths are discarded.
 
 Settings are stored in `~/.topside/config.json`. App-owned lifecycle state and
 delivery queues are stored with owner-only permissions under `~/.topside`;
-lifecycle payload content is discarded after it is normalized. Reversible Live
-Status setup also keeps owner-only, byte-for-byte backups of existing agent
-configuration under `~/.topside/backups/live-status`. Those backups remain local
-and may contain commands or environment values that were already present in the
-agent configuration.
+lifecycle payload content is discarded after it is normalized. Live Status
+repair and removal edit shared provider configuration structurally, preserving
+unrelated entries and removing only exact Topside-owned commands.
 
 Release builds store the trial start, last observation, license key, and
 validation times in the macOS Keychain under the retained compatibility service

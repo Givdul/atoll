@@ -481,6 +481,20 @@ final class TopsideEntitlementTests: XCTestCase {
     }
 
     @MainActor
+    func testMaintenanceDeadlineUsesObservationScheduleBeforeTrialExpiry() async {
+        let controller = TopsideEntitlementController(
+            store: makeStore(),
+            configuration: nil
+        )
+        _ = await controller.start(at: start)
+
+        XCTAssertEqual(
+            controller.nextMaintenanceDate(at: start),
+            start.addingTimeInterval(60)
+        )
+    }
+
+    @MainActor
     func testValidationMutationGateRejectsOverlappingLicenseEntry() async throws {
         let configuration = try XCTUnwrap(configuration())
         let sessionConfiguration = URLSessionConfiguration.ephemeral
@@ -495,14 +509,11 @@ final class TopsideEntitlementTests: XCTestCase {
         _ = await controller.start(at: start)
         _ = try await controller.enter(key: "topside-test-license", at: start)
 
-        MockLicenseURLProtocol.mode = .delayedValid
-        MockLicenseURLProtocol.requests = []
+        MockLicenseURLProtocol.prepareDelayedResponse()
         let validation = Task { @MainActor in
             await controller.validate(at: start.addingTimeInterval(25 * 60 * 60))
         }
-        for _ in 0..<100 where MockLicenseURLProtocol.requests.isEmpty {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        await MockLicenseURLProtocol.waitForDelayedRequest()
         XCTAssertEqual(MockLicenseURLProtocol.requests.count, 1)
 
         do {
@@ -513,6 +524,7 @@ final class TopsideEntitlementTests: XCTestCase {
             XCTFail("License entry overlapped automatic validation")
         } catch TopsideEntitlementController.LicenseError.busy {}
 
+        MockLicenseURLProtocol.releaseDelayedResponse()
         let validationStatus = await validation.value
         XCTAssertEqual(
             validationStatus,
@@ -693,7 +705,17 @@ final class TopsideEntitlementTests: XCTestCase {
         XCTAssertNotNil(queue.enqueue(
             LifecycleEvent(sessionID: "000", harness: .codex, kind: .started)
         ))
-        Thread.sleep(forTimeInterval: 0.01)
+        let queueDirectory = home.appendingPathComponent(".topside/lifecycle-events")
+        let firstFile = try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(
+                at: queueDirectory,
+                includingPropertiesForKeys: nil
+            ).first
+        )
+        try FileManager.default.setAttributes(
+            [.creationDate: Date.distantPast],
+            ofItemAtPath: firstFile.path
+        )
         for index in 1...LifecycleEventQueue.maximumPendingEvents {
             XCTAssertNotNil(queue.enqueue(
                 LifecycleEvent(
@@ -812,6 +834,37 @@ private final class MockLicenseURLProtocol: URLProtocol, @unchecked Sendable {
 
     nonisolated(unsafe) static var mode = Mode.valid
     nonisolated(unsafe) static var requests: [CapturedRequest] = []
+    private static let delayedRequestLock = NSLock()
+    nonisolated(unsafe) private static var delayedRequestArrived = false
+    nonisolated(unsafe) private static var delayedRequestContinuation: CheckedContinuation<Void, Never>?
+    nonisolated(unsafe) private static var delayedResponseRelease = DispatchSemaphore(value: 0)
+
+    static func prepareDelayedResponse() {
+        mode = .delayedValid
+        requests = []
+        delayedRequestLock.lock()
+        delayedRequestArrived = false
+        delayedRequestContinuation = nil
+        delayedRequestLock.unlock()
+        delayedResponseRelease = DispatchSemaphore(value: 0)
+    }
+
+    static func waitForDelayedRequest() async {
+        await withCheckedContinuation { continuation in
+            delayedRequestLock.lock()
+            if delayedRequestArrived {
+                delayedRequestLock.unlock()
+                continuation.resume()
+            } else {
+                delayedRequestContinuation = continuation
+                delayedRequestLock.unlock()
+            }
+        }
+    }
+
+    static func releaseDelayedResponse() {
+        delayedResponseRelease.signal()
+    }
 
     override class func canInit(with request: URLRequest) -> Bool {
         request.url?.host == "api.polar.sh" || request.url?.host == "sandbox-api.polar.sh"
@@ -830,7 +883,13 @@ private final class MockLicenseURLProtocol: URLProtocol, @unchecked Sendable {
             contentType: request.value(forHTTPHeaderField: "Content-Type")
         ))
         if Self.mode == .delayedValid {
-            Thread.sleep(forTimeInterval: 0.2)
+            Self.delayedRequestLock.lock()
+            Self.delayedRequestArrived = true
+            let continuation = Self.delayedRequestContinuation
+            Self.delayedRequestContinuation = nil
+            Self.delayedRequestLock.unlock()
+            continuation?.resume()
+            Self.delayedResponseRelease.wait()
         }
         if Self.mode == .offline {
             client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))

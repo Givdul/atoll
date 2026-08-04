@@ -1,6 +1,6 @@
 import Foundation
 
-public struct TopsideSettings: Codable, Sendable {
+public struct TopsideSettings: Codable, Equatable, Sendable {
     public var enabled: Bool
     public var notificationsEnabled: Bool
     public var screenMode: String

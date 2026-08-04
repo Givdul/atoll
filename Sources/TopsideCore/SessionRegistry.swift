@@ -2,7 +2,7 @@ import Foundation
 
 /// Durable state derived solely from hook events; it never consults processes or locks.
 public final class LifecycleSessionRegistry: @unchecked Sendable {
-    private struct DeliveryReceipt: Codable {
+    private struct DeliveryReceipt: Codable, Equatable {
         var identity: String
         var receivedAt: Date
     }
@@ -97,7 +97,7 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
     }
 
     @discardableResult
-    public func ingest(_ event: LifecycleEvent, now: Date = Date()) -> [AgentSession] {
+    func ingest(_ event: LifecycleEvent, now: Date = Date()) -> [AgentSession] {
         lock.lock()
         defer { lock.unlock() }
         let sessions = ingestLocked(event, now: now)
@@ -278,18 +278,37 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         receivedAt: Date,
         in record: inout Record
     ) {
-        var deliveries = record.recentDeliveries ?? []
-        deliveries.removeAll {
-            receivedAt.timeIntervalSince($0.receivedAt) > Self.deliveryIdentityRetention
-        }
-        if !deliveries.contains(where: { $0.identity == identity }) {
-            deliveries.append(DeliveryReceipt(identity: identity, receivedAt: receivedAt))
-        }
-        if deliveries.count > Self.maximumRecentDeliveryIdentities {
-            deliveries.removeFirst(deliveries.count - Self.maximumRecentDeliveryIdentities)
-        }
+        let deliveries = (record.recentDeliveries ?? []) + [
+            DeliveryReceipt(identity: identity, receivedAt: receivedAt)
+        ]
         record.lastEventKey = nil
-        record.recentDeliveries = deliveries
+        record.recentDeliveries = Self.normalizedDeliveries(
+            deliveries,
+            now: receivedAt
+        )
+    }
+
+    private static func normalizedDeliveries(
+        _ deliveries: [DeliveryReceipt],
+        now: Date? = nil,
+        migratingLegacyIdentities: Bool = false
+    ) -> [DeliveryReceipt] {
+        var seen: Set<String> = []
+        var normalized = deliveries.compactMap { delivery -> DeliveryReceipt? in
+            if let now,
+               now.timeIntervalSince(delivery.receivedAt) > deliveryIdentityRetention {
+                return nil
+            }
+            let identity = migratingLegacyIdentities
+                ? LifecycleEvent.migratedDeliveryIdentity(delivery.identity)
+                : delivery.identity
+            guard seen.insert(identity).inserted else { return nil }
+            return DeliveryReceipt(identity: identity, receivedAt: delivery.receivedAt)
+        }
+        if normalized.count > maximumRecentDeliveryIdentities {
+            normalized.removeFirst(normalized.count - maximumRecentDeliveryIdentities)
+        }
+        return normalized
     }
 
     private func persistNoOp(_ record: Record, key: String, now: Date) -> [AgentSession] {
@@ -310,6 +329,18 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
         let changed = prune(now: now)
         if changed || needsRewrite { _ = save() }
         return sessionsLocked(now: now)
+    }
+
+    public func nextVisibleExpiry(after now: Date = Date()) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return records.values
+            .map { record in
+                let ttl = record.state.isTerminal ? terminalTTL : activeTTL
+                return (record.observedAt ?? record.updatedAt).addingTimeInterval(ttl)
+            }
+            .filter { $0 > now }
+            .min()
     }
 
     private func sessionsLocked(now: Date) -> [AgentSession] {
@@ -344,15 +375,9 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
 
         for (key, originalRecord) in records {
             var record = originalRecord
-            var deliveries = record.recentDeliveries ?? []
-            let previousDeliveryCount = deliveries.count
-            deliveries.removeAll {
-                now.timeIntervalSince($0.receivedAt) > Self.deliveryIdentityRetention
-            }
-            if deliveries.count > Self.maximumRecentDeliveryIdentities {
-                deliveries.removeFirst(deliveries.count - Self.maximumRecentDeliveryIdentities)
-            }
-            if deliveries.count != previousDeliveryCount || record.lastEventKey != nil {
+            let previousDeliveries = record.recentDeliveries ?? []
+            let deliveries = Self.normalizedDeliveries(previousDeliveries, now: now)
+            if deliveries != previousDeliveries || record.lastEventKey != nil {
                 changed = true
             }
             record.lastEventKey = nil
@@ -400,22 +425,12 @@ public final class LifecycleSessionRegistry: @unchecked Sendable {
             record.orderingAt = record.orderingAt ?? min(record.updatedAt, observedAt)
             var deliveries = record.recentDeliveries ?? []
             if let lastEventKey = record.lastEventKey {
-                let migratedIdentity = LifecycleEvent.migratedDeliveryIdentity(lastEventKey)
-                if !deliveries.contains(where: { $0.identity == migratedIdentity }) {
-                    deliveries.append(DeliveryReceipt(identity: migratedIdentity, receivedAt: observedAt))
-                }
+                deliveries.append(DeliveryReceipt(identity: lastEventKey, receivedAt: observedAt))
             }
-            deliveries = deliveries.map {
-                DeliveryReceipt(
-                    identity: LifecycleEvent.migratedDeliveryIdentity($0.identity),
-                    receivedAt: $0.receivedAt
-                )
-            }
-            var seenIdentities: Set<String> = []
-            deliveries = deliveries.filter { seenIdentities.insert($0.identity).inserted }
-            if deliveries.count > Self.maximumRecentDeliveryIdentities {
-                deliveries.removeFirst(deliveries.count - Self.maximumRecentDeliveryIdentities)
-            }
+            deliveries = normalizedDeliveries(
+                deliveries,
+                migratingLegacyIdentities: true
+            )
             record.lastEventKey = nil
             record.recentDeliveries = deliveries.isEmpty ? nil : deliveries
             record.label = record.label ?? "\(record.harness.displayName) session"

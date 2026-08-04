@@ -26,14 +26,6 @@ enum DateParsing {
             return date(fromNumber: number.doubleValue)
         }
 
-        if let double = value as? Double {
-            return date(fromNumber: double)
-        }
-
-        if let int = value as? Int {
-            return date(fromNumber: Double(int))
-        }
-
         if let string = value as? String {
             let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
             if let double = Double(trimmed) {

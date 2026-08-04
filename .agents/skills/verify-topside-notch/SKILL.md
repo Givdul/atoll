@@ -26,16 +26,17 @@ Create two screen-space artifacts: an untouched top-band capture and a diagnosti
      | /Applications/Topside.app/Contents/MacOS/Topside --lifecycle-event codex started
    ```
 
-4. Capture and annotate the live target display without retaining a full-screen image:
+4. Capture and annotate the live target display without retaining a full-screen image. Use a temporary directory by default:
 
    ```sh
+   EVIDENCE_DIR="$(mktemp -d)"
    swift .agents/skills/verify-topside-notch/scripts/capture-notch.swift \
-     Screenshots/<name>-screen-raw.png \
-     Screenshots/<name>-physical-notch.png
+     "$EVIDENCE_DIR/topside-screen-raw.png" \
+     "$EVIDENCE_DIR/topside-physical-notch.png"
    ```
 
-5. Inspect both images. With the current 189×35-point overlay shifted 0.5 point right for optical calibration against the glass, expect 1.5 points or 3 backing pixels on the left, 2.5 points or 5 backing pixels on the right, and 3 points or 6 backing pixels below this Mac's 185×32-point obstruction.
-6. Treat differences from those calibrated margins as a screen-space placement failure. Keep the window centered on AppKit's bounds; the visual asymmetry is intentional hardware calibration.
+5. Inspect both images against the live `NSScreen` annotation and the current geometry contract in `IslandPresentationTests`. Do not copy implementation dimensions or calibrated margins into durable prose.
+6. Treat an overlay that is not centered on AppKit's obstruction bounds, or that diverges from the tested optical offset, as a screen-space placement failure.
 7. End the synthetic session:
 
    ```sh

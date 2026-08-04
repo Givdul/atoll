@@ -21,6 +21,8 @@
 - Before each commit, inspect `git status --short`, `git diff --stat`, and the staged diff enough to understand what is being published.
 - Stage only files that belong to the current Topside work. Do not revert or overwrite unrelated user changes.
 - Generate commit messages and PR metadata in the current thread; do not use a separate generation provider or model.
+- Do not credit Claude Code as a GitHub contributor or co-author. Do not add `Co-Authored-By: Claude <noreply@anthropic.com>` to commits.
+- Do not append a `Generated with Claude Code` section or badge to pull request descriptions.
 - Use one-line commit subjects, max 72 characters, in imperative Conventional Commit style when obvious, such as `fix: recognize Pi agent completion events`.
 - Avoid vague commit subjects like `Update files`, `Fix changes`, `Commit changes`, or `Misc changes`.
 - Run the focused relevant tests before committing when feasible. If tests are not run, mention that explicitly.

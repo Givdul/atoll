@@ -18,111 +18,122 @@ enum IslandHoverState: Equatable {
 
 @MainActor
 final class AppState: ObservableObject {
-    @Published var allSessions: [AgentSession] = []
-    {
+    @Published private(set) var allSessions: [AgentSession] = []
+    @Published private(set) var presentation: IslandPresentation = .empty
+    @Published private(set) var settings: TopsideSettings
+    @Published var islandHoverState: IslandHoverState = .inactive {
         didSet {
-            updateTerminalObservationTimes(from: allSessions)
+            guard islandHoverState != oldValue else { return }
+            refreshPresentation()
         }
     }
-    @Published var settings: TopsideSettings
-    @Published var lastRefresh: Date?
-    @Published var islandHoverState: IslandHoverState = .inactive
     @Published var isIslandAvailable = false
     @Published var entitlement: TopsideEntitlementStatus = .recoverableError(
         message: "Topside is checking its entitlement.",
         allowsUse: true
-    )
+    ) {
+        didSet {
+            guard entitlement != oldValue else { return }
+            refreshPresentation()
+        }
+    }
 
-    private static let maxVisibleSessions = 8
-
-    private let settingsStore: SettingsStore
-    let isDevelopmentBuild = Bundle.main.object(forInfoDictionaryKey: "TopsideDevelopmentBuild") as? Bool == true
-    private let terminalDisplayWindow: TimeInterval = 3
     private struct TerminalObservation {
         var state: SessionState
         var sourceObservedAt: Date?
         var displayedAt: Date
     }
-    private var terminalObservations: [String: TerminalObservation] = [:]
 
-    private var displaySessions: [AgentSession] {
-        guard entitlement.allowsUse || settings.testMode || isDevelopmentBuild else { return [] }
-        return settings.testMode ? Self.testModeSessions() : allSessions
-    }
+    private let settingsStore: SettingsStore
+    let isDevelopmentBuild = Bundle.main.object(forInfoDictionaryKey: "TopsideDevelopmentBuild") as? Bool == true
+    private var terminalObservations: [String: TerminalObservation] = [:]
+    private var notchGeometry: PhysicalNotchGeometry?
 
     init(settingsStore: SettingsStore) {
         self.settingsStore = settingsStore
         self.settings = settingsStore.load()
+        refreshPresentation()
     }
 
     var visibleSessions: [AgentSession] {
-        let now = Date()
-        let candidates = displaySessions.filter { session in
-            switch session.state {
-            case .waitingForPermission, .waitingForInput, .running:
-                true
-            case .done, .failed, .cancelled:
-                settings.testMode || isRecentTerminalNotification(session, now: now)
-            case .unknown:
-                false
-            }
-        }
-
-        let attentionSessions = Array(
-            Self.attentionSessions(from: candidates).prefix(Self.maxVisibleSessions)
-        )
-        let regularCandidates = candidates.filter { !Self.needsAttention($0) }
-        let terminalSessions = regularCandidates
-            .filter { $0.state.isTerminal }
-            .sorted { terminalDisplayDate(for: $0) > terminalDisplayDate(for: $1) }
-        let activeSessions = regularCandidates.filter { !$0.state.isTerminal }
-        let regularSessions = terminalSessions + activeSessions
-        let regularLimit = max(0, Self.maxVisibleSessions - attentionSessions.count)
-
-        return Array(regularSessions.prefix(regularLimit)) + attentionSessions
+        presentation.visibleSessions
     }
 
     var runningSessions: [AgentSession] {
-        displaySessions.filter {
-            $0.state == .running
-        }
+        presentation.runningSessions
     }
 
     var waitingSessions: [AgentSession] {
-        displaySessions.filter {
-            ($0.state == .waitingForInput || $0.state == .waitingForPermission)
-        }
+        presentation.waitingSessions
     }
 
     var recentTerminalSessions: [AgentSession] {
-        let now = Date()
-        return displaySessions.filter {
-            $0.state.isTerminal && (settings.testMode || isRecentTerminalNotification($0, now: now))
-        }
+        presentation.recentTerminalSessions
     }
 
     var hasIslandContent: Bool {
-        !runningSessions.isEmpty || !waitingSessions.isEmpty || !recentTerminalSessions.isEmpty
+        presentation.hasContent
     }
 
     var visibleAttentionCount: Int {
-        visibleSessions.filter(Self.needsAttention).count
+        presentation.attentionSessions.count
     }
 
     var visibleRegularCount: Int {
-        max(0, visibleSessions.count - visibleAttentionCount)
+        presentation.regularSessions.count
     }
 
     var activeAttentionCount: Int {
-        waitingSessions.count
+        presentation.activeAttentionCount
+    }
+
+    @discardableResult
+    func replaceSessions(_ sessions: [AgentSession], now: Date = Date()) -> Bool {
+        let sessionsChanged = sessions != allSessions
+        if sessionsChanged {
+            allSessions = sessions
+            updateTerminalObservationTimes(from: sessions, now: now)
+        }
+        return refreshPresentation(now: now) || sessionsChanged
     }
 
     func update(settings: TopsideSettings) {
+        guard settings != self.settings else { return }
         self.settings = settings
         settingsStore.save(settings)
+        refreshPresentation()
     }
 
-    private static func testModeSessions(now: Date = Date()) -> [AgentSession] {
+    func updateNotchGeometry(_ notch: PhysicalNotchGeometry?) {
+        guard notch != notchGeometry else { return }
+        notchGeometry = notch
+        refreshPresentation()
+    }
+
+    @discardableResult
+    func refreshPresentation(now: Date = Date()) -> Bool {
+        let sessions: [AgentSession]
+        if !(entitlement.allowsUse || settings.testMode || isDevelopmentBuild) {
+            sessions = []
+        } else if settings.testMode {
+            sessions = Self.testModeSessions(now: now)
+        } else {
+            sessions = allSessions
+        }
+        let next = IslandPresentation.make(
+            sessions: sessions,
+            terminalDisplayedAt: terminalObservations.mapValues(\.displayedAt),
+            now: now,
+            testMode: settings.testMode,
+            isExpanded: islandHoverState.expandsList,
+            notch: notchGeometry
+        )
+        guard next != presentation else { return false }
+        presentation = next
+        return true
+    }
+
+    private static func testModeSessions(now: Date) -> [AgentSession] {
         let running = LifecycleHookInstaller.supportedAgents.enumerated().map { index, harness in
             AgentSession(
                 id: "test-\(harness.rawValue)-running",
@@ -133,7 +144,6 @@ final class AppState: ObservableObject {
                 taskLabel: "Test task"
             )
         }
-
         let codexAttention = [
             AgentSession(
                 id: "test-codex-question",
@@ -152,7 +162,6 @@ final class AppState: ObservableObject {
                 taskLabel: "Test permission"
             )
         ]
-
         let doneSession = AgentSession(
             id: "test-codex-done",
             harness: .codex,
@@ -161,7 +170,6 @@ final class AppState: ObservableObject {
             updatedAt: now,
             taskLabel: "Test done"
         )
-
         return (running + codexAttention + [doneSession]).sorted {
             if $0.state.sortRank != $1.state.sortRank {
                 return $0.state.sortRank < $1.state.sortRank
@@ -170,63 +178,22 @@ final class AppState: ObservableObject {
         }
     }
 
-    private static func attentionSessions(from sessions: [AgentSession]) -> [AgentSession] {
-        sessions
-            .filter(needsAttention)
-            .sorted {
-                if attentionBottomRank($0.state) != attentionBottomRank($1.state) {
-                    return attentionBottomRank($0.state) < attentionBottomRank($1.state)
-                }
-                return $0.updatedAt > $1.updatedAt
-            }
-    }
-
-    private static func needsAttention(_ session: AgentSession) -> Bool {
-        session.state == .waitingForInput || session.state == .waitingForPermission
-    }
-
-    private func isRecentTerminalNotification(_ session: AgentSession, now: Date) -> Bool {
-        let observedAt = terminalDisplayDate(for: session)
-        return now.timeIntervalSince(observedAt) <= terminalDisplayWindow
-    }
-
-    private func terminalDisplayDate(for session: AgentSession) -> Date {
-        terminalObservations[session.id]?.displayedAt
-            ?? session.observedAt
-            ?? session.updatedAt
-    }
-
-    private func updateTerminalObservationTimes(from sessions: [AgentSession]) {
-        let now = Date()
+    private func updateTerminalObservationTimes(from sessions: [AgentSession], now: Date) {
         let activeTerminalIDs = Set(sessions.filter { $0.state.isTerminal }.map(\.id))
-
         terminalObservations = terminalObservations.filter { id, _ in
             activeTerminalIDs.contains(id)
         }
-
         for session in sessions where session.state.isTerminal {
             let existing = terminalObservations[session.id]
             let shouldReset = existing == nil
                 || existing?.state != session.state
                 || existing?.sourceObservedAt != session.observedAt
             guard shouldReset else { continue }
-
             terminalObservations[session.id] = TerminalObservation(
                 state: session.state,
                 sourceObservedAt: session.observedAt,
                 displayedAt: now
             )
-        }
-    }
-
-    private static func attentionBottomRank(_ state: SessionState) -> Int {
-        switch state {
-        case .waitingForInput:
-            0
-        case .waitingForPermission:
-            1
-        default:
-            2
         }
     }
 }

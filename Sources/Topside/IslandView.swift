@@ -2,46 +2,6 @@ import TopsideCore
 import AppKit
 import SwiftUI
 
-struct IslandMetrics: Equatable {
-    var scale: CGFloat
-    var rowWidth: CGFloat
-    var rowHeight: CGFloat
-    var horizontalPadding: CGFloat
-    var iconSize: CGFloat
-    var titleFontSize: CGFloat
-    var detailFontSize: CGFloat
-    var topGap: CGFloat
-    var rowSpacing: CGFloat
-    var notchWidth: CGFloat
-    var notchHeight: CGFloat
-
-    init(display: IslandDisplayGeometry) {
-        let baseNotchHeight = display.scaleHeight
-        let factor = min(1.08, max(0.88, baseNotchHeight / 32))
-        scale = factor
-        rowWidth = 392 * factor
-        rowHeight = max(32, min(36, baseNotchHeight * 0.92))
-        horizontalPadding = 6.5 * factor
-        iconSize = rowHeight - 8 * factor
-        titleFontSize = min(12 * factor, rowHeight * 0.38)
-        detailFontSize = min(11 * factor, rowHeight * 0.34)
-        topGap = 0
-        rowSpacing = 3 * factor
-        notchWidth = display.width
-        notchHeight = display.height
-    }
-
-    func listHeight(forRowCount rowCount: Int) -> CGFloat {
-        let count = CGFloat(rowCount)
-        guard count > 0 else {
-            return 0
-        }
-
-        let rowSpacingCount = max(0, count - 1)
-        return count * rowHeight + rowSpacingCount * rowSpacing
-    }
-}
-
 private enum SessionStateColor {
     static let working = Color(red: 1.00, green: 0.52, blue: 0.10)
     static let question = Color(red: 0.22, green: 0.78, blue: 1.00)
@@ -72,7 +32,6 @@ private enum SessionStateColor {
 
 struct IslandView: View {
     @ObservedObject var state: AppState
-    let metrics: IslandMetrics?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var glassNamespace
 
@@ -81,14 +40,17 @@ struct IslandView: View {
 
     @ViewBuilder
     var body: some View {
-        if let metrics {
-            let visibleSessions = state.visibleSessions
-            let hasFloatingTerminalRows = visibleSessions.contains { $0.state.isTerminal }
+        if let layout = state.presentation.layout {
+            let hasFloatingTerminalRows = !state.presentation.floatingTerminalSessions.isEmpty
 
             ZStack(alignment: .top) {
-                islandStack(metrics: metrics, sessions: visibleSessions)
+                islandContent(layout: layout)
             }
-            .frame(width: 439, height: 340, alignment: .top)
+            .frame(
+                width: layout.hostFrame.width,
+                height: layout.hostFrame.height,
+                alignment: .top
+            )
             .clipped()
             .onAppear {
                 if state.islandHoverState.expandsList || hasFloatingTerminalRows {
@@ -110,37 +72,27 @@ struct IslandView: View {
                 }
             }
         } else {
-            Color.clear.frame(width: 439, height: 340)
+            Color.clear.frame(
+                width: IslandMetrics.hostSize.width,
+                height: IslandMetrics.hostSize.height
+            )
         }
     }
 
-    @ViewBuilder
-    private func islandStack(
-        metrics: IslandMetrics,
-        sessions: [AgentSession]
-    ) -> some View {
-        islandContent(metrics: metrics, sessions: sessions)
-    }
-
-    private func islandContent(
-        metrics: IslandMetrics,
-        sessions: [AgentSession]
-    ) -> some View {
-        let pinnedSessions = pinnedAttentionSessions(from: sessions)
-        let hoverSessions = sessions.filter { !isAttentionSession($0) }
-        let isExpanded = state.islandHoverState.expandsList
-        let floatingTerminalSessions = hoverSessions.filter { $0.state.isTerminal }
-        let rowSessions = isExpanded ? hoverSessions : floatingTerminalSessions
-        let showsFloatingTerminalRows = !isExpanded && !floatingTerminalSessions.isEmpty
+    private func islandContent(layout: IslandPresentationLayout) -> some View {
+        let metrics = layout.metrics
+        let rowSessions = state.presentation.displayedRegularSessions
+        let pinnedSessions = state.presentation.attentionSessions
+        let showsRows = state.islandHoverState.expandsList || !rowSessions.isEmpty
         let attentionOpacity = state.islandHoverState.dimsAttentionRows ? 0.30 : 1.0
 
         return VStack(spacing: metrics.rowSpacing) {
             NotchActivityBorder(
-                activityState: notchActivityState(for: sessions),
+                activityState: state.presentation.activityState,
                 metrics: metrics,
                 glassNamespace: glassNamespace
             )
-            .offset(x: 0.5)
+            .offset(x: IslandMetrics.opticalHorizontalOffset)
             .allowsHitTesting(false)
             .zIndex(10)
 
@@ -150,15 +102,19 @@ struct IslandView: View {
                         SessionBubbleRow(
                             session: session,
                             metrics: metrics,
-                            animatedIcon: session.state == .running,
                             glassID: "row-\(session.id)",
                             glassNamespace: glassNamespace
                         )
                         .transition(terminalRowTransition)
                     }
                 }
-                .frame(height: rowListHeight(metrics: metrics, rowCount: rowSessions.count, isVisible: isExpanded || showsFloatingTerminalRows), alignment: .top)
-                .opacity(isExpanded || showsFloatingTerminalRows ? 1 : 0)
+                .frame(
+                    height: showsRows
+                        ? layout.regularSectionBounds?.height ?? 0
+                        : 0,
+                    alignment: .top
+                )
+                .opacity(showsRows ? 1 : 0)
                 .clipped()
             }
 
@@ -168,45 +124,24 @@ struct IslandView: View {
                         SessionBubbleRow(
                             session: session,
                             metrics: metrics,
-                            animatedIcon: false,
                             glassID: "attention-row-\(session.id)",
                             glassNamespace: glassNamespace
                         )
                     }
                 }
                 .opacity(attentionOpacity)
-                .animation(attentionFadeAnimation(dimmed: state.islandHoverState.dimsAttentionRows), value: state.islandHoverState.dimsAttentionRows)
+                .animation(
+                    attentionFadeAnimation(dimmed: state.islandHoverState.dimsAttentionRows),
+                    value: state.islandHoverState.dimsAttentionRows
+                )
             }
         }
         .padding(.top, metrics.topGap)
         .animation(listRevealAnimation, value: state.islandHoverState)
-        .animation(rowAnimation, value: sessions.map { [$0.id, $0.state.rawValue, $0.taskLabel ?? ""].joined(separator: ":") })
-    }
-
-    private func rowListHeight(metrics: IslandMetrics, rowCount: Int, isVisible: Bool) -> CGFloat {
-        isVisible ? metrics.listHeight(forRowCount: rowCount) : 0
-    }
-
-    private func pinnedAttentionSessions(from sessions: [AgentSession]) -> [AgentSession] {
-        sessions.filter(isAttentionSession)
-    }
-
-    private func isAttentionSession(_ session: AgentSession) -> Bool {
-        session.state == .waitingForInput || session.state == .waitingForPermission
-    }
-
-    private func notchActivityState(for sessions: [AgentSession]) -> SessionState? {
-        if sessions.contains(where: { $0.state == .waitingForPermission }) {
-            return .waitingForPermission
-        }
-        if sessions.contains(where: { $0.state == .waitingForInput }) {
-            return .waitingForInput
-        }
-        if sessions.contains(where: { $0.state == .running }) {
-            return .running
-        }
-
-        return nil
+        .animation(
+            rowAnimation,
+            value: state.presentation.displayedSessions.map { [$0.id, $0.state.rawValue, $0.taskLabel ?? ""].joined(separator: ":") }
+        )
     }
 
     private struct NotchActivityBorder: View {
@@ -539,7 +474,6 @@ private struct MacNotchColoredRegion: Shape {
 private struct SessionBubbleRow: View {
     let session: AgentSession
     let metrics: IslandMetrics
-    let animatedIcon: Bool
     let glassID: String
     let glassNamespace: Namespace.ID
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -567,14 +501,14 @@ private struct SessionBubbleRow: View {
                     liquidGlassRowDecoration
                 }
                 .contentShape(rowShape)
-                .glassEffect(.regular.tint(appearance.glassTint), in: rowShape)
+                .glassEffect(.regular.tint(Color.black.opacity(0.96)), in: rowShape)
                 .glassEffectID(glassID, in: glassNamespace)
                 .overlay {
                     RowActivityBorder(
                         state: session.state,
                         color: appearance.accent,
                         metrics: metrics,
-                        animated: animatedIcon,
+                        animated: session.state == .running,
                         reduceMotion: reduceMotion
                     )
                 }
@@ -591,7 +525,7 @@ private struct SessionBubbleRow: View {
                         state: session.state,
                         color: appearance.accent,
                         metrics: metrics,
-                        animated: animatedIcon,
+                        animated: session.state == .running,
                         reduceMotion: reduceMotion
                     )
                 }
@@ -628,21 +562,11 @@ private struct SessionBubbleRow: View {
             HStack(spacing: 9 * metrics.scale) {
                 iconWell
 
-                VStack(alignment: .leading, spacing: -1 * metrics.scale) {
-                    Text(session.label)
-                        .font(.system(size: metrics.titleFontSize, weight: appearance.titleWeight, design: .rounded))
-                        .foregroundStyle(titleForeground)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-
-                    if let taskLabel = session.taskLabel {
-                        Text(taskLabel)
-                            .font(.system(size: metrics.detailFontSize, weight: .medium, design: .rounded))
-                            .foregroundStyle(titleForeground.opacity(0.68))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                }
+                Text(session.presentationLabel)
+                    .font(.system(size: metrics.titleFontSize, weight: appearance.titleWeight, design: .rounded))
+                    .foregroundStyle(titleForeground)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, 1 * metrics.scale)
                     .padding(.trailing, statusSegmentWidth + 12 * metrics.scale)
@@ -684,7 +608,7 @@ private struct SessionBubbleRow: View {
 
     private var liquidGlassRowDecoration: some View {
         rowShape
-            .fill(appearance.surfaceWash)
+            .fill(Color.black)
             .overlay {
                 rowShape
                     .fill(rowTintSweep)
@@ -696,9 +620,9 @@ private struct SessionBubbleRow: View {
                         .stroke(
                             LinearGradient(
                                 colors: [
-                                    appearance.borderAccent.opacity(0.98),
+                                    appearance.accent.opacity(0.98),
                                     .white.opacity(0.12),
-                                    appearance.borderAccent.opacity(0.72)
+                                    appearance.accent.opacity(0.72)
                                 ],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
@@ -739,7 +663,7 @@ private struct SessionBubbleRow: View {
 
     private var fallbackRowDecoration: some View {
         rowShape
-            .fill(appearance.surfaceWash)
+            .fill(Color.black)
             .overlay {
                 rowShape
                     .fill(rowTintSweep.opacity(0.66))
@@ -747,7 +671,7 @@ private struct SessionBubbleRow: View {
             .overlay {
                 if session.state != .running {
                     rowShape
-                        .stroke(appearance.borderAccent.opacity(0.78), lineWidth: 1.1 * metrics.scale)
+                        .stroke(appearance.accent.opacity(0.78), lineWidth: 1.1 * metrics.scale)
                 }
             }
             .overlay {
@@ -762,7 +686,7 @@ private struct SessionBubbleRow: View {
         LinearGradient(
             colors: [
                 .white.opacity(0.015),
-                appearance.borderAccent.opacity(0.05),
+                appearance.accent.opacity(0.05),
                 .white.opacity(0.01)
             ],
             startPoint: .leading,
@@ -779,10 +703,7 @@ private struct SessionBubbleRow: View {
     }
 
     private var rowAccessibilityLabel: String {
-        guard let taskLabel = session.taskLabel else {
-            return "Open application for \(session.label)"
-        }
-        return "Open application for \(session.label), task \(taskLabel)"
+        "Open application for \(session.presentationLabel)"
     }
 
     private var titleForeground: Color {
@@ -1021,80 +942,56 @@ private struct RowActivityBorder: View {
 }
 
 private struct SessionRowAppearance {
-    let surfaceWash: Color
     let accent: Color
-    let borderAccent: Color
     let iconGlyph: Color
     let titleOpacity: Double
     let iconScale: CGFloat
     let titleWeight: Font.Weight
-    let glassTint: Color
 
     init(state: SessionState) {
         switch state {
         case .running:
-            surfaceWash = .black
             accent = SessionStateColor.working
-            borderAccent = SessionStateColor.working
             iconGlyph = .white
             titleOpacity = 0.95
             iconScale = 1
             titleWeight = .semibold
-            glassTint = .black.opacity(0.96)
         case .done:
-            surfaceWash = .black
             accent = SessionStateColor.done
-            borderAccent = SessionStateColor.done
             iconGlyph = accent
             titleOpacity = 0.78
             iconScale = 0.94
             titleWeight = .medium
-            glassTint = .black.opacity(0.96)
         case .failed:
-            surfaceWash = .black
             accent = SessionStateColor.failed
-            borderAccent = SessionStateColor.failed
             iconGlyph = accent
             titleOpacity = 0.88
             iconScale = 0.94
             titleWeight = .medium
-            glassTint = .black.opacity(0.96)
         case .cancelled:
-            surfaceWash = .black
             accent = SessionStateColor.cancelled
-            borderAccent = SessionStateColor.cancelled
             iconGlyph = accent
             titleOpacity = 0.72
             iconScale = 0.94
             titleWeight = .medium
-            glassTint = .black.opacity(0.96)
         case .waitingForInput:
-            surfaceWash = .black
             accent = SessionStateColor.question
-            borderAccent = SessionStateColor.question
             iconGlyph = accent
             titleOpacity = 1
             iconScale = 1.02
             titleWeight = .bold
-            glassTint = .black.opacity(0.96)
         case .waitingForPermission:
-            surfaceWash = .black
             accent = SessionStateColor.permission
-            borderAccent = SessionStateColor.permission
             iconGlyph = accent
             titleOpacity = 1
             iconScale = 1.02
             titleWeight = .bold
-            glassTint = .black.opacity(0.96)
         case .unknown:
-            surfaceWash = .black
             accent = .white.opacity(0.52)
-            borderAccent = .white.opacity(0.52)
             iconGlyph = .white.opacity(0.72)
             titleOpacity = 0.82
             iconScale = 0.96
             titleWeight = .medium
-            glassTint = .black.opacity(0.96)
         }
     }
 }

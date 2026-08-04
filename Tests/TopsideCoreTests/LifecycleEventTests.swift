@@ -30,6 +30,28 @@ final class LifecycleEventTests: XCTestCase {
         try? FileManager.default.removeItem(at: directory)
     }
 
+    func testPresentationLabelPrefersTaskLabelAndFallsBackToStableLabel() {
+        let timestamp = Date(timeIntervalSince1970: 1_000)
+        let withTask = AgentSession(
+            id: "codex-task",
+            harness: .codex,
+            label: "Project",
+            state: .running,
+            updatedAt: timestamp,
+            taskLabel: "latest prompt"
+        )
+        let withoutTask = AgentSession(
+            id: "codex-fallback",
+            harness: .codex,
+            label: "Project",
+            state: .running,
+            updatedAt: timestamp
+        )
+
+        XCTAssertEqual(withTask.presentationLabel, "latest prompt")
+        XCTAssertEqual(withoutTask.presentationLabel, "Project")
+    }
+
     func testParsesCommonHookRecord() throws {
         let event = try XCTUnwrap(LifecycleEvent.parse(jsonLine: "{\"harness\":\"codex\",\"session_id\":\"abc\",\"event\":\"turn_started\",\"timestamp\":\"2026-07-10T12:00:00Z\"}"))
         XCTAssertEqual(event.harness, .codex)
@@ -1105,6 +1127,43 @@ final class LifecycleEventTests: XCTestCase {
 
         XCTAssertTrue(queue.pendingEvents().isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: legacyFile.path))
+    }
+
+    func testRegistryReportsNearestVisibleExpiry() throws {
+        let registry = LifecycleSessionRegistry(
+            fileURL: directory.appendingPathComponent("deadline-registry.json"),
+            activeTTL: 60,
+            terminalTTL: 5
+        )
+        let now = Date(timeIntervalSince1970: 20_000)
+        XCTAssertNotNil(registry.ingestPersisting(
+            LifecycleEvent(
+                sessionID: "running",
+                harness: .codex,
+                kind: .started,
+                timestamp: now
+            ),
+            now: now
+        ))
+        XCTAssertNotNil(registry.ingestPersisting(
+            LifecycleEvent(
+                sessionID: "done",
+                harness: .claude,
+                kind: .finished,
+                timestamp: now.addingTimeInterval(1)
+            ),
+            now: now.addingTimeInterval(1)
+        ))
+
+        XCTAssertEqual(
+            registry.nextVisibleExpiry(after: now),
+            now.addingTimeInterval(6)
+        )
+        XCTAssertEqual(
+            registry.nextVisibleExpiry(after: now.addingTimeInterval(6)),
+            now.addingTimeInterval(60)
+        )
+        XCTAssertNil(registry.nextVisibleExpiry(after: now.addingTimeInterval(60)))
     }
 
     func testDeliveryIdentityLedgerHasExplicitSizeAndTimeBounds() throws {
