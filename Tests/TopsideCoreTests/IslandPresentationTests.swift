@@ -4,11 +4,14 @@ import XCTest
 
 final class IslandPresentationTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 10_000)
-    private let notch = PhysicalNotchGeometry(
+    private let physicalGeometry = IslandDisplayGeometry(notch: PhysicalNotchGeometry(
         safeAreaTop: 32,
         auxiliaryLeftMaxX: 663,
         auxiliaryRightMinX: 848
-    )!
+    )!)
+    private let virtualGeometry = IslandDisplayGeometry(
+        fallbackFrame: CGRect(x: 100, y: 20, width: 500, height: 300)
+    )
 
     func testOrdersTerminalsBeforeRunningAndPinsAttentionByKind() {
         let sessions = [
@@ -110,7 +113,46 @@ final class IslandPresentationTests: XCTestCase {
         )
     }
 
-    func testTerminalExpiryUsesOneExplicitClockBoundary() {
+    func testEmptyPresentationUsesPhysicalNotchDimensions() throws {
+        let presentation = make([])
+        let layout = try XCTUnwrap(presentation.layout)
+
+        XCTAssertFalse(presentation.hasContent)
+        XCTAssertEqual(layout.metrics.notchWidth, physicalGeometry.width)
+        XCTAssertEqual(layout.metrics.notchHeight, physicalGeometry.height)
+        XCTAssertEqual(layout.notchFrame.size, CGSize(width: physicalGeometry.width, height: physicalGeometry.height))
+        XCTAssertEqual(layout.hostFrame.size, IslandMetrics.hostSize)
+        XCTAssertEqual(layout.notchFrame.maxY, layout.hostFrame.maxY)
+    }
+
+    func testActivePhysicalPresentationsAddClearance() throws {
+        for state in [SessionState.running, .waitingForInput, .waitingForPermission] {
+            let presentation = make([session(state.rawValue, state: state, offset: 0)])
+            let layout = try XCTUnwrap(presentation.layout)
+
+            XCTAssertTrue(presentation.hasContent, "Expected content for \(state.rawValue)")
+            XCTAssertEqual(layout.metrics.notchWidth, physicalGeometry.width + 4)
+            XCTAssertEqual(layout.metrics.notchHeight, physicalGeometry.height + 3)
+            if state == .running {
+                XCTAssertTrue(presentation.displayedRegularSessions.isEmpty)
+            }
+        }
+    }
+
+    func testVirtualPresentationKeepsNominalDimensionsWhileIdleAndActive() throws {
+        let states: [SessionState?] = [nil, .running, .waitingForInput, .waitingForPermission]
+
+        for state in states {
+            let sessions = state.map { [session($0.rawValue, state: $0, offset: 0)] } ?? []
+            let presentation = make(sessions, geometry: virtualGeometry)
+            let layout = try XCTUnwrap(presentation.layout)
+
+            XCTAssertEqual(presentation.hasContent, state != nil)
+            assertVirtualNotchLayout(layout)
+        }
+    }
+
+    func testTerminalExpiryUsesOneExplicitClockBoundary() throws {
         let displayedAt = now.addingTimeInterval(-IslandPresentation.terminalDisplayWindow)
         let atBoundary = make(
             [session("done", state: .done, offset: -20)],
@@ -123,17 +165,48 @@ final class IslandPresentationTests: XCTestCase {
             at: now.addingTimeInterval(0.001)
         )
 
+        let atBoundaryLayout = try XCTUnwrap(atBoundary.layout)
+        let afterBoundaryLayout = try XCTUnwrap(afterBoundary.layout)
+
         XCTAssertEqual(atBoundary.floatingTerminalSessions.map(\.id), ["done"])
         XCTAssertEqual(atBoundary.nextTerminalExpiry, now)
+        XCTAssertTrue(atBoundary.hasContent)
+        XCTAssertEqual(atBoundaryLayout.metrics.notchWidth, physicalGeometry.width + 4)
+        XCTAssertEqual(atBoundaryLayout.metrics.notchHeight, physicalGeometry.height + 3)
         XCTAssertTrue(afterBoundary.floatingTerminalSessions.isEmpty)
         XCTAssertNil(afterBoundary.nextTerminalExpiry)
+        XCTAssertFalse(afterBoundary.hasContent)
+        XCTAssertEqual(afterBoundaryLayout.metrics.notchWidth, physicalGeometry.width)
+        XCTAssertEqual(afterBoundaryLayout.metrics.notchHeight, physicalGeometry.height)
+    }
+
+    func testVirtualTerminalBoundaryKeepsNominalDimensions() throws {
+        let displayedAt = now.addingTimeInterval(-IslandPresentation.terminalDisplayWindow)
+        let atBoundary = make(
+            [session("done", state: .done, offset: -20)],
+            displayedAt: ["done": displayedAt],
+            at: now,
+            geometry: virtualGeometry
+        )
+        let afterBoundary = make(
+            [session("done", state: .done, offset: -20)],
+            displayedAt: ["done": displayedAt],
+            at: now.addingTimeInterval(0.001),
+            geometry: virtualGeometry
+        )
+
+        XCTAssertTrue(atBoundary.hasContent)
+        assertVirtualNotchLayout(try XCTUnwrap(atBoundary.layout))
+        XCTAssertFalse(afterBoundary.hasContent)
+        assertVirtualNotchLayout(try XCTUnwrap(afterBoundary.layout))
     }
 
     private func make(
         _ sessions: [AgentSession],
         displayedAt: [String: Date] = [:],
         at date: Date? = nil,
-        expanded: Bool = false
+        expanded: Bool = false,
+        geometry: IslandDisplayGeometry? = nil
     ) -> IslandPresentation {
         IslandPresentation.make(
             sessions: sessions,
@@ -141,8 +214,20 @@ final class IslandPresentationTests: XCTestCase {
             now: date ?? now,
             testMode: false,
             isExpanded: expanded,
-            notch: notch
+            displayGeometry: geometry ?? physicalGeometry
         )
+    }
+
+    private func assertVirtualNotchLayout(
+        _ layout: IslandPresentationLayout,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertEqual(layout.metrics.notchWidth, 185, file: file, line: line)
+        XCTAssertEqual(layout.metrics.notchHeight, 32, file: file, line: line)
+        XCTAssertEqual(layout.notchFrame.size, CGSize(width: 185, height: 32), file: file, line: line)
+        XCTAssertEqual(layout.hostFrame.size, IslandMetrics.hostSize, file: file, line: line)
+        XCTAssertEqual(layout.notchFrame.maxY, layout.hostFrame.maxY, file: file, line: line)
     }
 
     private func session(
