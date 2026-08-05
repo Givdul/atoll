@@ -825,6 +825,10 @@ private struct RowActivityBorder: View {
         0.9 * metrics.scale
     }
 
+    private var staticBorderWidth: CGFloat {
+        2.2 * metrics.scale
+    }
+
     var body: some View {
         switch state {
         case .running:
@@ -870,15 +874,15 @@ private struct RowActivityBorder: View {
             }
         case .waitingForInput, .waitingForPermission:
             rowShape
-                .stroke(color.opacity(0.28), lineWidth: waitingBorderWidth)
+                .stroke(color.opacity(0.28), lineWidth: staticBorderWidth)
                 .frame(width: metrics.rowWidth, height: metrics.rowHeight)
         case .done, .failed, .cancelled:
             rowShape
-                .stroke(color.opacity(0.20), lineWidth: waitingBorderWidth)
+                .stroke(color.opacity(0.20), lineWidth: staticBorderWidth)
                 .frame(width: metrics.rowWidth, height: metrics.rowHeight)
         case .unknown:
             rowShape
-                .stroke(color.opacity(0.14), lineWidth: waitingBorderWidth)
+                .stroke(color.opacity(0.14), lineWidth: staticBorderWidth)
                 .frame(width: metrics.rowWidth, height: metrics.rowHeight)
         }
     }
