@@ -3,25 +3,30 @@ import XCTest
 @testable import TopsideCore
 
 final class IslandDisplayGeometryTests: XCTestCase {
-    func testPhysicalNotchUsesNativeSafeAreaAndAuxiliaryGap() {
-        let notch = PhysicalNotchGeometry(
+    func testPhysicalNotchUsesNativeSafeAreaAndAuxiliaryGap() throws {
+        let notch = try XCTUnwrap(PhysicalNotchGeometry(
             safeAreaTop: 32,
             auxiliaryLeftMaxX: 663,
             auxiliaryRightMinX: 848
-        )
+        ))
+        let geometry = IslandDisplayGeometry(notch: notch)
 
-        XCTAssertEqual(notch?.width, 185)
-        XCTAssertEqual(notch?.height, 32)
-        XCTAssertEqual(notch?.centerX, 755.5)
+        XCTAssertEqual(notch.width, 185)
+        XCTAssertEqual(notch.height, 32)
+        XCTAssertEqual(notch.centerX, 755.5)
+        XCTAssertEqual(geometry.provenance, .physical)
+        XCTAssertEqual(geometry.width, 185)
+        XCTAssertEqual(geometry.height, 32)
+        XCTAssertEqual(geometry.centerX, 755.5)
     }
 
     func testFallbackDisplayGeometryIsCenteredAndStable() {
         let geometry = IslandDisplayGeometry(fallbackFrame: CGRect(x: 100, y: 20, width: 500, height: 300))
 
-        XCTAssertEqual(geometry.width, 189)
-        XCTAssertEqual(geometry.height, 35)
+        XCTAssertEqual(geometry.provenance, .virtual)
+        XCTAssertEqual(geometry.width, 185)
+        XCTAssertEqual(geometry.height, 32)
         XCTAssertEqual(geometry.centerX, 350)
-        XCTAssertEqual(geometry.scaleHeight, 32)
     }
 
     func testPhysicalNotchRejectsMenuBarOnlyGeometry() {

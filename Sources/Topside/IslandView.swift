@@ -89,6 +89,7 @@ struct IslandView: View {
         return VStack(spacing: metrics.rowSpacing) {
             NotchActivityBorder(
                 activityState: state.presentation.activityState,
+                hasContent: state.presentation.hasContent,
                 metrics: metrics,
                 glassNamespace: glassNamespace
             )
@@ -146,6 +147,7 @@ struct IslandView: View {
 
     private struct NotchActivityBorder: View {
         let activityState: SessionState?
+        let hasContent: Bool
         let metrics: IslandMetrics
         let glassNamespace: Namespace.ID
         @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -168,11 +170,13 @@ struct IslandView: View {
                 notchShape
                     .fill(.black)
                     .overlay {
-                        notchShape
-                            .stroke(.white.opacity(0.08), lineWidth: 0.8 * metrics.scale)
+                        if hasContent {
+                            notchShape
+                                .stroke(.white.opacity(0.08), lineWidth: 0.8 * metrics.scale)
+                        }
                     }
 
-                if let activityState {
+                if hasContent, let activityState {
                     switch activityState {
                     case .running:
                         ActivityDotTrail(
@@ -194,8 +198,18 @@ struct IslandView: View {
                     }
                 }
             }
-            .frame(width: metrics.notchWidth, height: metrics.notchHeight)
+            .animation(resizeAnimation) { content in
+                content.frame(width: metrics.notchWidth, height: metrics.notchHeight)
+            }
             .contentShape(notchShape)
+        }
+
+        private var resizeAnimation: Animation? {
+            guard !reduceMotion else {
+                return nil
+            }
+
+            return .timingCurve(0.2, 0.8, 0.2, 1, duration: 0.12)
         }
 
         private var notchShape: MacNotchShape {
