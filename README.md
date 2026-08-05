@@ -53,7 +53,7 @@ printf '%s' '{"session_id":"session-123","cwd":"/path/to/project"}' \
   | /Applications/Topside.app/Contents/MacOS/Topside --lifecycle-event codex started
 ```
 
-Use `finished`, `failed`, `cancelled`, `needsInput`, or `needsPermission` as the final argument for the corresponding lifecycle transition. For an isolated queue smoke test that cannot touch normal Topside state or provider configuration:
+Use `finished`, `failed`, `cancelled`, `needsInput`, or `needsPermission` as the final argument for the corresponding lifecycle transition. `input_required` and `input-required` are accepted aliases for `needsInput` when a harness reports its thread state directly. For an isolated queue smoke test that cannot touch normal Topside state or provider configuration:
 
 ```sh
 TEST_HOME="$(mktemp -d)"

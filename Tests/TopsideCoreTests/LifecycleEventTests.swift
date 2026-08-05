@@ -59,6 +59,18 @@ final class LifecycleEventTests: XCTestCase {
         XCTAssertEqual(event.kind, .started)
     }
 
+    func testParsesInputRequiredAliasesAsNeedsInput() throws {
+        for marker in ["input_required", "input-required", "inputRequired"] {
+            XCTAssertEqual(LifecycleEventKind.parse(marker), .needsInput, marker)
+        }
+
+        let event = try XCTUnwrap(
+            LifecycleEvent.parse(jsonLine: "{\"harness\":\"codex\",\"thread_id\":\"abc\",\"state\":\"input_required\"}")
+        )
+        XCTAssertEqual(event.kind, .needsInput)
+        XCTAssertEqual(event.kind.sessionState, .waitingForInput)
+    }
+
     func testNormalizesHookStateWithoutRetainingSensitiveContent() throws {
         let sensitive = "SENSITIVE-CONTENT-7B94E6"
         let fullPath = "/Users/private-owner/Projects/Topside-Privacy"
