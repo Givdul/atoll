@@ -310,6 +310,24 @@ final class LifecycleSocketTests: XCTestCase {
         XCTAssertEqual(queueFailure.status, 0)
     }
 
+    func testActualLifecycleEntryPointAcceptsInputRequiredAlias() throws {
+        let home = directory.appendingPathComponent("input-required-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+
+        let result = try run(
+            executable: actualExecutable,
+            arguments: ["--lifecycle-event", "codex", "input_required"],
+            input: hookPayload(sessionID: "needs-input"),
+            environment: ["CFFIXED_USER_HOME": home.path]
+        )
+
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(
+            LifecycleEventQueue(homeDirectory: home).pendingEvents().map(\.event.kind),
+            [.needsInput]
+        )
+    }
+
     private func readHookInput(_ data: Data) throws -> String? {
         let url = directory.appendingPathComponent(UUID().uuidString)
         try data.write(to: url)
