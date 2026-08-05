@@ -17,19 +17,21 @@ public struct IslandMetrics: Equatable, Sendable {
     public let notchWidth: CGFloat
     public let notchHeight: CGFloat
 
-    public init(notch: PhysicalNotchGeometry) {
-        let factor = min(1.08, max(0.88, notch.height / 32))
+    public init(displayGeometry: IslandDisplayGeometry, hasContent: Bool) {
+        let factor = min(1.08, max(0.88, displayGeometry.height / 32))
         scale = factor
         rowWidth = 392 * factor
-        rowHeight = max(32, min(36, notch.height * 0.92))
+        rowHeight = max(32, min(36, displayGeometry.height * 0.92))
         horizontalPadding = 6.5 * factor
         iconSize = rowHeight - 8 * factor
         titleFontSize = min(12 * factor, rowHeight * 0.38)
         detailFontSize = min(11 * factor, rowHeight * 0.34)
         topGap = 0
         rowSpacing = 3 * factor
-        notchWidth = notch.width + 4
-        notchHeight = notch.height + 3
+
+        let usesActiveClearance = hasContent && displayGeometry.provenance == .physical
+        notchWidth = displayGeometry.width + (usesActiveClearance ? 4 : 0)
+        notchHeight = displayGeometry.height + (usesActiveClearance ? 3 : 0)
     }
 
     public func listHeight(forRowCount rowCount: Int) -> CGFloat {
@@ -122,7 +124,7 @@ public struct IslandPresentation: Equatable, Sendable {
         now: Date,
         testMode: Bool,
         isExpanded: Bool,
-        notch: PhysicalNotchGeometry?
+        displayGeometry: IslandDisplayGeometry?
     ) -> IslandPresentation {
         let candidates = sessions.filter { session in
             switch session.state {
@@ -172,6 +174,7 @@ public struct IslandPresentation: Equatable, Sendable {
             }
             .filter { $0 >= now }
             .min()
+        let hasContent = !candidates.isEmpty
         let activityState: SessionState?
         if candidates.contains(where: { $0.state == .waitingForPermission }) {
             activityState = .waitingForPermission
@@ -183,9 +186,9 @@ public struct IslandPresentation: Equatable, Sendable {
             activityState = nil
         }
 
-        let layout = notch.map {
+        let layout = displayGeometry.map {
             makeLayout(
-                metrics: IslandMetrics(notch: $0),
+                metrics: IslandMetrics(displayGeometry: $0, hasContent: hasContent),
                 regularSessions: displayedRegularSessions,
                 attentionSessions: attentionSessions
             )

@@ -13,14 +13,12 @@ final class IslandWindowController {
     private struct TargetDisplay: Equatable {
         let id: UInt32?
         let frame: NSRect
-        let notch: PhysicalNotchGeometry?
+        let geometry: IslandDisplayGeometry
     }
 
     private let state: AppState
     private let availabilityDidChange: () -> Void
     private let window: IslandPanel
-    private var pendingHideToken = UUID()
-    private let rowExitDuration: TimeInterval = 0.26
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
     private var targetDisplay: TargetDisplay?
@@ -67,7 +65,7 @@ final class IslandWindowController {
 
     func syncVisibility(mouseLocation: NSPoint = NSEvent.mouseLocation) {
         updateTargetDisplay(for: mouseLocation)
-        let canShowIsland = state.settings.enabled && targetDisplay?.notch != nil
+        let canShowIsland = state.settings.enabled && targetDisplay != nil
         if state.isIslandAvailable != canShowIsland {
             state.isIslandAvailable = canShowIsland
             availabilityDidChange()
@@ -78,13 +76,8 @@ final class IslandWindowController {
             return
         }
 
-        if state.presentation.hasContent {
-            pendingHideToken = UUID()
-            window.orderFrontRegardless()
-            updateHoverState(for: mouseLocation)
-        } else {
-            scheduleHideAfterExit()
-        }
+        window.orderFrontRegardless()
+        updateHoverState(for: mouseLocation)
     }
 
     private func targetScreen(for mouseLocation: NSPoint) -> NSScreen? {
@@ -102,28 +95,32 @@ final class IslandWindowController {
     @discardableResult
     private func updateTargetDisplay(for mouseLocation: NSPoint) -> Bool {
         let screen = targetScreen(for: mouseLocation)
-        let nextDisplay = screen.map {
-            TargetDisplay(
-                id: ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value,
-                frame: $0.frame,
-                notch: PhysicalNotchGeometry(
-                    safeAreaTop: $0.safeAreaInsets.top,
-                    auxiliaryLeftMaxX: $0.auxiliaryTopLeftArea?.maxX,
-                    auxiliaryRightMinX: $0.auxiliaryTopRightArea?.minX
-                )
+        let nextDisplay = screen.map { screen in
+            let physicalNotch = PhysicalNotchGeometry(
+                safeAreaTop: screen.safeAreaInsets.top,
+                auxiliaryLeftMaxX: screen.auxiliaryTopLeftArea?.maxX,
+                auxiliaryRightMinX: screen.auxiliaryTopRightArea?.minX
+            )
+            let geometry = physicalNotch.map { IslandDisplayGeometry(notch: $0) }
+                ?? IslandDisplayGeometry(fallbackFrame: screen.frame)
+
+            return TargetDisplay(
+                id: (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value,
+                frame: screen.frame,
+                geometry: geometry
             )
         }
         guard nextDisplay != targetDisplay else { return false }
 
         targetDisplay = nextDisplay
         state.islandHoverState = .inactive
-        state.updateNotchGeometry(nextDisplay?.notch)
+        state.updateDisplayGeometry(nextDisplay?.geometry)
         window.ignoresMouseEvents = true
 
-        if let frame = nextDisplay?.frame, let notch = nextDisplay?.notch {
+        if let display = nextDisplay {
             let origin = NSPoint(
-                x: notch.centerX - IslandMetrics.hostSize.width / 2,
-                y: frame.maxY - IslandMetrics.hostSize.height
+                x: display.geometry.centerX - IslandMetrics.hostSize.width / 2,
+                y: display.frame.maxY - IslandMetrics.hostSize.height
             )
             window.setFrame(
                 NSRect(origin: origin, size: IslandMetrics.hostSize),
@@ -134,35 +131,9 @@ final class IslandWindowController {
     }
 
     private func hideImmediately() {
-        pendingHideToken = UUID()
         state.islandHoverState = .inactive
         window.ignoresMouseEvents = true
         window.orderOut(nil)
-    }
-
-    private func scheduleHideAfterExit() {
-        guard window.isVisible else {
-            state.islandHoverState = .inactive
-            window.ignoresMouseEvents = true
-            window.orderOut(nil)
-            return
-        }
-
-        let token = UUID()
-        pendingHideToken = token
-        DispatchQueue.main.asyncAfter(deadline: .now() + rowExitDuration) { [weak self] in
-            guard let self else { return }
-            Task { @MainActor in
-                guard self.pendingHideToken == token,
-                      self.state.settings.enabled,
-                      !self.state.presentation.hasContent else {
-                    return
-                }
-                self.state.islandHoverState = .inactive
-                self.window.ignoresMouseEvents = true
-                self.window.orderOut(nil)
-            }
-        }
     }
 
     private func installHoverMonitors() {

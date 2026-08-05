@@ -24,23 +24,28 @@ public struct PhysicalNotchGeometry: Equatable, Sendable {
 }
 
 public struct IslandDisplayGeometry: Equatable, Sendable {
+    public enum Provenance: Equatable, Sendable {
+        case physical
+        case virtual
+    }
+
+    public let provenance: Provenance
     public let width: CGFloat
     public let height: CGFloat
     public let centerX: CGFloat
-    public let scaleHeight: CGFloat
 
     public init(notch: PhysicalNotchGeometry) {
-        width = notch.width + 4
-        height = notch.height + 3
+        provenance = .physical
+        width = notch.width
+        height = notch.height
         centerX = notch.centerX
-        scaleHeight = notch.height
     }
 
     public init(fallbackFrame: CGRect) {
-        width = 189
-        height = 35
+        provenance = .virtual
+        width = 185
+        height = 32
         centerX = fallbackFrame.midX
-        scaleHeight = 32
     }
 }
 

@@ -49,7 +49,9 @@ Panel/window:
 
 Default state:
 
-- Shows a black notch-shaped activity border at the top center when there is island content. Physical-notch displays use native geometry; other displays use a centered `189x35` mock notch.
+- Keeps a black notch-shaped surface mounted at the top center whenever Topside is enabled and a target display is available, including when there is no island content.
+- Physical-notch displays use native width and height while idle, then add `4 pt` width and `3 pt` height while running, waiting, or showing a recent terminal session.
+- Notchless displays use a centered virtual notch fixed at `185x32 pt` in idle and active states.
 - Running sessions tint the notch with an animated orange dot trail.
 - Waiting states tint the notch edge as a thick colored outline.
 
@@ -76,20 +78,20 @@ Visibility rules:
 
 Animations:
 
+- Physical notch grow/shrink: cubic timing curve `(0.2, 0.8, 0.2, 1)`, `0.12s`.
 - Row/list reveal: cubic timing curve `(0.2, 0.8, 0.2, 1)`, `0.22s`.
 - Row identity changes: cubic timing curve `(0.22, 1, 0.36, 1)`, `0.22s`.
 - Terminal row insertion: move from top plus opacity.
 - Terminal row removal: `y: -18` plus opacity.
 - Attention fade: ease-in-out `0.18s`, delayed `0.2s` when dimming.
 - List unmount delay: `0.24s`.
-- Panel hide after row exit: `0.26s`.
 - Reduce Motion disables motion animations and uses opacity where possible.
 
 ## Layout and color authority
 
-`Sources/TopsideCore/IslandPresentation.swift` is the single authority for host dimensions, notch scaling and optical offset, section spacing, row rectangles, and activation geometry. `IslandPresentationTests` contractually verify ordering, caps, section bounds, and visible-row geometry. The SwiftUI renderer and AppKit window controller consume that same result rather than copying formulas into this document.
+`Sources/TopsideCore/IslandDisplayGeometry.swift` is the authority for nominal physical and virtual display geometry. Physical geometry comes from valid native safe-area and auxiliary-top-area data. Notchless displays use a centered `185x32 pt` virtual geometry. `Sources/TopsideCore/IslandPresentation.swift` is the single authority for host dimensions, active physical-notch clearance, notch scaling and optical offset, section spacing, row rectangles, and activation geometry. `IslandDisplayGeometryTests` and `IslandPresentationTests` contractually verify these geometry and layout rules. The SwiftUI renderer and AppKit window controller consume those shared results rather than copying formulas into this document.
 
-A physical notch requires a nonzero `safeAreaInsets.top` and both native auxiliary top areas. The app scales its layout within a narrow supported range around that native geometry. Running, input, permission, success, failure, and cancellation retain distinct semantic accents; exact color, typography, glass, border, and animation constants remain source-owned in `IslandView.swift` and `TopsideIcon.swift` so documentation cannot drift from the shipped UI.
+A physical notch requires a nonzero `safeAreaInsets.top` and both native auxiliary top areas. The app scales its layout within a narrow supported range around the nominal geometry. Only a physical notch with active island content receives the `4x3 pt` clearance; virtual geometry never grows. Running, input, permission, success, failure, and cancellation retain distinct semantic accents; exact color, typography, glass, border, and animation constants remain source-owned in `IslandView.swift` and `TopsideIcon.swift` so documentation cannot drift from the shipped UI.
 
 ## Typography
 
@@ -163,7 +165,7 @@ Status item:
 - Variable length.
 - Image only by default.
 - When attention count is positive, title becomes the count and icon is tinted input-blue or permission-red.
-- When the target display has no physical notch, running work tints the icon orange and the island uses the centered mock notch.
+- When no island surface is available, running work tints the icon orange. A notchless target display remains an available island surface through the centered virtual notch.
 
 ## Functionality
 

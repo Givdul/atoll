@@ -47,7 +47,7 @@ final class AppState: ObservableObject {
     private let settingsStore: SettingsStore
     let isDevelopmentBuild = Bundle.main.object(forInfoDictionaryKey: "TopsideDevelopmentBuild") as? Bool == true
     private var terminalObservations: [String: TerminalObservation] = [:]
-    private var notchGeometry: PhysicalNotchGeometry?
+    private var displayGeometry: IslandDisplayGeometry?
 
     init(settingsStore: SettingsStore) {
         self.settingsStore = settingsStore
@@ -104,9 +104,9 @@ final class AppState: ObservableObject {
         refreshPresentation()
     }
 
-    func updateNotchGeometry(_ notch: PhysicalNotchGeometry?) {
-        guard notch != notchGeometry else { return }
-        notchGeometry = notch
+    func updateDisplayGeometry(_ geometry: IslandDisplayGeometry?) {
+        guard geometry != displayGeometry else { return }
+        displayGeometry = geometry
         refreshPresentation()
     }
 
@@ -126,7 +126,7 @@ final class AppState: ObservableObject {
             now: now,
             testMode: settings.testMode,
             isExpanded: islandHoverState.expandsList,
-            notch: notchGeometry
+            displayGeometry: displayGeometry
         )
         guard next != presentation else { return false }
         presentation = next
