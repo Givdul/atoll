@@ -59,6 +59,61 @@ final class LifecycleEventTests: XCTestCase {
         XCTAssertEqual(event.kind, .started)
     }
 
+    func testClaudePermissionRequestClassifiesQuestionsAsInput() throws {
+        let question = try XCTUnwrap(
+            LifecycleEvent.fromHookPayload(
+                harness: .claude,
+                kind: .needsPermission,
+                json: #"{"session_id":"question","tool_name":"AskUserQuestion"}"#
+            )
+        )
+        let fileChange = try XCTUnwrap(
+            LifecycleEvent.fromHookPayload(
+                harness: .claude,
+                kind: .needsPermission,
+                json: #"{"session_id":"approval","tool_name":"Edit"}"#
+            )
+        )
+        let camelCaseQuestion = try XCTUnwrap(
+            LifecycleEvent.fromHookPayload(
+                harness: .claude,
+                kind: .needsPermission,
+                json: #"{"session_id":"camel-question","toolName":"AskUserQuestion"}"#
+            )
+        )
+
+        XCTAssertEqual(question.kind, .needsInput)
+        XCTAssertEqual(question.kind.sessionState, .waitingForInput)
+        XCTAssertEqual(fileChange.kind, .needsPermission)
+        XCTAssertEqual(fileChange.kind.sessionState, .waitingForPermission)
+        XCTAssertEqual(camelCaseQuestion.kind, .needsInput)
+    }
+
+    func testClaudePermissionRequestKeepsProviderSessionIdentityAcrossAttentionStates() throws {
+        let store = directory.appendingPathComponent("claude-attention-registry.json")
+        let registry = LifecycleSessionRegistry(fileURL: store)
+        let started = try XCTUnwrap(
+            LifecycleEvent.fromHookPayload(
+                harness: .claude,
+                kind: .started,
+                json: #"{"session_id":"provider-session"}"#
+            )
+        )
+        let waiting = try XCTUnwrap(
+            LifecycleEvent.fromHookPayload(
+                harness: .claude,
+                kind: .needsPermission,
+                json: #"{"session_id":"provider-session","tool_name":"AskUserQuestion"}"#
+            )
+        )
+
+        _ = registry.ingest(started, now: started.timestamp)
+        let sessions = registry.ingest(waiting, now: waiting.timestamp)
+
+        XCTAssertEqual(sessions.map(\.id), ["claude-provider-session"])
+        XCTAssertEqual(sessions.first?.state, .waitingForInput)
+    }
+
     func testNormalizesHookStateWithoutRetainingSensitiveContent() throws {
         let sensitive = "SENSITIVE-CONTENT-7B94E6"
         let fullPath = "/Users/private-owner/Projects/Topside-Privacy"

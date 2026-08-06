@@ -389,6 +389,7 @@ public struct LifecycleHookInstaller {
                     HookRequirement("UserPromptSubmit", "started"),
                     HookRequirement("Stop", "finished"),
                     HookRequirement("StopFailure", "failed"),
+                    HookRequirement("PermissionRequest", "needsPermission"),
                     HookRequirement("Notification", "needsPermission", matcher: "permission_prompt"),
                     HookRequirement("Notification", "needsInput", matcher: "elicitation_dialog"),
                     HookRequirement("Notification", "needsInput", matcher: "agent_needs_input"),

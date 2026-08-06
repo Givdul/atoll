@@ -175,10 +175,15 @@ public struct LifecycleEvent: Hashable, Sendable {
         fallback: LifecycleEventKind,
         payload: [String: Any]
     ) -> LifecycleEventKind {
-        guard !fallback.isActive else { return fallback }
-
         switch harness {
+        case .claude:
+            if fallback == .needsPermission,
+               JSONHelpers.directString(in: payload, keys: ["tool_name", "toolName"]) == "AskUserQuestion" {
+                return .needsInput
+            }
+            return fallback
         case .cursor:
+            guard !fallback.isActive else { return fallback }
             switch JSONHelpers.directString(in: payload, keys: ["status"])?.lowercased() {
             case "completed": return .finished
             case "aborted": return .cancelled
