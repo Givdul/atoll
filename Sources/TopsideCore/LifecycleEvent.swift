@@ -34,7 +34,7 @@ public enum LifecycleEventKind: String, Codable, CaseIterable, Sendable {
         case "finished", "finish", "completed", "complete", "done", "turncompleted": .finished
         case "failed", "error": .failed
         case "cancelled", "canceled", "aborted", "turnaborted": .cancelled
-        case "needsinput", "waitingforinput", "waitinginput", "requestuserinput": .needsInput
+        case "needsinput", "waitingforinput", "waitinginput", "requestuserinput", "inputrequired": .needsInput
         case "needspermission", "waitingforpermission", "waitingpermission", "approvalrequested": .needsPermission
         default: nil
         }

@@ -75,7 +75,7 @@ public struct IslandPresentationLayout: Equatable, Sendable {
 }
 
 public struct IslandPresentation: Equatable, Sendable {
-    public static let terminalDisplayWindow: TimeInterval = 3
+    public static let terminalDisplayWindow: TimeInterval = 5
     public static let maximumVisibleSessions = 8
 
     public let regularSessions: [AgentSession]
