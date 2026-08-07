@@ -153,7 +153,7 @@ final class IslandPresentationTests: XCTestCase {
     }
 
     func testTerminalExpiryUsesOneExplicitClockBoundary() throws {
-        let displayedAt = now.addingTimeInterval(-IslandPresentation.terminalDisplayWindow)
+        let displayedAt = now.addingTimeInterval(-5)
         let atBoundary = make(
             [session("done", state: .done, offset: -20)],
             displayedAt: ["done": displayedAt],
@@ -181,7 +181,7 @@ final class IslandPresentationTests: XCTestCase {
     }
 
     func testVirtualTerminalBoundaryKeepsNominalDimensions() throws {
-        let displayedAt = now.addingTimeInterval(-IslandPresentation.terminalDisplayWindow)
+        let displayedAt = now.addingTimeInterval(-5)
         let atBoundary = make(
             [session("done", state: .done, offset: -20)],
             displayedAt: ["done": displayedAt],
@@ -196,8 +196,10 @@ final class IslandPresentationTests: XCTestCase {
         )
 
         XCTAssertTrue(atBoundary.hasContent)
+        XCTAssertEqual(atBoundary.nextTerminalExpiry, now)
         assertVirtualNotchLayout(try XCTUnwrap(atBoundary.layout))
         XCTAssertFalse(afterBoundary.hasContent)
+        XCTAssertNil(afterBoundary.nextTerminalExpiry)
         assertVirtualNotchLayout(try XCTUnwrap(afterBoundary.layout))
     }
 
