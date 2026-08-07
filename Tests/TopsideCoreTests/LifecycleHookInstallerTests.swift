@@ -48,6 +48,7 @@ final class LifecycleHookInstallerTests: XCTestCase {
         XCTAssertTrue(commands(in: claude, event: "Stop").contains("keep-me"))
         XCTAssertTrue(commands(in: claude, event: "Stop").contains(hook("claude", "finished")))
         XCTAssertEqual(commands(in: claude, event: "StopFailure"), [hook("claude", "failed")])
+        XCTAssertEqual(commands(in: claude, event: "PermissionRequest"), [hook("claude", "needsPermission")])
         XCTAssertEqual(
             commands(in: claude, event: "Notification", matcher: "permission_prompt"),
             [hook("claude", "needsPermission")]
