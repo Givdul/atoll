@@ -1,70 +1,105 @@
 # Topside
 
-Topside is a calm status light for exactly five local coding agents: Codex, Claude Code, Cursor Agent, OpenCode, and Pi. Its native macOS menu-bar capsule shows what is running, waiting, or finished without becoming another agent dashboard.
+<p align="center">
+  <img src="docs/assets/topside-icon.png" alt="Topside product icon" width="128" height="128">
+</p>
 
-It is event-driven: native agent hooks send minimal lifecycle events to a user-only local Unix socket. Topside never infers a live run from transcript age, process names, or lock files.
+Topside is a native macOS 14+ menu-bar status light for exactly five local coding agents: **Codex, Claude Code, Cursor Agent, OpenCode, and Pi**. It shows when work is running, waiting, or finished without becoming another agent dashboard.
 
-The complete product includes one 72-hour trial followed by a $7.99 one-time
-Polar license—no account or subscription. See [Licensing](LICENSING.md)
-for the Keychain, offline, privacy, release-configuration, and validation
-boundaries.
+Topside uses event-driven local hooks. A hook sends a minimal lifecycle event to a user-only Unix socket. Topside does not scrape transcripts, infer status from processes, or sync data to the cloud.
 
-## Lifecycle model
+## Product identity and rename
 
-- `started` shows a running session immediately.
-- `finished`, `failed`, and `cancelled` end that session immediately.
-- `needsInput` and `needsPermission` remain distinct attention states when an agent supplies a typed event.
-- Events are queued under `~/.topside` before the sender is acknowledged and removed only after Topside persists the resulting lifecycle state. Replay is safe and duplicate terminals do not extend their display time.
-- Optional native notifications are off by default and limited to new input, approval, or failure transitions when the captured originating app is not frontmost.
-- Active events expire after ten minutes of local inactivity. Terminal rows receive a perceptible local dwell, while retained tombstones suppress late cleanup events and repeated completion notifications.
-- Provider clocks are used for ordering only after future-skew clamping; they cannot keep a session alive or make a delayed terminal disappear instantly.
-- When a hook originates inside a regular macOS application, its session row opens that application. Topside reactivates the captured process when possible, falls back to the same bundle identifier after an app restart, and leaves genuinely headless sessions noninteractive; it does not navigate to a specific thread, window, tab, or pane.
+The product was renamed from Atoll to Topside because another product used the Atoll name for similar functionality. The product, app bundle, executable, managed integrations, and app-owned state use **Topside**. The repository URL remains [`Givdul/atoll`](https://github.com/Givdul/atoll) for continuity with existing issues, links, release feeds, and update metadata.
 
-## Lifecycle privacy
+See [Product identity](PRODUCT_IDENTITY.md) for the permanent identity and legacy migration boundary.
 
-Topside retains only the agent provider, provider session ID, normalized state, provider and local ordering/delivery timestamps, a project-folder label (or `"<Provider> session"`), and the complete origin process-ID/bundle-ID pair used by click-to-return. A bounded task label may appear in the live in-memory row only. Delivery identities are Topside-generated IDs or SHA-256 digests used for replay deduplication. Separately, the runtime doctor retains only each provider identity and its latest valid local event time; that evidence survives ordinary session expiry.
+## Use cases
 
-Provider hook payloads may include prompts or other content on standard input. Topside normalizes only a short task label for the live socket and UI. Raw content never enters the canonical socket JSONL, durable queue, registry, logs, notifications, or uploads. Recovery restores project/state only and waits for a fresh live title or prompt. This includes provider messages and reasons, responses, commands, transcripts, diffs, environment values, model identifiers, and full working-directory paths; the project label is derived locally from only the working directory's final component.
+- See the state of supported coding-agent sessions from the macOS menu bar.
+- Notice when an agent needs input or permission without reading its transcript.
+- Return to the originating macOS application when the hook provides an app identity.
+- Keep lifecycle data and delivery queues local while agents run.
+- Diagnose and repair supported user-level hooks without changing unrelated configuration.
+
+## Key capabilities
+
+- **Typed lifecycle states.** `started` shows a running session. `finished`, `failed`, and `cancelled` end it. `needsInput` and `needsPermission` remain distinct attention states.
+- **Reliable local delivery.** Events are written to JSON queues under `~/.topside` before the sender is acknowledged. Topside removes an event only after it persists the resulting state. Replay is safe, and duplicate terminal events do not extend display time.
+- **Bounded status display.** Active events expire after ten minutes of local inactivity. Terminal rows receive a local dwell. Retained tombstones suppress late cleanup events and repeated completion notifications.
+- **Optional notifications.** Native notifications are off by default. When enabled, they cover new input, approval, and failure transitions only when the originating app is not frontmost.
+- **Click-to-return.** Topside can reactivate the captured app process, or use the same bundle identifier after an app restart. Headless sessions remain non-interactive. Topside does not navigate to a thread, window, tab, or pane.
+- **Local setup and diagnostics.** Provider Connections checks detection, integration content, the private bridge, visible managed-policy blocking, the app socket, and the last valid event separately. Repair and Remove act only after you select the provider-specific action.
+
+Provider clocks are used for ordering only after future-skew clamping. They cannot keep a session alive or make a delayed terminal disappear instantly. Recovery restores project and state only, then waits for a fresh live title or prompt. The runtime doctor retains only each provider identity and its latest valid local event time after ordinary session expiry. The shared local lifecycle queue retains at most 256 events, including when Topside is not running.
 
 ## Native hook integrations
 
-On first launch, Topside offers setup only when it detects a supported agent that is not already configured. **Provider Connections…** in the menu always shows all five supported providers and checks agent detection, integration content, the private bridge, managed-policy blocking where locally visible, the app socket, and the last valid event separately. `Connected` requires runtime evidence; a matching file alone is never enough.
+Topside offers setup on first launch only when it detects a supported agent that is not already configured. It installs user-level integrations for:
 
-The doctor changes nothing until you select a provider-specific **Repair** or **Remove** action. Those actions modify the selected provider's real user-level configuration; use isolated homes for automated checks. Repair rewrites only missing, stale, or partial Topside-owned content, reruns diagnostics in the same panel, and preserves malformed, disabled, project-level, policy-managed, or unowned configuration.
+- **Codex:** `UserPromptSubmit` and `Stop`
+- **Claude Code:** `UserPromptSubmit`, `Stop`, `StopFailure`, and typed permission/input notifications
+- **Cursor Agent:** `beforeSubmitPrompt` and `stop`
+- **OpenCode:** a global plugin for session status/error, session titles, latest user text, and permission/question events
+- **Pi 0.80.4 or newer:** a global TypeScript extension using `before_agent_start`, `agent_start`, `agent_end`, and `agent_settled`
 
-The setup installs user-level hooks for:
+The installer preserves existing settings and hooks. It verifies the exact managed integration, bridge contents, and bridge permissions after writing. Static verification does not prove runtime activation. Codex may require `/hooks` review. Extensions and plugins may need a reload or a new session. Topside honors documented inherited custom user homes for Codex, Claude Code, OpenCode, and Pi, while leaving project and policy layers untouched.
 
-- Codex: `UserPromptSubmit` and `Stop`
-- Claude Code: `UserPromptSubmit`, `Stop`, `StopFailure`, and typed permission/input notifications
-- Cursor Agent: `beforeSubmitPrompt` and `stop`
-- OpenCode: a global plugin observing session status/error, session titles, latest user text, plus current and legacy permission/question events
-- Pi 0.80.4 or newer: a global TypeScript extension using `before_agent_start`, `agent_start`, `agent_end`, and `agent_settled`
+See [Live Status Support](LIVE_STATUS_SUPPORT.md) for the source-linked event contract, state fidelity, activation requirements, and release limitations.
 
-The installer preserves existing settings and hooks. It verifies the exact managed integration, bridge contents, and bridge permissions after writing, but that is static readiness rather than proof of runtime activation. Codex may still require `/hooks` review; extensions and plugins may need a reload or new session. Topside honors inherited custom user homes documented by Codex, Claude Code, OpenCode, and Pi, while leaving project and policy layers untouched.
+Existing installs migrate known app-owned state and defaults once using Topside, then Skerry, then Atoll precedence. Migration does not overwrite Topside data or delete either legacy tree. Repair recognizes exact Topside-, Skerry-, and Atoll-owned integrations for all five providers and replaces only verified entries.
 
-See [Live Status Support](LIVE_STATUS_SUPPORT.md) for the source-linked event contract, state fidelity, activation requirements, and release limitations for every shipped integration.
-
-Existing installs migrate known app-owned state and defaults once using Topside → Skerry → Atoll precedence without overwriting Topside data or deleting either legacy tree. A private completion marker is committed only after file and defaults migration both succeed, and lifecycle-event CLI calls never run migration. Repair recognizes exact Skerry- and Atoll-owned integrations for all five providers and replaces only verified entries. See [Product identity](PRODUCT_IDENTITY.md) for the permanent identity and compatibility boundary.
-
-The supported harnesses can also send the same normalized protocol through the Topside executable:
+The supported harnesses can also send the normalized protocol through the Topside executable:
 
 ```sh
-printf '%s' '{"session_id":"session-123","cwd":"/path/to/project"}' \
+printf '%s' '{"session_id":"session-123","cwd":"/path/to/project"}' \\
   | /Applications/Topside.app/Contents/MacOS/Topside --lifecycle-event codex started
 ```
 
-Use `finished`, `failed`, `cancelled`, `needsInput`, or `needsPermission` as the final argument for the corresponding lifecycle transition. `input_required` and `input-required` are accepted aliases for `needsInput` when a harness reports its thread state directly. For an isolated queue smoke test that cannot touch normal Topside state or provider configuration:
+Use `finished`, `failed`, `cancelled`, `needsInput`, or `needsPermission` for the corresponding transition. `input_required` and `input-required` are accepted aliases for `needsInput`.
+
+For an isolated queue smoke test that does not touch normal Topside state or provider configuration:
 
 ```sh
 TEST_HOME="$(mktemp -d)"
-printf '%s' '{"session_id":"isolated","cwd":"/tmp/project"}' \
-  | CFFIXED_USER_HOME="$TEST_HOME" .build/debug/Topside \
+printf '%s' '{"session_id":"isolated","cwd":"/tmp/project"}' \\
+  | CFFIXED_USER_HOME="$TEST_HOME" .build/debug/Topside \\
       --lifecycle-event codex started
 find "$TEST_HOME/.topside/lifecycle-events" -name '*.json' -type f
 rm -rf "$TEST_HOME"
 ```
 
-## Build
+## Privacy and lifecycle data
+
+Topside retains only the agent provider, provider session ID, normalized state, provider and local ordering/delivery timestamps, a project-folder label, and the complete originating process-ID/bundle-ID pair used for click-to-return. A bounded task label can appear in the live in-memory row. Delivery identities are Topside-generated IDs or SHA-256 digests for replay deduplication.
+
+Hook payloads can include prompts or other content on standard input. Topside normalizes only a short task label for the live socket and UI. Raw content never enters canonical socket JSONL, durable queues, the registry, logs, notifications, or uploads. Prompts, responses, commands, transcripts, diffs, environment values, model identifiers, and full working-directory paths are discarded. The project label uses only the working directory's final component.
+
+Topside has no analytics, crash reporting, advertising, telemetry, or cloud synchronization. Lifecycle data stays on the Mac. Network access is limited to Polar license actions and periodic validation, plus the configured Sparkle update feed in production builds.
+
+See [Privacy Policy](PRIVACY.md) for the complete local-data and network boundaries.
+
+## Technology stack
+
+- **Platform:** native macOS 14+
+- **Language:** Swift 6
+- **UI:** SwiftUI and AppKit
+- **Build system:** Swift Package Manager
+- **Updates:** Sparkle 2.9.4 or newer
+- **Local transport:** user-only Unix socket
+- **Local persistence:** owner-only JSON files and event queues under `~/.topside`
+- **Licensing:** Keychain-backed production entitlement with Polar validation
+- **Distribution:** universal `arm64` + `x86_64` direct-download app build
+
+## Licensing and purchase
+
+The documented product license is a **$7.99 one-time Polar license** with one 72-hour trial and no account or subscription. The license is perpetual with no activation or usage limit. Release builds store license material in the macOS Keychain and validate at most daily. Network failures do not remove previously validated access.
+
+Ad-hoc development builds do not read or save license material and never query Keychain. After trial or license expiry, production Topside hides product output and notifications while hooks continue to acknowledge events quickly.
+
+See [Licensing](LICENSING.md) and the [license and sale terms](TERMS.md). The repository source is proprietary under the [source code notice](LICENSE); bundled dependencies retain their own licenses.
+
+## Build and test
 
 Run the same checks as CI:
 
@@ -80,6 +115,18 @@ Build and install the universal local app:
 ./Scripts/build-release.sh --install
 ```
 
-The release script builds and verifies a universal `arm64` + `x86_64` bundle, signs embedded Sparkle components inside-out, and installs `/Applications/Topside.app` with rollback on failure. The default signature is ad hoc for local builds. Distribution requires a Developer ID identity plus the external notarization and Sparkle feed credentials described by the script's environment variables.
+The release script builds and verifies a universal `arm64` + `x86_64` bundle, signs embedded Sparkle components inside-out, and installs `/Applications/Topside.app` with rollback on failure. Local builds use an ad-hoc signature by default. Distribution requires a Developer ID identity, Apple notarization credentials, and Sparkle feed credentials described by the script and [Releasing Topside](RELEASING.md).
 
-Release operators should follow [Releasing Topside](RELEASING.md). The repository's original source is proprietary under the [source code notice](LICENSE); product purchases and use of distributed builds are governed separately by the [license and sale terms](TERMS.md), while bundled dependencies retain their own licenses. Buyers can also read the [privacy policy](PRIVACY.md), [support tracker](https://github.com/Givdul/atoll/issues), and bundled third-party notices from Topside's menu.
+## Icon reference
+
+[`docs/assets/topside-icon.png`](docs/assets/topside-icon.png) is a PNG representation of the canonical [`Bundle/Topside.icns`](Bundle/Topside.icns). It uses the shipped icon without visual redesign and is suitable for GitHub README rendering and reuse by the separate zones-web landing-page project.
+
+## Related documentation
+
+- [Product identity](PRODUCT_IDENTITY.md)
+- [Live Status Support](LIVE_STATUS_SUPPORT.md)
+- [Privacy Policy](PRIVACY.md)
+- [Licensing](LICENSING.md)
+- [Releasing Topside](RELEASING.md)
+- [Support tracker](https://github.com/Givdul/atoll/issues)
+- [Source code notice](LICENSE)
