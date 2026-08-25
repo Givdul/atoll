@@ -13,6 +13,7 @@ final class ReleaseScriptTests: XCTestCase {
             "Bundle/Topside.icns",
             "TopsideEntitlementStorage",
             "TopsideDevelopmentBuild",
+            "TopsideSourceRevision",
             "TOPSIDE_PURCHASE_URL"
         ] {
             XCTAssertTrue(script.contains(expected), expected)

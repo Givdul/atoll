@@ -29,6 +29,7 @@ final class StatusMenuController {
         let permissionAttention: Bool
         let runningCount: Int
         let islandAvailable: Bool
+        let sourceRevision: String?
     }
 
     private let statusItem: NSStatusItem
@@ -59,7 +60,8 @@ final class StatusMenuController {
             attentionCount: state.activeAttentionCount,
             permissionAttention: state.waitingSessions.contains { $0.state == .waitingForPermission },
             runningCount: state.runningSessions.count,
-            islandAvailable: state.isIslandAvailable
+            islandAvailable: state.isIslandAvailable,
+            sourceRevision: state.sourceRevision
         )
         guard snapshot != lastSnapshot else { return }
         lastSnapshot = snapshot
@@ -70,6 +72,12 @@ final class StatusMenuController {
         let title = NSMenuItem(title: "Topside", action: nil, keyEquivalent: "")
         title.isEnabled = false
         menu.addItem(title)
+
+        if state.isDevelopmentBuild, let sourceRevision = state.sourceRevision {
+            let revision = NSMenuItem(title: "Source \(sourceRevision)", action: nil, keyEquivalent: "")
+            revision.isEnabled = false
+            menu.addItem(revision)
+        }
 
         let entitlement = NSMenuItem(title: entitlementTitle, action: nil, keyEquivalent: "")
         entitlement.isEnabled = false
