@@ -46,6 +46,12 @@ final class AppState: ObservableObject {
 
     private let settingsStore: SettingsStore
     let isDevelopmentBuild = Bundle.main.object(forInfoDictionaryKey: "TopsideDevelopmentBuild") as? Bool == true
+    /// Short source revision stamped by Scripts/build-release.sh, if present.
+    let sourceRevision = (Bundle.main.object(forInfoDictionaryKey: "TopsideSourceRevision") as? String)
+        .flatMap { revision -> String? in
+            let trimmed = revision.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
     private var terminalObservations: [String: TerminalObservation] = [:]
     private var displayGeometry: IslandDisplayGeometry?
 

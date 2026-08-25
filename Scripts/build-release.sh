@@ -488,6 +488,27 @@ wait_for_new_process() {
   fi
 }
 
+installed_build_number() {
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$1/Contents/Info.plist" 2>/dev/null || echo "?"
+}
+
+report_install_upgrade() {
+  local previous_build
+  previous_build="$(installed_build_number "$INSTALLED_APP")"
+  if [[ "$previous_build" != "${BUILD_NUMBER:-$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)}" ]]; then
+    echo "Upgrading installed build $previous_build -> $APP_BUNDLE build $(installed_build_number "$APP_BUNDLE")"
+    return
+  fi
+  local previous_revision new_revision
+  previous_revision="$(/usr/libexec/PlistBuddy -c 'Print :TopsideSourceRevision' "$INSTALLED_APP/Contents/Info.plist" 2>/dev/null || echo unknown)"
+  new_revision="$(/usr/libexec/PlistBuddy -c 'Print :TopsideSourceRevision' "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || echo unknown)"
+  if [[ "$previous_revision" != "$new_revision" ]]; then
+    echo "Rebuilding same build number from source $previous_revision -> $new_revision"
+  else
+    echo "Reinstalling source $new_revision (no change)"
+  fi
+}
+
 install_app() {
   local install_candidate
   local previous_pids
@@ -500,6 +521,8 @@ install_app() {
   INSTALL_BACKUP="$INSTALL_TEMP/$APP_NAME.app.previous"
   INSTALL_SKERRY_BACKUP="$INSTALL_TEMP/$SKERRY_APP_NAME.app.previous"
   INSTALL_ATOLL_BACKUP="$INSTALL_TEMP/$ATOLL_APP_NAME.app.previous"
+
+  report_install_upgrade
 
   ditto "$APP_BUNDLE" "$install_candidate"
   verify_app_identity "$install_candidate" "$APP_NAME" "$BUNDLE_IDENTIFIER" \
@@ -652,6 +675,12 @@ if [[ "$SIGN_IDENTITY" == "-" ]]; then
   /usr/libexec/PlistBuddy -c "Add :TopsideDevelopmentBuild bool true" "$APP_BUNDLE/Contents/Info.plist"
 else
   /usr/libexec/PlistBuddy -c "Add :TopsideEntitlementStorage string keychain-v2" "$APP_BUNDLE/Contents/Info.plist"
+fi
+SOURCE_REVISION="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || true)"
+if [[ -n "$SOURCE_REVISION" ]]; then
+  /usr/libexec/PlistBuddy \
+    -c "Add :TopsideSourceRevision string $SOURCE_REVISION" \
+    "$APP_BUNDLE/Contents/Info.plist"
 fi
 if [[ -n "$SPARKLE_FEED_URL" ]]; then
   /usr/libexec/PlistBuddy -c "Add :SUFeedURL string $SPARKLE_FEED_URL" "$APP_BUNDLE/Contents/Info.plist"
